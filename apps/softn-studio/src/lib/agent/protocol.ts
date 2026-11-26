@@ -552,7 +552,7 @@ const FILE_BLOCK = /(?:^|\n)[ \t]*<softn-file\s+path="([^"]+)">([\s\S]*?)<\/soft
 /**
  * A `<tool_call>` opening tag (either `<tool_call name="..." ...>` with attributes in any
  * order, or nameless `<tool_call>` carrying a JSON `{"name": "...", "arguments": {...}}` or
- * Qwen `<function=name><parameter=k>v</parameter></function>` body) or a closing `</tool_call>` tag.
+ * an XML `<function=name><parameter=k>v</parameter></function>` body) or a closing `</tool_call>` tag.
  */
 const CALL_TAG = /<tool_call((?:\s+[A-Za-z_][\w-]*\s*=\s*(?:"[^"]*"|'[^']*'))*)\s*(\/?)\s*>|<\/tool_call\s*>/gi;
 
@@ -574,8 +574,8 @@ function splitCallNameAttribute(rawAttrs: string): { name: string; attributes: s
   return { name, attributes: rest };
 }
 
-/** Parse Qwen's XML tool-call body (`<function=name><parameter=k>v</parameter></function>`). */
-function parseQwenXmlCall(body: string): { name: string; input: Record<string, unknown> } | null {
+/** Parse the XML tool-call body some local models write (`<function=name><parameter=k>v</parameter></function>`). */
+function parseFunctionXmlCall(body: string): { name: string; input: Record<string, unknown> } | null {
   const fnMatch = body.match(/^\s*<function\s*=\s*([A-Za-z_][\w-]*)\s*>([\s\S]*?)<\/function\s*>\s*$/i);
   if (!fnMatch) return null;
   const name = fnMatch[1];
@@ -623,13 +623,20 @@ function callBlocks(raw: string): CallBlock[] {
       continue;
     }
     const selfClosing = tag[2] === '/';
+    const { name, attributes } = splitCallNameAttribute(tag[1] ?? '');
+    // A tag is a call's when it names a tool, or is the bare `<tool_call>` that a call written
+    // as JSON or as a function follows. One with attributes and no tool's name is neither: it
+    // is words about a call (in a file being written, in a note), and is read as text. Taken
+    // for an opening tag, it held the block open past the call's own end, and the calls after
+    // it were swallowed into this one's content.
+    if (!name && (tag[1] ?? '').trim() !== '') continue;
     if (open) {
       if (!selfClosing) depth++;
       continue;
     }
-    const { name, attributes } = splitCallNameAttribute(tag[1] ?? '');
-    if (selfClosing && name) {
-      blocks.push({ start: index, end: index + tag[0].length, name, attributes, body: '' });
+    if (selfClosing) {
+      // Closed where it opened: a call only if it names its tool (there is no body to name one).
+      if (name) blocks.push({ start: index, end: index + tag[0].length, name, attributes, body: '' });
       continue;
     }
     open = { start: index, bodyStart: index + tag[0].length, name, attributes };
@@ -698,10 +705,10 @@ export function parseTextToolCalls(raw: string): { text: string; calls: AgentToo
     const body = block.body;
     const id = `call_t${++textCallCounter}`;
     if (!name) {
-      // Qwen native XML format: `<tool_call><function=edit_file><parameter=path>...</parameter></function></tool_call>`.
-      const qwenXml = parseQwenXmlCall(body);
-      if (qwenXml) {
-        calls.push({ id, name: qwenXml.name, input: qwenXml.input });
+      // The XML function format some local models write natively: `<tool_call><function=edit_file><parameter=path>...</parameter></function></tool_call>`.
+      const functionXml = parseFunctionXmlCall(body);
+      if (functionXml) {
+        calls.push({ id, name: functionXml.name, input: functionXml.input });
         continue;
       }
       // Nameless `<tool_call>{"name":"edit_file","arguments":{...}}</tool_call>` format.

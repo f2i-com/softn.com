@@ -639,6 +639,39 @@ fn compile_apache_glob(glob: &str) -> Option<Regex> {
         .ok()
 }
 
+/// A `<Name args>` or `</Name>` section line of an `.htaccess`: whether it closes the section,
+/// the lower-cased name, and what sits between the name and the closing `>`.
+fn parse_apache_section_tag(line: &str) -> Option<(bool, String, &str)> {
+    let rest = line.strip_prefix('<')?;
+    let (closing, rest) = match rest.strip_prefix('/') {
+        Some(after) => (true, after),
+        None => (false, rest),
+    };
+    let name_len = rest.bytes().take_while(u8::is_ascii_alphabetic).count();
+    if name_len == 0 {
+        return None;
+    }
+    let args = rest[name_len..].trim();
+    let args = args.strip_suffix('>').unwrap_or(args).trim();
+    Some((closing, rest[..name_len].to_ascii_lowercase(), args))
+}
+
+/// The matcher for a `<Files>`/`<FilesMatch>` header: `<Files name>` takes a wildcard name,
+/// `<FilesMatch regex>` and `<Files ~ regex>` a regular expression. `None` when it does not
+/// compile.
+fn compile_files_block_matcher(name: &str, args: &str) -> Option<Regex> {
+    fn unquote(s: &str) -> &str {
+        s.trim().trim_matches(|c| c == '"' || c == '\'')
+    }
+    if name == "filesmatch" {
+        return compile_apache_regex(unquote(args), true);
+    }
+    match args.strip_prefix('~') {
+        Some(rest) if rest.starts_with(char::is_whitespace) => compile_apache_regex(unquote(rest), true),
+        _ => compile_apache_glob(unquote(args)),
+    }
+}
+
 fn parse_htaccess(source: &str, dir_prefix: &str) -> ParsedHtaccess {
     let mut out = ParsedHtaccess {
         dir_prefix: normalize_vfs_key(dir_prefix),
@@ -654,8 +687,17 @@ fn parse_htaccess(source: &str, dir_prefix: &str) -> ParsedHtaccess {
         source
     };
     let mut pending_conds: Vec<HtaccessCond> = Vec::new();
-    let mut in_files_block: Option<Regex> = None;
-    let mut files_block_denied = false;
+    // The `<Files>`/`<FilesMatch>` block being read: its matcher and whether it denies. Being
+    // inside the block is kept apart from having a matcher, because a pattern that does not
+    // compile here (the regex crate has no look-around) still opens a block. Its lines must
+    // not be read as the directory's own: `Require all denied` under
+    // `<FilesMatch "^(?!index\.php$).*\.php$">` would then refuse every request, the entry
+    // script included. Such a block denies nothing instead. What it would have named cannot be
+    // worked out, and the paths the host keeps private do not depend on `.htaccess`.
+    let mut files_block: Option<(Option<Regex>, bool)> = None;
+    // How deep the line sits in sections whose condition is not evaluated here. Their lines
+    // are skipped for the same reason: a deny for some methods is not a deny for all.
+    let mut unevaluated_depth = 0usize;
 
     for raw_line in bounded_src.lines() {
         let trimmed = raw_line.trim();
@@ -663,49 +705,48 @@ fn parse_htaccess(source: &str, dir_prefix: &str) -> ParsedHtaccess {
             continue;
         }
         let lower = trimmed.to_ascii_lowercase();
-        if lower.starts_with("<filesmatch") && trimmed.ends_with('>') {
-            let inner = trimmed[11..trimmed.len() - 1]
-                .trim()
-                .trim_matches(|c| c == '"' || c == '\'');
-            in_files_block = compile_apache_regex(inner, true);
-            files_block_denied = false;
-            continue;
-        }
-        if lower.starts_with("<files")
-            && trimmed.ends_with('>')
-            && trimmed.as_bytes().get(6).is_some_and(|b| b.is_ascii_whitespace())
-        {
-            let inner = trimmed[6..trimmed.len() - 1]
-                .trim()
-                .trim_matches(|c| c == '"' || c == '\'');
-            in_files_block = compile_apache_glob(inner);
-            files_block_denied = false;
-            continue;
-        }
-        if lower == "</filesmatch>" || lower == "</files>" {
-            if let Some(rx) = in_files_block.take() {
-                if files_block_denied && out.deny_files.len() < MAX_HTACCESS_DENY {
-                    out.deny_files.push(rx);
+        if let Some((closing, name, args)) = parse_apache_section_tag(trimmed) {
+            match name.as_str() {
+                "limit" | "limitexcept" | "if" | "elseif" | "else" => {
+                    unevaluated_depth = if closing {
+                        unevaluated_depth.saturating_sub(1)
+                    } else {
+                        unevaluated_depth + 1
+                    };
                 }
+                _ if unevaluated_depth > 0 => {}
+                "files" | "filesmatch" if closing => match files_block.take() {
+                    Some((Some(rx), true)) => {
+                        if out.deny_files.len() < MAX_HTACCESS_DENY {
+                            out.deny_files.push(rx);
+                        }
+                    }
+                    Some((None, true)) => tracing::warn!(
+                        "{}/.htaccess: a <Files>/<FilesMatch> pattern is not supported here, so its deny is not applied",
+                        out.dir_prefix
+                    ),
+                    _ => {}
+                },
+                "files" | "filesmatch" => {
+                    files_block = Some((compile_files_block_matcher(&name, args), false));
+                }
+                // `<IfModule>` and the like: the body applies as written.
+                _ => {}
             }
-            files_block_denied = false;
             continue;
         }
-        if in_files_block.is_some() {
-            if lower.starts_with("deny from all") || lower.starts_with("require all denied") {
-                files_block_denied = true;
+        if unevaluated_depth > 0 {
+            continue;
+        }
+        let denies_all = lower.starts_with("deny from all") || lower.starts_with("require all denied");
+        if let Some((_, denied)) = files_block.as_mut() {
+            if denies_all {
+                *denied = true;
             }
             continue;
         }
-        if lower.starts_with("deny from all") || lower.starts_with("require all denied") {
+        if denies_all {
             out.deny_all = true;
-            continue;
-        }
-        if lower.starts_with("<ifmodule")
-            || lower.starts_with("</ifmodule")
-            || lower.starts_with("<directory")
-            || lower.starts_with("</directory")
-        {
             continue;
         }
 
@@ -2552,24 +2593,32 @@ fn clone_php_overlay(src: &PhpVfsOverlay) -> PhpVfsOverlay {
 }
 
 fn sanitize_php_overlay(ov: &mut PhpVfsOverlay, backend_entry: &str) {
-    let mut clean_writes = HashMap::with_capacity(ov.writes.len());
+    strip_protected_php_overlay_paths(ov, backend_entry);
     let mut total = 0usize;
     let mut keys: Vec<String> = ov.writes.keys().cloned().collect();
     keys.sort();
     for k in keys {
-        if let Some(bytes) = ov.writes.remove(&k) {
-            let norm = normalize_vfs_key(&k);
-            if is_protected_php_overlay_path(&norm, backend_entry) {
-                continue;
-            }
-            if total.saturating_add(bytes.len()) <= MAX_OVERLAY_BYTES {
-                total += bytes.len();
-                clean_writes.insert(norm, bytes);
-            }
+        let len = ov.writes.get(&k).map(Vec::len).unwrap_or(0);
+        if total.saturating_add(len) <= MAX_OVERLAY_BYTES {
+            total += len;
+        } else {
+            ov.writes.remove(&k);
         }
     }
-    ov.writes = clean_writes;
     ov.total_bytes = total;
+}
+
+/// Normalizes the overlay's paths and drops the ones a request may never write. It applies no
+/// size cap: what a request's overlay lacks is taken as deleted by that request, so trimming
+/// it to fit here would delete stored files the request never touched.
+fn strip_protected_php_overlay_paths(ov: &mut PhpVfsOverlay, backend_entry: &str) {
+    ov.writes = ov
+        .writes
+        .drain()
+        .map(|(k, bytes)| (normalize_vfs_key(&k), bytes))
+        .filter(|(k, _)| !is_protected_php_overlay_path(k, backend_entry))
+        .collect();
+    ov.total_bytes = ov.writes.values().map(Vec::len).sum();
     ov.deleted = ov
         .deleted
         .drain()
@@ -2592,7 +2641,11 @@ fn merge_and_save_php_overlay(
     backend_entry: &str,
     last_saved: &Mutex<Vec<u8>>,
 ) {
-    sanitize_php_overlay(&mut final_req, backend_entry);
+    // Only the protected paths come out of the request's overlay here. Whether a write fits is
+    // decided per file below, against what is stored: capping this copy first dropped the
+    // files that sort last, and the merge then deleted them from the store as if the request
+    // had. The Node runner evicts nothing either (it skips a save that would not fit).
+    strip_protected_php_overlay_paths(&mut final_req, backend_entry);
     // Fast path: if this request made no sanitized overlay changes, skip locking/encoding/disk I/O.
     if final_req.writes == initial.writes
         && final_req.deleted == initial.deleted
@@ -4889,5 +4942,157 @@ def handle_request(req):
         ))
         .unwrap();
         assert!(end_attempt.get("error").is_some(), "END; savepoint escape must be blocked: {end_attempt}");
+    }
+
+    #[test]
+    fn php_overlay_write_evicts_nothing_the_request_did_not_delete() {
+        const MIB: usize = 1024 * 1024;
+        let dir = crate::test_dirs::temp_path("softn-php-overlay", "");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("php-overlay.json");
+        let mut stored = PhpVfsOverlay::default();
+        stored.writes.insert("uploads/a.bin".into(), vec![1u8; 9 * MIB]);
+        stored.writes.insert("uploads/b.bin".into(), vec![2u8; 6 * MIB]);
+        stored.total_bytes = 15 * MIB;
+        let shared = Mutex::new(Arc::new(stored));
+        let last_saved = Mutex::new(Vec::new());
+        // One request: it starts from the stored overlay, changes its own copy, and merges back.
+        let request = |change: &dyn Fn(&mut PhpVfsOverlay)| {
+            let initial = Arc::clone(&shared.lock().unwrap());
+            let mut mine = clone_php_overlay(&initial);
+            change(&mut mine);
+            merge_and_save_php_overlay(&path, &shared, &initial, mine, "index.php", &last_saved);
+        };
+        let stored_files = || {
+            let now = shared.lock().unwrap();
+            let mut names: Vec<String> = now.writes.keys().cloned().collect();
+            names.sort();
+            (names, now.total_bytes)
+        };
+
+        // 2 MiB more does not fit beside 15 MiB. The new file is the one left out: it sorts
+        // first, and `uploads/b.bin`, which sorts last, used to be deleted to make room.
+        request(&|ov| {
+            ov.writes.insert("cache/x.bin".into(), vec![3u8; 2 * MIB]);
+        });
+        assert_eq!(stored_files(), (vec!["uploads/a.bin".into(), "uploads/b.bin".into()], 15 * MIB));
+
+        // A write that fits lands beside them, and a protected path never does.
+        request(&|ov| {
+            ov.writes.insert("cache/y.bin".into(), vec![4u8; MIB / 2]);
+            ov.writes.insert("cache/shell.php".into(), b"<?php".to_vec());
+        });
+        assert_eq!(
+            stored_files(),
+            (vec!["cache/y.bin".into(), "uploads/a.bin".into(), "uploads/b.bin".into()], 15 * MIB + MIB / 2)
+        );
+
+        // Deleting is the request's to do, and frees the room for what it writes with it.
+        request(&|ov| {
+            ov.writes.remove("uploads/b.bin");
+            ov.deleted.insert("uploads/b.bin".into());
+            ov.writes.insert("cache/x.bin".into(), vec![3u8; 2 * MIB]);
+        });
+        let kept: Vec<String> = vec!["cache/x.bin".into(), "cache/y.bin".into(), "uploads/a.bin".into()];
+        assert_eq!(stored_files(), (kept.clone(), 11 * MIB + MIB / 2));
+
+        // The file on disk says the same.
+        let reloaded = load_php_overlay(&path, "index.php");
+        let mut on_disk: Vec<String> = reloaded.writes.keys().cloned().collect();
+        on_disk.sort();
+        assert_eq!(on_disk, kept);
+        assert!(reloaded.deleted.contains("uploads/b.bin"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn root_htaccess_denies(source: &str, method: &str, path: &str) -> bool {
+        let mut map = HashMap::new();
+        map.insert(String::new(), parse_htaccess(source, ""));
+        matches!(
+            evaluate_htaccess_chain(&map, path, "", method, "localhost", false, &HashMap::new(), &HashMap::new(), &HashSet::new()),
+            HtaccessEval::Deny(403)
+        )
+    }
+
+    // The same cases as apps/softn-host-php/tests/container-backend.test.mjs, which reads
+    // `.htaccess` the same way.
+    #[test]
+    fn htaccess_deny_inside_a_section_is_not_a_deny_for_the_directory() {
+        let denies = |source: &str, path: &str| root_htaccess_denies(source, "GET", path);
+
+        // A look-ahead does not compile here and Drupal's stock rule has one. Neither block
+        // may take the entry script, or anything else, with it.
+        let lookahead = "<FilesMatch \"^(?!index\\.php$).*\\.php$\">\n  Require all denied\n</FilesMatch>\n";
+        let drupal = concat!(
+            "<FilesMatch \"\\.(engine|inc|install|make|module|profile|po|sh|.*sql|theme|twig|tpl(\\.php)?|xtmpl|yml)",
+            "(~|\\.sw[op]|\\.bak|\\.orig|\\.save)?$|^(\\.(?!well-known).*|Entries.*|Repository|Root|Tag|Template|",
+            "composer\\.(json|lock)|web\\.config|yarn\\.lock|package\\.json)$|^#.*#$|\\.php(~|\\.sw[op]|\\.bak|\\.orig|\\.save)$\">\n",
+            "  <IfModule mod_authz_core.c>\n    Require all denied\n  </IfModule>\n",
+            "  <IfModule !mod_authz_core.c>\n    Order allow,deny\n    Deny from all\n  </IfModule>\n",
+            "</FilesMatch>\n",
+        );
+        let too_long = format!("<FilesMatch \"{}\">\nDeny from all\n</FilesMatch>\n", "a".repeat(2000));
+        let invalid = "<FilesMatch \"(\">\nDeny from all\n</FilesMatch>\n";
+        for source in [lookahead, drupal, too_long.as_str(), invalid] {
+            for path in ["/index.php", "/", "/assets/app.css", "/api/notes", "/aaa"] {
+                assert!(!denies(source, path), "{path} under {source}");
+            }
+        }
+        // A header that is not closed, or whose pattern holds a quote or a `>`, still opens a block.
+        let unclosed_header = "<FilesMatch \"\\.inc$\"\nDeny from all\n</FilesMatch>\n";
+        assert!(!denies(unclosed_header, "/index.php"));
+        assert!(denies(unclosed_header, "/db.inc"));
+        let named = "<FilesMatch \"\\.(?<ext>bak|old)$\">\nDeny from all\n</FilesMatch>\n";
+        assert!(!denies(named, "/index.php"));
+        assert!(denies(named, "/site.old"));
+
+        // The block ends where it says, so what follows it is still read.
+        let then_files = format!("{lookahead}<Files \"notes.txt\">\nDeny from all\n</Files>\n");
+        assert!(denies(&then_files, "/notes.txt"));
+        assert!(!denies(&then_files, "/index.php"));
+        let then_all = format!("{lookahead}Require all denied\n");
+        assert!(denies(&then_all, "/index.php"));
+
+        // `<Files ~ "regex">` is the regular-expression form, and tags tolerate spacing.
+        let tilde = "<Files ~ \"^\\.ht|\\.bak$\">\nDeny from all\n</Files >\n";
+        assert!(denies(tilde, "/old.BAK"));
+        assert!(!denies(tilde, "/index.php"));
+        let quoted = "<FilesMatch '\\.(inc|tpl)$' >\nRequire all denied\n</FilesMatch>\n<Files config.php>\nRequire all denied\n</Files>\n";
+        assert!(denies(quoted, "/lib/db.inc"));
+        assert!(denies(quoted, "/config.php"));
+        assert!(!denies(quoted, "/index.php"));
+
+        // Method and expression sections are not evaluated, so their denies are for nobody.
+        let conditional = concat!(
+            "<LimitExcept GET POST>\n  Order deny,allow\n  Deny from all\n</LimitExcept>\n",
+            "<Limit PUT DELETE>\n  Require all denied\n</Limit>\n",
+            "<If \"%{HTTP_HOST} == 'old.example'\">\n  Require all denied\n</If>\n",
+            "<ElseIf \"-R '10.0.0.0/8'\">\n  Require all denied\n</ElseIf>\n",
+            "<Else>\n  <Files \"index.php\">\n    Require all denied\n  </Files>\n</Else>\n",
+            "<Files \"admin.php\">\n  <Limit POST>\n    Require all denied\n  </Limit>\n</Files>\n",
+            "<Files \"notes.txt\">\n  Require all denied\n</Files>\n",
+        );
+        for method in ["GET", "PUT"] {
+            for path in ["/index.php", "/admin.php", "/assets/app.css"] {
+                assert!(!root_htaccess_denies(conditional, method, path), "{method} {path}");
+            }
+            assert!(root_htaccess_denies(conditional, method, "/notes.txt"));
+        }
+
+        // `<IfModule>` bodies apply as written: the usual way to close a directory still does.
+        let closed = "<IfModule mod_authz_core.c>\n  Require all denied\n</IfModule>\n<IfModule !mod_authz_core.c>\n  Deny from all\n</IfModule>\n";
+        assert!(denies(closed, "/index.php"));
+        let in_ifmodule = "<IfModule mod_authz_core.c>\n  <Files \"config.php\">\n    Require all denied\n  </Files>\n</IfModule>\n";
+        assert!(denies(in_ifmodule, "/config.php"));
+        assert!(!denies(in_ifmodule, "/index.php"));
+
+        // Rules outside a skipped section are kept and the ones inside it are not.
+        let rewrites = parse_htaccess(
+            "RewriteEngine On\n<If \"%{HTTPS} == 'off'\">\n  RewriteRule ^ https://example.test/ [R=301,L]\n</If>\nRewriteRule ^a$ /b [L]\n",
+            "",
+        );
+        assert!(rewrites.rewrite_engine);
+        assert_eq!(rewrites.rules.len(), 1);
+        assert_eq!(rewrites.rules[0].substitution, "/b");
     }
 }

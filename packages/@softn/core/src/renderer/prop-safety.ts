@@ -117,7 +117,11 @@ function isWithheldUrl(name: string, value: string, policy: EgressPolicy): boole
     }
     return !describeSrcSetEgress(value, policy).allowed;
   }
-  if (isHostRootOrTraversalPath(value)) return true;
+  // `navigate` is an address the person follows, as a link's `href` is: `/about.html` and
+  // `../index.html` name pages of the app, which the runtime shows, and the render asks the
+  // site the app is opened on for nothing. Held to the rule for what the render fetches, a
+  // NavItem that named a page from the root lost its address and was no longer a link.
+  if (canonical !== 'navigate' && isHostRootOrTraversalPath(value)) return true;
   return !describeMarkupEgress(value, policy).allowed;
 }
 

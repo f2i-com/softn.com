@@ -84,3 +84,31 @@ test('one visitor cannot hold every connection, and a closed one frees its slot'
   const a4=await open('203.0.113.9');assert.equal(a4.ok,true);
   for(const c of [a2,b1,a4])c.ws.terminate();
 });
+test('one visitor cannot connect, subscribe and connect again without end',{timeout:10000},async t=>{
+  // Every poll reaches the host from the bridge's address, so they all count against one
+  // allowance there. A token the host refuses costs a poll and closes the connection: looped,
+  // that spent the allowance of everyone the bridge serves. Only concurrent connections were
+  // counted, and this loop never holds more than one.
+  let polls=0;
+  const upstream=http.createServer((req,res)=>{polls++;res.writeHead(401,{'Content-Type':'application/json'});res.end('{}');});
+  upstream.listen(0,'127.0.0.1');await once(upstream,'listening');t.after(()=>upstream.close());
+  let clock=1_000_000;
+  const live=createLiveServer({upstream:'http://127.0.0.1:'+upstream.address().port,origins:['https://app.example'],routes:[{path:'/api/feed',method:'GET',poll:true}],maxUpgradesPerMinute:3,now:()=>clock});
+  live.server.listen(0,'127.0.0.1');await once(live.server,'listening');t.after(()=>live.close());
+  const url='ws://127.0.0.1:'+live.server.address().port+'/events';
+  const attempt=xff=>new Promise(resolve=>{
+    const ws=new WebSocket(url,{origin:'https://app.example',headers:{'X-Forwarded-For':xff}});
+    ws.on('open',()=>ws.send(JSON.stringify({type:'subscribe',path:'/api/feed',authorization:'Bearer refused'})));
+    ws.on('close',code=>resolve({closed:code}));
+    ws.on('unexpected-response',(req,res)=>{req.destroy();resolve({status:res.statusCode,retryAfter:res.headers['retry-after']});});
+    ws.on('error',()=>{});
+  });
+  const looped=[];for(let i=0;i<6;i++)looped.push(await attempt('203.0.113.9'));
+  assert.deepEqual(looped,[...Array(3).fill({closed:1008}),...Array(3).fill({status:429,retryAfter:'60'})]);
+  assert.equal(polls,3);
+  // Another visitor has an allowance of their own, and the first has one again a minute on.
+  assert.deepEqual(await attempt('198.51.100.4'),{closed:1008});
+  clock+=59_000;assert.equal((await attempt('203.0.113.9')).status,429);
+  clock+=1_000;assert.deepEqual(await attempt('203.0.113.9'),{closed:1008});
+  assert.equal(polls,5);
+});

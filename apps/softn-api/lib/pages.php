@@ -804,6 +804,11 @@ final class Pages
                 $tmp = $sitemapCacheFile . '.tmp.' . getmypid() . '.' . bin2hex(random_bytes(4));
                 if (@file_put_contents($tmp, $xml) === strlen($xml)) {
                     if (!@rename($tmp, $sitemapCacheFile)) @unlink($tmp);
+                    // The ones before it are of a catalogue that has changed since and are
+                    // never read again: left, every publish and every edit added one for good.
+                    else foreach (scandir($cacheDir) ?: [] as $name) {
+                        if ($name !== basename($sitemapCacheFile) && preg_match('/^sitemap-apps-[0-9a-f]{20}\.xml$/D', $name)) @unlink("$cacheDir/$name");
+                    }
                 } else {
                     @unlink($tmp);
                 }

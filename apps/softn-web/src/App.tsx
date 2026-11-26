@@ -678,13 +678,15 @@ function App(): React.ReactElement {
         let data: Uint8Array;
         // The slug the directory answered with, for one the address only spelt.
         let slug = directorySlug;
-        let hostedBackendUrl: string | undefined;
+        // The app's hosted backend as the directory says it now: an address, `null` for none
+        // (which the app's record then keeps none of), and nothing where it could not be asked.
+        let hostedBackendUrl: string | null | undefined;
         try {
           // Resolve optional server-hosted ZIPP safe-sandbox backend metadata in parallel
           // for directory apps (respecting `?mode=local` for hybrid apps).
           const forceLocal =
             typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('mode') === 'local';
-          const hostingPromise: Promise<string | undefined> = directorySlug
+          const hostingPromise: Promise<string | null | undefined> = directorySlug
             ? fetch(`/api/apps/${encodeURIComponent(directorySlug)}`, {
                 signal: controller.signal,
                 credentials: 'same-origin',
@@ -702,8 +704,8 @@ function App(): React.ReactElement {
                     };
                   };
                   const h = json?.app?.hosting;
-                  if (!h?.serverHosted || typeof h.backendUrl !== 'string' || !h.backendUrl) return undefined;
-                  if (forceLocal && h.browserSupported && !h.withholdBackend) return undefined;
+                  if (!h?.serverHosted || typeof h.backendUrl !== 'string' || !h.backendUrl) return null;
+                  if (forceLocal && h.browserSupported && !h.withholdBackend) return null;
                   return h.backendUrl;
                 })
                 .catch(() => undefined)

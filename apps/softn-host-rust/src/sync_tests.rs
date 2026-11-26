@@ -905,6 +905,38 @@ fn a_pull_past_one_page_says_where_the_next_begins() {
     assert_eq!(all, vec!["n1", "n2", "n4", "n5"]);
 }
 
+/// A collection whose read fails part way is refused, for the client to ask
+/// again. It used to be answered with the records read before the failure
+/// and no `more`, which is how a client is told it has the whole collection.
+#[test]
+fn a_pull_whose_read_fails_is_refused_and_not_sent_in_part() {
+    let (sync, _db) = manager(None);
+    for n in 1..=5 {
+        sync.handle_sync_push(vec![op(&format!("c{n}"), "notes", "create", &format!("n{n}"), serde_json::json!({"n": n}))], "a");
+    }
+    sync.handle_sync_push(vec![op("t1", "tasks", "create", "t1", serde_json::json!({"n": 1}))], "a");
+    // A record SQLite cannot hand back as text: the read stops at it with an error.
+    let direct = rusqlite::Connection::open(&sync.db_path).unwrap();
+    assert_eq!(direct.execute("UPDATE records SET data = x'ff' WHERE id = 'n4'", []).unwrap(), 1);
+
+    let refused_notes = |message: &ServerMessage| match message {
+        ServerMessage::Error { refused: Some("pull"), collections: Some(collections), retry_after: Some(_), .. } => {
+            assert_eq!(collections, &vec!["notes".to_string()]);
+        }
+        other => panic!("{other:?}"),
+    };
+    // A full pull: `notes` is refused whole, and the collection after it is still answered.
+    let messages = sync.handle_sync_pull(&["notes".to_string(), "tasks".to_string()], None, None, None);
+    assert_eq!(messages.len(), 2, "{messages:?}");
+    refused_notes(&messages[0]);
+    let ServerMessage::SyncState { collection, records, .. } = &messages[1] else { panic!("{messages:?}") };
+    assert_eq!((collection.as_str(), records.len()), ("tasks", 1));
+    // An incremental one the same.
+    let messages = sync.handle_sync_pull(&["notes".to_string()], Some("1970-01-01T00:00:00.000Z"), None, None);
+    assert_eq!(messages.len(), 1, "{messages:?}");
+    refused_notes(&messages[0]);
+}
+
 /// The acknowledgement and the broadcast do not wait for the after-hooks.
 #[test]
 fn a_push_is_answered_and_broadcast_before_its_after_hooks_run() {

@@ -257,6 +257,26 @@ test('http.php hands the runner a HEAD as the GET it is, and leaves the body off
   assert.match(http,/if\(!\$head\)echo \$responseBody;/);
 });
 
+nodeTest('a container backend cannot set what the browser keeps for the whole origin, as on the Rust host',()=>{
+  // NEL and Report-To name where reports of every request to the origin go, for as long
+  // as they say; the rest are kept for the origin the same way. They passed through here.
+  const http=readFileSync(new URL('../runtime/http.php',import.meta.url),'utf8');
+  const list=http.slice(http.indexOf('$blockedResponseHeaders=['),http.indexOf('];',http.indexOf('$blockedResponseHeaders=[')));
+  const blocked=new Set([...list.matchAll(/'([a-z0-9-]+)'=>true/g)].map(m=>m[1]));
+  for(const name of ['nel','report-to','reporting-endpoints','alt-svc','origin-agent-cluster','accept-ch','critical-ch','clear-site-data','service-worker-allowed','strict-transport-security'])assert.ok(blocked.has(name),name);
+  for(const name of ['content-type','cache-control','set-cookie','location','etag'])assert.ok(!blocked.has(name),name);
+  // Every name the Rust host withholds is withheld here (it says its prefixes as prefixes).
+  const rust=readFileSync(new URL('../../softn-host-rust/src/http.rs',import.meta.url),'utf8');
+  const from=rust.indexOf('fn container_response_header_withheld');
+  assert.ok(from>0);
+  const names=[...rust.slice(from,rust.indexOf('\n}',from)).matchAll(/"([a-z0-9-]+)"/g)].map(m=>m[1]);
+  assert.ok(names.includes('nel')&&names.includes('transfer-encoding'),names.join());
+  for(const name of names) {
+    if(name.endsWith('-'))assert.ok(name==='access-control-'?blocked.has('access-control-allow-origin'):http.includes(`str_starts_with($lk,'${name}')`),name);
+    else assert.ok(blocked.has(name),name);
+  }
+});
+
 test('a body is a JSON object the runner can be handed, or it is refused',()=>{
   const good=['','{}','{"a":1,"nested":{"list":[1,2,{"deep":true}]}}','{"n":1.5e308,"big":12345678901234567890,"s":"x\\ud83d\\ude00"}'];
   const bad=['{"n":1e999}','{"a":[1,{"b":-1e999}]}','[1,2]','"text"','7','null','{"a":','not json','{"a":1}x','['.repeat(70)+']'.repeat(70)];

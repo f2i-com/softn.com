@@ -205,8 +205,9 @@ final class Seed
             if(($row['seed_category']??$row['category'])!==$row['category'])continue;
             $curSub = is_string($row['subcategory'] ?? null) && $row['subcategory'] !== '' ? $row['subcategory'] : null;
             if($row['category']!==$cat || $curSub!==$sub || !isset($row['seed_category'])) {
-                Catalog::patch($slug,['category'=>$cat,'subcategory'=>$sub,'seed_category'=>$cat,'seed_subcategory'=>$sub]);
-                Catalog::moveAppFolder($slug, $cat, $sub);
+                // The key is a demo's id, and text: PHP makes a number of one that is all digits.
+                Catalog::patch((string)$slug,['category'=>$cat,'subcategory'=>$sub,'seed_category'=>$cat,'seed_subcategory'=>$sub]);
+                Catalog::moveAppFolder((string)$slug, $cat, $sub);
             }
         }
 

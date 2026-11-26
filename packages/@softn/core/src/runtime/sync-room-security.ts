@@ -93,7 +93,20 @@ export function isRoomMarkedShared(appId: string | undefined, room: string): boo
 }
 
 const MAX_PERSISTED_SYNC_ROOMS_PER_APP = 64;
-const MAX_SYNC_ROOM_NAME_LEN = 256;
+/** The longest name a room has: what is kept of a room in the page's storage is kept under its name, or is its name. */
+export const MAX_SYNC_ROOM_NAME_LEN = 256;
+/** The most rooms one app syncs at a time. Each is a peer connection and a kept copy of the app's records. */
+export const MAX_OPEN_SYNC_ROOMS_PER_APP = 8;
+
+/**
+ * Whether `room` is a name a room can have: text, with something in it, and no longer than a
+ * name is. The room's name is written to the page's storage as it is (the room an app goes
+ * back to after a reload), outside what an app's own storage is counted in, so a name of a
+ * few million characters filled the storage every app on the site shares.
+ */
+export function isSyncRoomName(room: unknown): room is string {
+  return typeof room === 'string' && room.length > 0 && room.length <= MAX_SYNC_ROOM_NAME_LEN;
+}
 
 function countPrefixKeys(store: Storage, prefix: string): number {
   let count = 0;

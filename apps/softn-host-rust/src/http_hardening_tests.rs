@@ -1233,6 +1233,23 @@ async fn the_sync_token_opens_sync_and_no_operator_route() {
     assert_eq!(send(addr, with("/sync/ticket", "neither")).await.0, 401);
 }
 
+/// A container backend's response does not set what a browser keeps for the
+/// whole origin. `NEL` with `Report-To` passed through: one tenant's backend
+/// could have the browser report every later request to the shared origin,
+/// the other tenants' among them, to a server of its choosing.
+#[test]
+fn a_container_backend_cannot_set_what_the_browser_keeps_for_the_origin() {
+    for name in [
+        "nel", "report-to", "reporting-endpoints", "alt-svc", "origin-agent-cluster", "accept-ch", "critical-ch",
+        "clear-site-data", "service-worker-allowed", "strict-transport-security", "access-control-allow-origin",
+    ] {
+        assert!(container_response_header_withheld(name), "{name}");
+    }
+    for name in ["content-type", "cache-control", "set-cookie", "location", "etag", "link", "x-custom"] {
+        assert!(!container_response_header_withheld(name), "{name}");
+    }
+}
+
 /// A sync token that is the operator's token is refused at startup: every
 /// browser of the app would hold the operator's secret.
 #[test]

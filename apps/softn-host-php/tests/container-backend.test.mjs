@@ -15,6 +15,7 @@ import {join, dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {unzipSync} from 'fflate';
 import {deploymentConfig, packagePhp} from '../package.mjs';
+import {isDeniedByHtaccess} from '../runtime/container-backend.mjs';
 import {readArchive} from '../../../scripts/lib/archive.mjs';
 
 const runtimeDir = fileURLToPath(new URL('../runtime/', import.meta.url));
@@ -468,4 +469,102 @@ function handleRequest(req) {
     });
     assert.equal(r.status, 404, `expected 404 for ${blockedPath}, got ${r.status}`);
   }
+});
+
+const htaccessDenies = (source, path) => isDeniedByHtaccess(new Map([['.htaccess', Buffer.from(source)]]), path);
+const LOOKAHEAD_HTACCESS = '<FilesMatch "^(?!index\\.php$).*\\.php$">\n  Require all denied\n</FilesMatch>\n';
+const DRUPAL_HTACCESS = [
+  '<FilesMatch "\\.(engine|inc|install|make|module|profile|po|sh|.*sql|theme|twig|tpl(\\.php)?|xtmpl|yml)',
+  '(~|\\.sw[op]|\\.bak|\\.orig|\\.save)?$|^(\\.(?!well-known).*|Entries.*|Repository|Root|Tag|Template|',
+  'composer\\.(json|lock)|web\\.config|yarn\\.lock|package\\.json)$|^#.*#$|\\.php(~|\\.sw[op]|\\.bak|\\.orig|\\.save)$">\n',
+  '  <IfModule mod_authz_core.c>\n    Require all denied\n  </IfModule>\n',
+  '  <IfModule !mod_authz_core.c>\n    Order allow,deny\n    Deny from all\n  </IfModule>\n',
+  '</FilesMatch>\n',
+].join('');
+
+// The same cases as the Rust host's htaccess_deny_inside_a_section_is_not_a_deny_for_the_directory,
+// which reads .htaccess the same way.
+test('an .htaccess deny inside a section is not a deny for the directory', () => {
+  // Patterns this host does not compile: over 256 characters (Drupal's stock rule), shaped
+  // like one that backtracks without end, or not a regular expression. None of the blocks
+  // may take the entry script, or anything else, with it.
+  const tooLong = `<FilesMatch "${'a'.repeat(2000)}">\nDeny from all\n</FilesMatch>\n`;
+  const nested = '<FilesMatch "^(a+)+$">\nDeny from all\n</FilesMatch>\n';
+  const invalid = '<FilesMatch "(">\nDeny from all\n</FilesMatch>\n';
+  for (const source of [DRUPAL_HTACCESS, tooLong, nested, invalid]) {
+    for (const path of ['/index.php', '/', '/assets/app.css', '/api/notes', '/aaa']) {
+      assert.equal(htaccessDenies(source, path), false, `${path} under ${source}`);
+    }
+  }
+  // A look-ahead does compile here, and names every script but the entry.
+  assert.equal(htaccessDenies(LOOKAHEAD_HTACCESS, '/index.php'), false);
+  assert.equal(htaccessDenies(LOOKAHEAD_HTACCESS, '/admin.php'), true);
+  // A header that is not closed, or whose pattern holds a quote or a `>`, still opens a block.
+  const unclosedHeader = '<FilesMatch "\\.inc$"\nDeny from all\n</FilesMatch>\n';
+  assert.equal(htaccessDenies(unclosedHeader, '/index.php'), false);
+  assert.equal(htaccessDenies(unclosedHeader, '/db.inc'), true);
+  const named = '<FilesMatch "\\.(?<ext>bak|old)$">\nDeny from all\n</FilesMatch>\n';
+  assert.equal(htaccessDenies(named, '/index.php'), false);
+  assert.equal(htaccessDenies(named, '/site.old'), true);
+
+  // The block ends where it says, so what follows it is still read.
+  const thenFiles = `${DRUPAL_HTACCESS}<Files "notes.txt">\nDeny from all\n</Files>\n`;
+  assert.equal(htaccessDenies(thenFiles, '/notes.txt'), true);
+  assert.equal(htaccessDenies(thenFiles, '/index.php'), false);
+  assert.equal(htaccessDenies(`${DRUPAL_HTACCESS}Require all denied\n`, '/index.php'), true);
+
+  // `<Files ~ "regex">` is the regular-expression form, and tags tolerate spacing.
+  const tilde = '<Files ~ "^\\.ht|\\.bak$">\nDeny from all\n</Files >\n';
+  assert.equal(htaccessDenies(tilde, '/old.BAK'), true);
+  assert.equal(htaccessDenies(tilde, '/index.php'), false);
+  const quoted = "<FilesMatch '\\.(inc|tpl)$' >\nRequire all denied\n</FilesMatch>\n<Files config.php>\nRequire all denied\n</Files>\n";
+  assert.equal(htaccessDenies(quoted, '/lib/db.inc'), true);
+  assert.equal(htaccessDenies(quoted, '/config.php'), true);
+  assert.equal(htaccessDenies(quoted, '/index.php'), false);
+
+  // Method and expression sections are not evaluated, so their denies are for nobody.
+  const conditional = [
+    '<LimitExcept GET POST>\n  Order deny,allow\n  Deny from all\n</LimitExcept>\n',
+    '<Limit PUT DELETE>\n  Require all denied\n</Limit>\n',
+    '<If "%{HTTP_HOST} == \'old.example\'">\n  Require all denied\n</If>\n',
+    '<ElseIf "-R \'10.0.0.0/8\'">\n  Require all denied\n</ElseIf>\n',
+    '<Else>\n  <Files "index.php">\n    Require all denied\n  </Files>\n</Else>\n',
+    '<Files "admin.php">\n  <Limit POST>\n    Require all denied\n  </Limit>\n</Files>\n',
+    '<Files "notes.txt">\n  Require all denied\n</Files>\n',
+  ].join('');
+  for (const path of ['/index.php', '/admin.php', '/assets/app.css']) {
+    assert.equal(htaccessDenies(conditional, path), false, path);
+  }
+  assert.equal(htaccessDenies(conditional, '/notes.txt'), true);
+
+  // <IfModule> bodies apply as written: the usual way to close a directory still does.
+  const closed = '<IfModule mod_authz_core.c>\n  Require all denied\n</IfModule>\n<IfModule !mod_authz_core.c>\n  Deny from all\n</IfModule>\n';
+  assert.equal(htaccessDenies(closed, '/index.php'), true);
+  const inIfModule = '<IfModule mod_authz_core.c>\n  <Files "config.php">\n    Require all denied\n  </Files>\n</IfModule>\n';
+  assert.equal(htaccessDenies(inIfModule, '/config.php'), true);
+  assert.equal(htaccessDenies(inIfModule, '/index.php'), false);
+});
+
+test('a PHP bundle with a FilesMatch this host cannot compile still answers', {skip: (!hasCoreWasm || !hasPhpWasm) && 'ZIPP WASM engines not built'}, t => {
+  const root = makeBackendFixture(t, {
+    'manifest.json': JSON.stringify({
+      engine: 2,
+      id: 'php-htaccess',
+      name: 'PHP htaccess',
+      version: '1.0.0',
+      main: 'public/index.html',
+      frontendRoot: 'public',
+      backend: {runtime: 'php', entry: 'index.php', mode: 'api', routes: ['/api/']},
+    }),
+    'public/index.html': '<!doctype html><h1>ok</h1>',
+    '.htaccess': `${DRUPAL_HTACCESS}<Files "closed.php">\n  Require all denied\n</Files>\n`,
+    'index.php': "<?php header('Content-Type: text/plain'); echo 'entry';",
+    'closed.php': "<?php echo 'closed';",
+  }, 'php-htaccess');
+  const get = path => runRunner(root, {path, method: 'GET', queryString: '', headers: {}, bodyBase64: '', client_ip: '127.0.0.1'});
+  const entry = get('/api/hello');
+  assert.equal(entry.status, 200, entry.bodyText);
+  assert.equal(entry.bodyText, 'entry');
+  assert.equal(get('/closed.php').status, 403);
+  assert.equal(get('/closed').status, 403);
 });

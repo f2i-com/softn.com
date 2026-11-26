@@ -254,6 +254,35 @@ test('a slug that is all digits is a slug like any other: a parent found by name
   assert.equal((await s.api('GET', '/api/apps/0')).json.app.remixes, 1);
 });
 
+test('a remix whose slug is all digits is hidden like any other, and the list that says so can be sent back', skip, async () => {
+  // The hidden remixes were gathered as array keys, and the all-digit ones
+  // came back as numbers: saved as [4096], which the page's list of remixes
+  // did not match (it stayed listed), and which was refused with a 400 when
+  // the page sent back the list it had been given.
+  const parent = await s.publish('Number Games');
+  const kid = await s.api('POST', '/api/apps', { raw: makeBundle('4096'), headers: { 'Content-Type': 'application/octet-stream', 'X-Admin-Key': s.adminKey }, query: `parent=${parent.app.slug}` });
+  assert.equal(kid.status, 201, kid.text);
+  assert.equal(kid.json.app.slug, '4096');
+  const owner = { 'X-Edit-Key': parent.editKey };
+  const hidden = await s.api('PATCH', `/api/apps/${parent.app.slug}`, { body: { hiddenRemixes: ['4096'] }, headers: owner });
+  assert.equal(hidden.status, 200, hidden.text);
+  assert.deepEqual(hidden.json.app.hiddenRemixes, ['4096']);
+  assert.deepEqual(hidden.json.app.remixList, []);
+  assert.equal(hidden.json.app.remixes, 0);
+  const again = await s.api('PATCH', `/api/apps/${parent.app.slug}`, { body: { hiddenRemixes: hidden.json.app.hiddenRemixes }, headers: owner });
+  assert.equal(again.status, 200, again.text);
+
+  // One saved as a number before this is read as the slug it is.
+  const file = path.join(s.dataDir, 'apps', parent.app.slug, 'app.json');
+  const doc = JSON.parse(fs.readFileSync(file, 'utf8'));
+  doc.app.hidden_remixes = '[4096]';
+  fs.writeFileSync(file, JSON.stringify(doc));
+  const read = (await s.api('GET', `/api/apps/${parent.app.slug}`)).json.app;
+  assert.deepEqual(read.hiddenRemixes, ['4096']);
+  assert.deepEqual(read.remixList, []);
+  assert.equal((await s.api('PATCH', `/api/apps/${parent.app.slug}`, { body: { hiddenRemixes: read.hiddenRemixes }, headers: owner })).status, 200);
+});
+
 test('a purged app’s slug is not given to the next app of that name', skip, async () => {
   // Visitors' browsers keep a /play/ app's records and settings under its
   // address. The slug went back into the pool with the app, and the next app

@@ -595,3 +595,68 @@ test('SEO & performance hardening: zero-script engineTier, noindex sitemap exclu
   assert.match(searchDirHtml, /<meta name="robots" content="noindex,follow" \/>/);
   assert.doesNotMatch(searchDirHtml, /<link rel="canonical"/);
 });
+
+test('the page cache and the sitemap cache do not grow with the addresses asked for or the catalogue\'s changes', skip, async () => {
+  const s = await startServer({
+    prefix: 'softn-seo-cache-growth-',
+    config: { seedDemos: false, siteOrigin: SITE },
+  });
+  servers.push(s);
+
+  // A bundle that leaves its pages to a backend: every address under it that
+  // is not a file's is a page, and each one asked for was a cache file of its own.
+  const bundle = zipSync({
+    'manifest.json': strToU8(
+      JSON.stringify({
+        name: 'Backend Pages',
+        version: '1.0.0',
+        description: 'Pages a backend answers.',
+        main: 'index.html',
+        ssrEntry: 'server/render.php',
+      })
+    ),
+    'index.html': strToU8('<!doctype html><html><head><title>Home</title></head><body><main><h1>Home</h1></main></body></html>'),
+    'about.html': strToU8('<!doctype html><html><head><title>About</title></head><body><main><h1>About</h1></main></body></html>'),
+  });
+  // A visitor, with no key: the manifest alone is what makes a bundle one of these.
+  const fd = new FormData();
+  fd.set('bundle', new Blob([bundle]), 'backend-pages.softn');
+  const pub = await s.api('POST', '/api/apps', { body: fd });
+  assert.equal(pub.status, 201, pub.text);
+  const slug = pub.json.app.slug;
+
+  const pageCache = path.join(s.dataDir, 'page-cache');
+  const cached = () => (fs.existsSync(pageCache) ? fs.readdirSync(pageCache).sort() : []);
+  assert.equal((await fetch(`${s.base}/play/${slug}`)).status, 200);
+  assert.equal((await fetch(`${s.base}/play/${slug}/about.html`)).status, 200);
+  const kept = cached();
+  assert.ok(kept.some((f) => f.startsWith('page-meta-')), 'a page that is a file in the bundle is still cached');
+
+  for (let i = 0; i < 6; i++) {
+    const res = await fetch(`${s.base}/play/${slug}/made-up/page-${i}`);
+    assert.equal(res.status, 200, 'the backend\'s pages are still served');
+    assert.match(await res.text(), /<meta name="robots" content="noindex,follow" \/>/);
+  }
+  assert.deepEqual(cached(), kept, 'an address the backend answers leaves no file behind');
+  // The file's page is read from the cache it had, and is the same page.
+  assert.match(await (await fetch(`${s.base}/play/${slug}/about.html`)).text(), /<title>About<\/title>/);
+  assert.deepEqual(cached(), kept);
+
+  // The sitemap is cached under a fingerprint of the catalogue; the one before a change is not kept.
+  const cacheDir = path.join(s.dataDir, 'cache');
+  const sitemaps = () => fs.readdirSync(cacheDir).filter((f) => /^sitemap-apps-.*\.xml$/.test(f));
+  assert.equal((await fetch(`${s.base}/sitemap-apps.xml`)).status, 200);
+  const first = sitemaps();
+  assert.equal(first.length, 1);
+  for (const name of ['Second Listing', 'Third Listing']) {
+    const added = await s.publish(name);
+    const xml = await (await fetch(`${s.base}/sitemap-apps.xml`)).text();
+    assert.match(xml, new RegExp(`<loc>${SITE}/app/${added.app.slug}</loc>`));
+    assert.equal(sitemaps().length, 1, 'one sitemap is kept, the current one');
+  }
+  assert.notDeepEqual(sitemaps(), first);
+  // And it is still the cached one that is served.
+  const again = await fetch(`${s.base}/sitemap-apps.xml`);
+  assert.equal(again.status, 200);
+  assert.match(await again.text(), new RegExp(`<loc>${SITE}/app/${slug}</loc>`));
+});

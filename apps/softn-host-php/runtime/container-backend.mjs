@@ -1627,6 +1627,34 @@ function htaccessGlobToRegExp(glob) {
   return new RegExp(`^${escaped}$`, 'i');
 }
 
+// Sections whose condition the host does not evaluate.
+const UNEVALUATED_HTACCESS_SECTIONS = new Set(['limit', 'limitexcept', 'if', 'elseif', 'else']);
+
+// A `<Name args>` or `</Name>` section line of an .htaccess: whether it closes the section,
+// the lower-cased name, and what sits between the name and the closing `>`.
+function parseHtaccessSectionTag(line) {
+  const m = /^<(\/?)([A-Za-z]+)([\s\S]*)$/.exec(line);
+  if (!m) return null;
+  return {closing: m[1] === '/', name: m[2].toLowerCase(), args: m[3].trim().replace(/>$/, '').trim()};
+}
+
+// The matcher for a <Files>/<FilesMatch> header: `<Files name>` takes a wildcard name,
+// `<FilesMatch regex>` and `<Files ~ regex>` a regular expression. Null when it does not
+// compile.
+function compileFilesBlockMatcher(name, args) {
+  const unquote = s => s.trim().replace(/^["']+|["']+$/g, '');
+  const tilde = name === 'files' && /^~\s/.test(args);
+  const pat = unquote(tilde ? args.slice(1) : args);
+  if (pat.length > 256) return null;
+  if (name === 'files' && !tilde) return htaccessGlobToRegExp(pat);
+  if (/\((?:[^()\\]*[*+?{][^()\\]*)\)[*+?{]/.test(pat)) return null;
+  try {
+    return new RegExp(pat, 'i');
+  } catch {
+    return null;
+  }
+}
+
 function isDeniedByHtaccess(vfs, targetPath) {
   const rel = normalizeVfsKey(targetPath);
   if (!rel) return false;
@@ -1643,42 +1671,41 @@ function isDeniedByHtaccess(vfs, targetPath) {
     const text = rawBuf.toString('utf8');
     if (text.length > 64 * 1024) continue;
     const lines = text.split(/\r?\n/);
-    let blockMatchers = null;
-    let blockDenied = false;
+    // The <Files>/<FilesMatch> block being read: its matcher and whether it denies. Being
+    // inside the block is kept apart from having a matcher, because a pattern that does not
+    // compile here (too long, or shaped like one that backtracks without end) still opens a
+    // block. Its lines must not be read as the directory's own: `Require all denied` under
+    // Drupal's stock <FilesMatch> would then refuse every request, the entry script
+    // included. Such a block denies nothing instead. What it would have named cannot be
+    // worked out, and the paths the host keeps private do not depend on .htaccess.
+    let block = null;
+    // How deep the line sits in sections whose condition is not evaluated here. Their lines
+    // are skipped for the same reason: a deny for some methods is not a deny for all.
+    let unevaluatedDepth = 0;
     for (const rawLine of lines) {
       const line = rawLine.trim();
       if (!line || line.startsWith('#')) continue;
-      const openMatch = /^<(FilesMatch|Files)\s+["']?([^"'>]+)["']?\s*>$/i.exec(line);
-      if (openMatch) {
-        const tag = openMatch[1].toLowerCase();
-        const pat = openMatch[2].trim();
-        blockDenied = false;
-        blockMatchers = null;
-        if (pat.length <= 256) {
-          if (tag === 'files') {
-            blockMatchers = htaccessGlobToRegExp(pat);
-          } else if (!/\((?:[^()\\]*[*+?{][^()\\]*)\)[*+?{]/.test(pat)) {
-            try {
-              blockMatchers = new RegExp(pat, 'i');
-            } catch {}
+      const tag = parseHtaccessSectionTag(line);
+      if (tag) {
+        if (UNEVALUATED_HTACCESS_SECTIONS.has(tag.name)) {
+          unevaluatedDepth = tag.closing ? Math.max(0, unevaluatedDepth - 1) : unevaluatedDepth + 1;
+        } else if (unevaluatedDepth > 0) {
+          // Skipped with the rest of the section.
+        } else if (tag.name === 'files' || tag.name === 'filesmatch') {
+          if (!tag.closing) {
+            block = {matcher: compileFilesBlockMatcher(tag.name, tag.args), denied: false};
+          } else {
+            if (block && block.denied && block.matcher && block.matcher.test(base)) return true;
+            block = null;
           }
         }
+        // <IfModule> and the like: the body applies as written.
         continue;
       }
-      if (/^<\/(?:FilesMatch|Files)\s*>$/i.test(line)) {
-        if (blockDenied && blockMatchers && blockMatchers.test(base)) {
-          return true;
-        }
-        blockMatchers = null;
-        blockDenied = false;
-        continue;
-      }
+      if (unevaluatedDepth > 0) continue;
       if (/^(?:Require\s+all\s+denied|Deny\s+from\s+all)\b/i.test(line)) {
-        if (blockMatchers) {
-          blockDenied = true;
-        } else {
-          return true;
-        }
+        if (!block) return true;
+        block.denied = true;
       }
     }
   }
@@ -2094,4 +2121,4 @@ export async function handleContainerRequest({root, bundle, data, manifest, conf
   }
 }
 
-export {PRIVATE_STATIC_BLOCK};
+export {PRIVATE_STATIC_BLOCK, isDeniedByHtaccess};

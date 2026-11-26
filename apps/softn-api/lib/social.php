@@ -75,11 +75,23 @@ final class Social
         return Config::limitKey($req->ip);
     }
 
+    /**
+     * How many voters an app keeps a row for: who voted, and what they gave,
+     * which is how a second rating from them changes their vote and is not
+     * another. Past this the one who voted longest ago is forgotten as each
+     * new voter comes. Their stars stay in the app's count, average and
+     * breakdown (Catalog::ratingStars), which are every vote there has been;
+     * the app no longer tells them what they gave, and a rating from them
+     * after that is a new vote. Without a bound a row was kept for every
+     * address that ever voted (Catalog::ratings says what that cost).
+     */
+    public const MAX_RATINGS = 2000;
+
     /** @return array<string, mixed> */
     public static function rating(Request $req, string $slug): array
     {
         $visitor = self::voter($req);
-        $stars=null;foreach(Catalog::doc($slug)['ratings'] as $r)if($r['visitor']===$visitor)$stars=$r['stars'];
+        $stars=null;foreach(Catalog::ratings($slug) as $r)if($r['visitor']===$visitor)$stars=$r['stars'];
         $row = Apps::row($slug);
         $count = (int) $row['rating_count'];
         return [
@@ -97,11 +109,11 @@ final class Social
         Apps::row($slug); // refused for an unpublished app before anything is written
         $visitor = self::voter($req);
         Db::rateLimit('rate', Config::limitKey($req->ip));
-        $doc=Catalog::doc($slug);$ratings=[];
-        foreach($doc['ratings'] as $r)if($r['visitor']!==$visitor)$ratings[]=$r;
-        $ratings[]=['slug'=>$slug,'visitor'=>$visitor,'stars'=>$stars,'created_at'=>time()];
-        $doc['ratings']=$ratings;$doc['app']['rating_sum']=array_sum(array_column($ratings,'stars'));$doc['app']['rating_count']=count($ratings);
-        Catalog::put($slug,$doc);
+        $tally=Catalog::ratingStars($slug);$ratings=[];
+        // The vote this one takes the place of is counted no longer.
+        foreach(Catalog::ratings($slug) as $r){if($r['visitor']!==$visitor)$ratings[]=$r;elseif($tally[$r['stars']]>0)$tally[$r['stars']]--;}
+        $ratings[]=['slug'=>$slug,'visitor'=>$visitor,'stars'=>$stars,'created_at'=>time()];$tally[$stars]++;
+        Catalog::putRatings($slug,array_slice($ratings,-self::MAX_RATINGS),$tally);
         return self::rating($req, $slug);
     }
 

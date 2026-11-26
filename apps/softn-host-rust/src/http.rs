@@ -1182,6 +1182,48 @@ async fn serve_safe_static_file(
     }
 }
 
+/// Whether a response header (lower-cased) is one a container backend may not set: the
+/// framing the host writes itself, what steers a server in front of it, the policies the
+/// host sets, and what a browser keeps for the whole origin rather than for the response.
+/// The PHP host withholds the same names (apps/softn-host-php/runtime/http.php).
+fn container_response_header_withheld(lower: &str) -> bool {
+    matches!(
+        lower,
+        "transfer-encoding"
+            | "connection"
+            | "content-length"
+            | "x-sendfile"
+            | "x-sendfile2"
+            | "x-lighttpd-send-file"
+            | "service-worker-allowed"
+            | "x-content-type-options"
+            | "x-frame-options"
+            | "referrer-policy"
+            | "strict-transport-security"
+            | "clear-site-data"
+            | "content-security-policy"
+            | "content-security-policy-report-only"
+            | "cross-origin-opener-policy"
+            | "cross-origin-embedder-policy"
+            | "cross-origin-resource-policy"
+            | "refresh"
+            // Kept by the browser for the origin, past this response and beyond this
+            // backend's paths: where reports of every request to the origin are sent, another
+            // server to reach it at, the hints sent with every request to it, and how its
+            // documents are grouped. Where tenants share an origin these would be one
+            // tenant's hold on the others' visitors.
+            | "nel"
+            | "report-to"
+            | "reporting-endpoints"
+            | "alt-svc"
+            | "origin-agent-cluster"
+            | "accept-ch"
+            | "critical-ch"
+    ) || lower.starts_with("x-accel-")
+        || lower.starts_with("x-litespeed-")
+        || lower.starts_with("access-control-")
+}
+
 /// Serve a v2 container request (static frontend asset OR ZIPP-sandboxed backend route).
 #[allow(clippy::too_many_arguments)]
 async fn serve_container_request(
@@ -1369,30 +1411,7 @@ async fn serve_container_request(
     let mut has_cache_control = false;
     for (k, mut v) in resp.headers {
         let lower = k.to_ascii_lowercase();
-        if matches!(
-            lower.as_str(),
-            "transfer-encoding"
-                | "connection"
-                | "content-length"
-                | "x-sendfile"
-                | "x-sendfile2"
-                | "x-lighttpd-send-file"
-                | "service-worker-allowed"
-                | "x-content-type-options"
-                | "x-frame-options"
-                | "referrer-policy"
-                | "strict-transport-security"
-                | "clear-site-data"
-                | "content-security-policy"
-                | "content-security-policy-report-only"
-                | "cross-origin-opener-policy"
-                | "cross-origin-embedder-policy"
-                | "cross-origin-resource-policy"
-                | "refresh"
-        ) || lower.starts_with("x-accel-")
-            || lower.starts_with("x-litespeed-")
-            || lower.starts_with("access-control-")
-        {
+        if container_response_header_withheld(&lower) {
             continue;
         }
         if lower == "set-cookie" {

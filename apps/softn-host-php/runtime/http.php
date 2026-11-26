@@ -265,6 +265,12 @@ if(isset($result['bodyRaw'])) {
             'strict-transport-security'=>true,'clear-site-data'=>true,
             'cross-origin-opener-policy'=>true,'cross-origin-embedder-policy'=>true,
             'cross-origin-resource-policy'=>true,'refresh'=>true,
+            // Kept by the browser for the whole origin, past this response: where reports of
+            // every request to it are sent, another server to reach it at, the hints sent
+            // with every request to it, how its documents are grouped. As on the Rust host
+            // (http.rs container_response_header_withheld).
+            'nel'=>true,'report-to'=>true,'reporting-endpoints'=>true,'alt-svc'=>true,
+            'origin-agent-cluster'=>true,'accept-ch'=>true,'critical-ch'=>true,
         ];
         foreach($result['headers'] as $pair) {
             if(!is_array($pair)||count($pair)<2)continue;

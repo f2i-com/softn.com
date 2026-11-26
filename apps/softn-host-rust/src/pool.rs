@@ -333,6 +333,7 @@ fn sync_sql(read: SyncRead) -> String {
 
 /// Query the first page of a collection's non-deleted records: at most
 /// [`MAX_COLLECTION_ROWS`], oldest received first. See [`read_collection_page`].
+#[cfg(test)]
 pub fn read_collection(
     conn: &rusqlite::Connection,
     collection: &str,
@@ -367,6 +368,7 @@ fn sync_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<SyncRecord> {
 /// `after` for the next. A record with no receipt time sorts as the empty
 /// string, in the cursor as in the order, so a page that ends among such
 /// records continues among them.
+#[cfg(test)]
 pub fn read_collection_page(
     conn: &rusqlite::Connection,
     collection: &str,
@@ -384,8 +386,27 @@ pub fn read_collection_page(
 /// The most fields a filter may name for it to be applied in the query.
 pub(crate) const MAX_FILTER_FIELDS: usize = 16;
 
+/// What [`visit_collection_where`] hands over, answered whole.
+#[cfg(test)]
+pub fn read_collection_where(
+    conn: &rusqlite::Connection,
+    collection: &str,
+    filter: &serde_json::Map<String, serde_json::Value>,
+    limit: i64,
+) -> Result<Vec<SyncRecord>, DbError> {
+    let mut records = Vec::new();
+    visit_collection_where(conn, collection, filter, limit, &mut |record| {
+        records.push(record);
+        true
+    })?;
+    Ok(records)
+}
+
 /// The first `limit` non-deleted records of a collection whose data has
-/// every field of `filter` with that value.
+/// every field of `filter` with that value, handed to `take` one at a time
+/// as SQLite reads them, until it answers false or there are no more (as
+/// [`visit_sync_records`] hands a pull's), so a caller with a size cap holds
+/// no more than it kept.
 ///
 /// This is what `db.query(collection, filter)` means, applied before the
 /// page is cut. Applied after it, as it was, a filtered query over a large
@@ -395,12 +416,13 @@ pub(crate) const MAX_FILTER_FIELDS: usize = 16;
 /// own filter to what comes back): a string by its text, a number by its
 /// value as a double, `true`, `false` and `null` by kind, and an object or
 /// an array matches nothing, as it never equals another.
-pub fn read_collection_where(
+pub fn visit_collection_where(
     conn: &rusqlite::Connection,
     collection: &str,
     filter: &serde_json::Map<String, serde_json::Value>,
     limit: i64,
-) -> Result<Vec<SyncRecord>, DbError> {
+    take: &mut dyn FnMut(SyncRecord) -> bool,
+) -> Result<(), DbError> {
     use rusqlite::types::Value as Sql;
     let mut sql = String::from(
         "SELECT id, collection, data, created_at, updated_at, deleted, server_received_at \
@@ -422,7 +444,7 @@ pub fn read_collection_where(
             serde_json::Value::Bool(true) => "type = 'true'".to_string(),
             serde_json::Value::Bool(false) => "type = 'false'".to_string(),
             serde_json::Value::Null => "type = 'null'".to_string(),
-            serde_json::Value::Array(_) | serde_json::Value::Object(_) => return Ok(Vec::new()),
+            serde_json::Value::Array(_) | serde_json::Value::Object(_) => return Ok(()),
         };
         // A key of an object is text and an index of an array an integer;
         // either is what a script names with a string. Data that is not
@@ -434,11 +456,9 @@ pub fn read_collection_where(
     }
     binds.push(Sql::Integer(limit));
     sql.push_str(&format!(" ORDER BY server_received_at ASC, id ASC LIMIT ?{}", binds.len()));
-    let records = conn
-        .prepare(&sql)?
-        .query_map(rusqlite::params_from_iter(binds), sync_record)?
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(records)
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(binds), sync_record)?;
+    take_rows(rows, take)
 }
 
 /// Say, at most once a minute, that a read stopped at its limit.

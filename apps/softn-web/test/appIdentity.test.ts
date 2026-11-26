@@ -438,4 +438,32 @@ describe('the description a cached app keeps', () => {
     const plain = await cache.cacheApp(bytes('plain'), { name: 'Plain', version: '1.0.0', description: 'Notes for one person' });
     expect(plain?.description).toBe('Notes for one person');
   });
+
+  it('keeps the hosted backend an open found, and lets go of it when a later open finds none', async () => {
+    // The address was only ever set. An app whose hosting had since been turned off, or that
+    // was opened to run here (?mode=local), was opened from Home against the old address.
+    const { db, table } = fakeIdb();
+    openDB.mockResolvedValue(db);
+    vi.stubGlobal('localStorage', fakeLocalStorage());
+    const cache = await freshCache();
+    const app = bytes('hosted');
+    const stored = () => [...table.values()][0];
+
+    const first = await cache.cacheApp(app, manifest('Desk'), undefined, 'desk', undefined, true, '/api/apps/desk/backend');
+    expect(first?.backendUrl).toBe('/api/apps/desk/backend');
+
+    // An open that did not ask (a file, the app opened again from Home): what is known is kept.
+    const reopened = await cache.cacheApp(app, manifest('Desk'));
+    expect(reopened?.backendUrl).toBe('/api/apps/desk/backend');
+
+    // The directory now says the app has no hosted backend: the record keeps none.
+    const local = await cache.cacheApp(app, manifest('Desk'), undefined, 'desk', undefined, true, null);
+    expect(local).not.toBeNull();
+    expect(local && 'backendUrl' in local).toBe(false);
+    expect('backendUrl' in stored()).toBe(false);
+
+    // And one found again later is kept again.
+    const again = await cache.cacheApp(app, manifest('Desk'), undefined, 'desk', undefined, true, '/api/apps/desk/backend');
+    expect(again?.backendUrl).toBe('/api/apps/desk/backend');
+  });
 });

@@ -1464,6 +1464,37 @@ describe('the text protocol parser', () => {
     expect(run.summary).not.toBe('The agent stopped without a summary.');
   });
 
+  it('reads a tag with attributes and no tool’s name as text, so the calls after it are still calls', () => {
+    // A tag closed where it opens, whose name is no tool's name: it opened a block that ran to the
+    // next call's end, and that call was lost in it ("missing a tool name").
+    const afterSelfClosing = parseTextToolCalls([
+      '<tool_call name="fs.list" prefix="ui/" />',
+      '<tool_call/>',
+      '<tool_call name="write_file">',
+      '{"path":"ui/a.ui","content":"<App />"}',
+      '</tool_call>',
+    ].join('\n'));
+    expect(afterSelfClosing.calls.map((call) => call.name)).toEqual(['write_file']);
+    expect(afterSelfClosing.calls[0].input).toMatchObject({ path: 'ui/a.ui', content: '<App />' });
+
+    // A file whose words mention a call's tag: counted as one nested inside the write, it kept the
+    // write open through its own closing tag, the file was written with the next call's markup in
+    // it, and `finish` never ran.
+    const mentioned = parseTextToolCalls([
+      '<tool_call name="write_file">',
+      '<arg name="path">notes.md</arg>',
+      '<arg name="content">Write <tool_call kind="x"> to call a tool.</arg>',
+      '</tool_call>',
+      '<tool_call name="finish"></tool_call>',
+    ].join('\n'));
+    expect(mentioned.calls.map((call) => call.name)).toEqual(['write_file', 'finish']);
+    expect(mentioned.calls[0].input).toMatchObject({ path: 'notes.md', content: 'Write <tool_call kind="x"> to call a tool.' });
+
+    // A call that names its tool after its other attributes is still a call, closed where it opens or not.
+    const anyOrder = parseTextToolCalls('<tool_call path="ui/main.ui" name="read_file" />\n<tool_call summary="done" name="finish"></tool_call>');
+    expect(anyOrder.calls.map((call) => call.name)).toEqual(['read_file', 'finish']);
+  });
+
   it('parses Qwen XML <tool_call><function=...> blocks and ignores leading <think> blocks', () => {
     const parsed = parseTextToolCalls([
       '<think>I might mention <tool_call name="delete_file"><arg name="path">index.html</arg></tool_call> while thinking.</think>',

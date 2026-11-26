@@ -68,7 +68,12 @@ export async function cacheApp(
   requestedCapabilities?: string[],
   /** These bytes came by a link. Remembered once seen: see CachedApp.linked. */
   linked?: boolean,
-  backendUrl?: string
+  /**
+   * Where the app's hosted backend is, as this open found it: an address, `null` when the
+   * directory said the app has none (or the person asked for it to run here), and nothing
+   * when this open did not ask (a file, an app opened again from Home).
+   */
+  backendUrl?: string | null
 ): Promise<CachedApp | null> {
   // The manifest is the bundle's, read as it came: a description written as
   // `{ "en": "…" }` was stored as that and blanked Home when it was drawn.
@@ -117,10 +122,15 @@ export async function cacheApp(
         lastOpened: Date.now(),
         icon: icon ?? existing.icon,
         directorySlug: directorySlug ?? existing.directorySlug,
-        backendUrl: backendUrl ?? existing.backendUrl,
         requestedCapabilities: requestedCapabilities ?? existing.requestedCapabilities,
         ...(linked || existing.linked ? { linked: true } : {}),
       };
+      // What this open found, when it asked: an address kept from an earlier open was never
+      // let go of, so an app whose hosting had since been turned off (or that was opened to
+      // run here) went on being opened from Home against a backend that was no longer there.
+      const hosted = backendUrl === undefined ? existing.backendUrl : backendUrl;
+      if (hosted) updated.backendUrl = hosted;
+      else delete updated.backendUrl;
       await store.put(updated);
       await tx.done;
       return updated;

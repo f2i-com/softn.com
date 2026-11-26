@@ -166,10 +166,53 @@ final class Catalog
         }
         return false;
     }
+    /** Where allocateDir puts a new app, under data/apps/: `<slug>` in the flat layout, by its category and subcategory in the other. */
+    private static function allocationPath(string $slug, string $category, ?string $subcategory): string {
+        if (!self::usesCategorizedLayout($category, $subcategory) || !self::validSlug($category)) return $slug;
+        return is_string($subcategory) && $subcategory !== '' && self::validSlug($subcategory) ? "$category/$subcategory/$slug" : "$category/$slug";
+    }
+    /**
+     * Whether a new app may be given `$slug` where allocateDir would put it.
+     * In the categorized layout an app's folder sits beside its category's
+     * subcategory folders, so a name one of those has is not an app's to
+     * take. Published as "Arcade" into games, an app was written into
+     * games/arcade/ itself: the next scan read that folder as the app, every
+     * app filed under it answered 404 with its slug free to publish again,
+     * and a purge of the newcomer deleted their folders with its own.
+     * `$subcategories` are the names the category's subcategories go by,
+     * with a folder yet or without (Categories::subcategorySlugs): taken
+     * early, one had the first app filed under it put inside the app that
+     * took it. Nor the folders an app keeps its runtime data in, which the
+     * scan passes over: an app named for one was listed for the request that
+     * published it and never again.
+     *
+     * @param array<string, true> $subcategories
+     */
+    public static function roomFor(string $slug, string $category, ?string $subcategory = null, array $subcategories = []): bool {
+        $rel = self::allocationPath($slug, $category, $subcategory);
+        // The flat layout: data/apps/<slug>, which hasFolder answers for.
+        return $rel === $slug || self::roomAt($rel, $slug, $category, $subcategories);
+    }
+    /** roomFor's answer for a place under `$category` that is already worked out: moveAppFolder files an app there too. */
+    private static function roomAt(string $rel, string $slug, string $category, array $subcategories): bool {
+        if (isset(self::APP_INTERNAL_DIRS[$slug])) return false;
+        if ($rel === "$category/$slug" && (isset($subcategories[$slug]) || isset(self::$folderCategories[$rel]))) return false;
+        return !file_exists(Config::dataDir() . "/apps/$rel");
+    }
     /** Allocate the on-disk folder path for a new app based on layout mode and category/subcategory. */
     public static function allocateDir(string $slug, string $category, ?string $subcategory = null): string {
         if (!self::validSlug($slug)) throw new ApiError(400, 'Invalid app folder name.');
         $root = Config::dataDir() . '/apps';
+        // The folder is made new, never taken over: one that is there is a
+        // subcategory's or another app's, and what the publish writes into it
+        // (and retires from it, when the write fails) would be theirs. Nor is
+        // an app filed inside an app's folder, where no scan looks for it.
+        // uniqueSlug has asked roomFor already; this is for a caller that did not.
+        $rel = self::allocationPath($slug, $category, $subcategory);
+        if (file_exists("$root/$rel")) throw new ApiError(409, 'A folder of that name is already where this app would be filed; publish it under another name.');
+        if ($rel !== $slug && (is_file("$root/$category/app.json") || ($rel !== "$category/$slug" && is_file("$root/$category/$subcategory/app.json")))) {
+            throw new ApiError(409, 'That category shares its folder with an app, so nothing can be filed under it; choose another category.');
+        }
         if (self::usesCategorizedLayout($category, $subcategory) && self::validSlug($category)) {
             self::$hasCategorizedTree = true;
             $catDir = "$root/$category";
@@ -203,6 +246,9 @@ final class Catalog
         $sub = (is_string($newSubcategory) && $newSubcategory !== '' && self::validSlug($newSubcategory)) ? $newSubcategory : null;
         $targetRel = $sub !== null ? "$newCategory/$sub/$slug" : "$newCategory/$slug";
         if ($targetRel === $currentRel) return;
+        // A move has no more room than a publish: an app called "Puzzle",
+        // refiled under games, is not put where that subcategory's folder goes.
+        if (!self::roomAt($targetRel, $slug, $newCategory, class_exists('Categories', false) ? Categories::subcategorySlugs($newCategory) : [])) return;
 
         $root = Config::dataDir() . '/apps';
         $from = "$root/$currentRel";
@@ -771,7 +817,7 @@ final class Catalog
         foreach(['versions','comments','ratings','runsDaily'] as $field)if(!array_is_list($doc[$field]))$fail();
         foreach($doc['versions'] as $v)if(!is_array($v)||!is_int($v['version']??null)||$v['version']<1||!is_string($v['file']??null)||basename($v['file'])!==$v['file']||str_contains($v['file'],'\\'))$fail();
         foreach($doc['comments'] as $c)if(!self::validComment($c))$fail();
-        foreach($doc['ratings'] as $r)if(!is_array($r)||!is_string($r['visitor']??null)||!in_array($r['stars']??null,[1,2,3,4,5],true))$fail();
+        foreach($doc['ratings'] as $r)if(!self::validRating($r))$fail();
         foreach($doc['runsDaily'] as $r)if(!is_array($r)||!is_int($r['day']??null)||!is_int($r['count']??null)||$r['count']<0||!is_int($r['visitors']??0)||($r['visitors']??0)<0)$fail();
     }
     private static function validComment(mixed $c): bool {
@@ -805,6 +851,64 @@ final class Catalog
         $doc = self::doc($slug);
         $doc['comments'] = [];
         $doc['app']['comments'] = count(array_filter($comments, fn($c) => !$c['hidden']));
+        self::put($slug, $doc);
+    }
+    private static function validRating(mixed $r): bool {
+        return is_array($r) && is_string($r['visitor'] ?? null) && in_array($r['stars'] ?? null, [1, 2, 3, 4, 5], true);
+    }
+    /**
+     * An app's rating rows, one a voter, the latest to vote last. A file of
+     * their own beside app.json, as its comments are and for the reason
+     * comments() gives: app.json kept a row for every voter there had ever
+     * been, with no end to them, and one routed IPv6 /48 is 65,536 voters,
+     * eleven megabytes that every request decoded and every play, comment
+     * and rating wrote again, under the catalogue lock. An app whose rows are
+     * still in its app.json (written before) has them read from there until
+     * its next rating moves them out. They are read from there first: they
+     * are every vote, and a ratings.json beside them is one that a request
+     * did not live to finish.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public static function ratings(string $slug): array {
+        $doc = self::doc($slug);
+        $path = self::path($slug) . '/ratings.json';
+        if ($doc['ratings'] || !is_file($path)) return $doc['ratings'];
+        $rows = self::readJson($path);
+        if (!array_is_list($rows)) throw new ApiError(503, "Invalid ratings.json in $slug. The file has been preserved.");
+        foreach ($rows as $r) if (!self::validRating($r)) throw new ApiError(503, "Invalid rating in $slug/ratings.json. The file has been preserved.");
+        return $rows;
+    }
+    /**
+     * How many voters gave an app each number of stars, 1 to 5: what its
+     * count, its average and its breakdown come to. Kept with the app
+     * (`rating_stars`) from the rating that moves its rows out of app.json,
+     * because from then on the rows are not every vote (Social::MAX_RATINGS);
+     * counted from the rows until then, as it always was, so an app rated
+     * before shows the numbers it showed.
+     *
+     * @return array<int, int>
+     */
+    public static function ratingStars(string $slug): array {
+        $kept = self::doc($slug)['app']['rating_stars'] ?? null;
+        if (is_array($kept) && array_is_list($kept) && count($kept) === 5 && array_filter($kept, static fn($n) => !is_int($n) || $n < 0) === []) return array_combine([1, 2, 3, 4, 5], $kept);
+        $stars = [1 => 0, 2 => 0, 3 => 0, 4 => 0, 5 => 0];
+        foreach (self::ratings($slug) as $r) $stars[$r['stars']]++;
+        return $stars;
+    }
+    /**
+     * Store an app's rating rows, and what its votes come to: `$stars` as
+     * ratingStars gives them. Written before app.json gives up its own copy.
+     *
+     * @param array<int, int> $stars
+     */
+    public static function putRatings(string $slug, array $ratings, array $stars): void {
+        self::writeJson(self::path($slug) . '/ratings.json', array_values($ratings));
+        $doc = self::doc($slug);
+        $sum = 0;
+        foreach ($stars as $n => $voters) $sum += $n * $voters;
+        $doc['ratings'] = [];
+        $doc['app'] = array_replace($doc['app'], ['rating_stars' => array_values($stars), 'rating_sum' => $sum, 'rating_count' => array_sum($stars)]);
         self::put($slug, $doc);
     }
     public static function validPlayUrl(mixed $url): bool {

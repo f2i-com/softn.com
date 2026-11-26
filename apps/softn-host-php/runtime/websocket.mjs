@@ -8,7 +8,7 @@ import {WebSocketServer} from './vendor/ws/wrapper.mjs';
 import {clientKey} from './client-key.mjs';
 export {clientKey};
 
-export function createLiveServer({upstream,origins,routes,intervalMs=5000,maxClients=8,maxPerClient=2,fetchImpl=fetch}) {
+export function createLiveServer({upstream,origins,routes,intervalMs=5000,maxClients=8,maxPerClient=2,maxUpgradesPerMinute=12,fetchImpl=fetch,now=Date.now}) {
   const target=new URL(upstream);
   if(target.username||target.password||target.search||target.hash||target.pathname!=='/'||!(target.protocol==='https:'||target.protocol==='http:'&&['127.0.0.1','[::1]','localhost'].includes(target.hostname)))throw Error('Use an HTTPS origin or loopback HTTP upstream');
   // A GET with no transaction declared, or the Rust host's `none`, is a read:
@@ -22,9 +22,25 @@ export function createLiveServer({upstream,origins,routes,intervalMs=5000,maxCli
   const sockets=new WebSocketServer({noServer:true,maxPayload:8192,perMessageDeflate:false});
   // Connections per visitor, so one visitor cannot hold every slot.
   const perClient=new Map();
+  // Connections a visitor opened this minute. Each may subscribe once and is polled for at
+  // once, and upstream every poll comes from the bridge's own address: a visitor who
+  // connected, subscribed with any token and connected again, over and over, spent the
+  // host's allowance for that address, and every other visitor's updates were refused with
+  // it. No more than 1024 visitors are counted at a time; a new one past that waits for a
+  // minute to end.
+  const opened=new Map();
+  const admitted=key=>{
+    const at=now();let seen=opened.get(key);
+    if(!seen||at-seen.since>=60000){
+      if(!seen&&opened.size>=1024){for(const [k,v] of opened)if(at-v.since>=60000)opened.delete(k);if(opened.size>=1024)return false;}
+      opened.set(key,seen={since:at,count:0});
+    }
+    return ++seen.count<=maxUpgradesPerMinute;
+  };
   server.on('upgrade',(req,socket,head)=>{
     const key=clientKey(req);
     if(req.url!=='/events'||!allowed.has(req.headers.origin)||sockets.clients.size>=maxClients||(perClient.get(key)??0)>=maxPerClient){socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');return;}
+    if(!admitted(key)){socket.end('HTTP/1.1 429 Too Many Requests\r\nRetry-After: 60\r\nConnection: close\r\n\r\n');return;}
     perClient.set(key,(perClient.get(key)??0)+1);
     let counted=true;
     const release=()=>{if(!counted)return;counted=false;const n=(perClient.get(key)??1)-1;if(n>0)perClient.set(key,n);else perClient.delete(key);};

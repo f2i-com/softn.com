@@ -160,6 +160,47 @@ test('comments are a file of their own, bounded, and their ids come from the seq
   assert.equal(f.run({op:'doc',slug:'chatty'}).app.comments,499);
  }finally{f.close();}
 });
+test('rating rows are a file of their own and bounded, and a vote still counts once its row has gone',skip,()=>{
+ // A row was kept in app.json for every voter there had ever been. One routed
+ // IPv6 /48 is 65,536 of them: eleven megabytes every request decoded, and
+ // every play, comment and rating wrote again, under the catalogue lock.
+ const f=fixture();try{
+  f.add('starry');f.run({op:'list'});
+  const appJson=path.join(f.root,'apps/starry/app.json'),ratingsJson=path.join(f.root,'apps/starry/ratings.json');
+  // Votes from before, in app.json: read from there, and the app's numbers are what they were.
+  const doc=JSON.parse(fs.readFileSync(appJson));
+  doc.ratings=[{slug:'starry',visitor:'early-a',stars:5,created_at:100},{slug:'starry',visitor:'early-b',stars:2,created_at:101}];doc.app.rating_sum=7;doc.app.rating_count=2;
+  fs.writeFileSync(appJson,JSON.stringify(doc));
+  let d=f.run({op:'detail',slug:'starry'});
+  assert.deepEqual(d.rating,{average:3.5,count:2});assert.deepEqual(d.ratingBreakdown,{1:0,2:1,3:0,4:0,5:1});
+  assert.ok(!fs.existsSync(ratingsJson),'reading moves nothing');
+  // The next rating moves them out, and changes nothing but its own vote.
+  assert.deepEqual(f.run({op:'rate',slug:'starry',ip:'10.3.0.1',fields:{stars:4}}),{average:3.67,count:3,mine:4});
+  assert.deepEqual(JSON.parse(fs.readFileSync(appJson)).ratings,[],'moved out of app.json');
+  assert.deepEqual(JSON.parse(fs.readFileSync(ratingsJson)).map(r=>r.stars),[5,2,4]);
+  assert.deepEqual(f.run({op:'detail',slug:'starry'}).ratingBreakdown,{1:0,2:1,3:0,4:1,5:1});
+  // The same voter again changes their vote and adds none.
+  assert.deepEqual(f.run({op:'rate',slug:'starry',ip:'10.3.0.1',fields:{stars:1}}),{average:2.67,count:3,mine:1});
+  assert.deepEqual(f.run({op:'detail',slug:'starry'}).ratingBreakdown,{1:1,2:1,3:0,4:0,5:1});
+
+  // Full: the one who voted longest ago is forgotten as each new voter comes, and what they gave is still counted.
+  const full=JSON.parse(fs.readFileSync(appJson));
+  full.app.rating_stars=[0,0,0,0,2000];full.app.rating_sum=10000;full.app.rating_count=2000;
+  fs.writeFileSync(appJson,JSON.stringify(full));
+  fs.writeFileSync(ratingsJson,JSON.stringify(Array.from({length:2000},(_,i)=>({slug:'starry',visitor:`v${i}`,stars:5,created_at:200+i}))));
+  assert.deepEqual(f.run({op:'rate',slug:'starry',ip:'10.3.0.2',fields:{stars:2}}),{average:5,count:2001,mine:2});
+  const kept=JSON.parse(fs.readFileSync(ratingsJson));
+  assert.equal(kept.length,2000);assert.equal(kept[0].visitor,'v1');assert.equal(kept.at(-1).stars,2);
+  d=f.run({op:'detail',slug:'starry'});
+  assert.deepEqual(d.rating,{average:5,count:2001});assert.deepEqual(d.ratingBreakdown,{1:0,2:1,3:0,4:0,5:2000});
+  const app=JSON.parse(fs.readFileSync(appJson)).app;
+  assert.equal(app.rating_sum,10002);assert.equal(app.rating_count,2001);
+  assert.ok(fs.statSync(appJson).size<4096,`app.json stays small: ${fs.statSync(appJson).size} bytes`);
+  // A vote that is changed is taken from what it was, whoever else has been forgotten since.
+  assert.deepEqual(f.run({op:'rate',slug:'starry',ip:'10.3.0.2',fields:{stars:1}}),{average:5,count:2001,mine:1});
+  assert.deepEqual(f.run({op:'detail',slug:'starry'}).ratingBreakdown,{1:1,2:0,3:0,4:0,5:2000});
+ }finally{f.close();}
+});
 test('a killed lock holder releases the OS lock without damaging JSON',skip,async()=>{
  const f=fixture();try{
   f.add('survivor');f.run({op:'list'});const p=f.start({op:'lock'});

@@ -317,7 +317,10 @@ final class Prerender
         }
 
         // Only cache resolved pages so arbitrary 404 probes cannot flood page-cache/.
-        if ($cacheFile !== null && $result['found']) {
+        // Nor a page the bundle leaves to its backend: every address that is no
+        // file's is one of those and is "found", so each one asked for was a
+        // file of its own here, and nothing but the manifest was read to make it.
+        if ($cacheFile !== null && $result['found'] && $result['sourceType'] !== 'ssr-backend') {
             self::writeCacheFile($cacheDir, $cacheFile, ['v' => self::VERSION] + $result);
         }
 

@@ -489,6 +489,10 @@ function addApp({ bundlePath, dataDir, flags }) {
       remixes: existing?.app?.remixes ?? 0,
       rating_sum: existing?.app?.rating_sum ?? 0,
       rating_count: existing?.app?.rating_count ?? 0,
+      // The tally of every vote by its stars, once the app's ratings are in ratings.json
+      // (softn-api's Catalog): left out, the count and the average went back to what the
+      // voters still remembered there are.
+      ...(Array.isArray(existing?.app?.rating_stars) ? { rating_stars: existing.app.rating_stars } : {}),
       comments: existing?.app?.comments ?? 0,
       size: info.size,
       hidden: 0,

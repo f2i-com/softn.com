@@ -224,6 +224,117 @@ test('moving folders on disk or PATCHing category/subcategory updates layout, ap
   }
 });
 
+test('an app named after a subcategory folder gets a name of its own, and the folder and the apps in it stay', skip, async () => {
+  // Published as "Arcade" into games, the bundle and app.json were written
+  // into games/arcade/ itself. The next scan read that folder as the app:
+  // every app filed under it answered 404, its slug could be published
+  // again, and purging the squatter deleted the apps' folders with it.
+  const s = await server({
+    prefix: 'softn-cat-squat-',
+    config: { seedDemos: false, folderLayout: 'categorized' },
+  });
+  try {
+    const arcadeDir = path.join(s.dataDir, 'apps', 'games', 'arcade');
+    await s.publish('Star Hopper', {}, { category: 'games', subcategory: 'arcade' });
+    assert.ok(fs.existsSync(path.join(arcadeDir, 'star-hopper', 'v1.softn')));
+
+    // A visitor, with no key: the name of the subcategory, filed straight into its category.
+    const publishAs = async (name, fields = {}) => {
+      const fd = new FormData();
+      fd.append('bundle', new Blob([makeBundle(name)]), 'app.softn');
+      fd.append('name', name);
+      for (const [k, v] of Object.entries(fields)) fd.append(k, v);
+      return s.api('POST', '/api/apps', { body: fd });
+    };
+    const squat = await publishAs('Arcade', { category: 'games' });
+    assert.equal(squat.status, 201, squat.text);
+    assert.notEqual(squat.json.app.slug, 'arcade', 'the subcategory folder is not an app\'s to take');
+    assert.equal(squat.json.app.category, 'games');
+    assert.equal(squat.json.app.subcategory, null);
+    assert.ok(!fs.existsSync(path.join(arcadeDir, 'app.json')), 'nothing was written into the subcategory folder');
+    assert.ok(!fs.existsSync(path.join(arcadeDir, 'v1.softn')));
+    assert.ok(fs.existsSync(path.join(s.dataDir, 'apps', 'games', squat.json.app.slug, 'v1.softn')));
+
+    // The next request scans the tree again: the subcategory and its app are where they were.
+    assert.equal((await s.api('GET', '/api/apps/star-hopper')).status, 200);
+    const inArcade = (await s.api('GET', '/api/apps?category=games&subcategory=arcade')).json;
+    assert.deepEqual(inArcade.apps.map((a) => a.slug), ['star-hopper']);
+    const games = (await s.api('GET', '/api/categories')).json.categories.find((c) => c.id === 'games');
+    assert.equal(games.subcategories.find((sub) => sub.slug === 'arcade').apps, 1);
+
+    // A subcategory the site starts with, before it has a folder: its name is kept for it too,
+    // or the first app filed under it would be put inside the app that took it.
+    assert.ok(!fs.existsSync(path.join(s.dataDir, 'apps', 'games', 'puzzle')));
+    const early = await publishAs('Puzzle', { category: 'games' });
+    assert.equal(early.status, 201, early.text);
+    assert.notEqual(early.json.app.slug, 'puzzle');
+    const filed = await publishAs('Sliding Tiles', { category: 'games', subcategory: 'puzzle' });
+    assert.equal(filed.status, 201, filed.text);
+    assert.equal((await s.api('GET', '/api/apps/sliding-tiles')).json.app.subcategory, 'puzzle');
+
+    // The folders an app's own runtime data goes in are passed over by the scan, so no app is named for one.
+    const runtime = await publishAs('Backend Data', { category: 'games' });
+    assert.equal(runtime.status, 201, runtime.text);
+    assert.notEqual(runtime.json.app.slug, 'backend-data');
+    assert.equal((await s.api('GET', `/api/apps/${runtime.json.app.slug}`)).status, 200);
+
+    // Purging the app that asked for the name removes that app's folder and no other.
+    const purged = await s.api('DELETE', `/api/apps/${squat.json.app.slug}?purge=1`, { headers: { 'X-Admin-Key': s.adminKey } });
+    assert.equal(purged.status, 204, purged.text);
+    assert.ok(fs.existsSync(path.join(arcadeDir, 'star-hopper', 'v1.softn')), 'the apps filed under the subcategory are untouched');
+    assert.equal((await s.api('GET', '/api/apps/star-hopper')).status, 200);
+
+    // The same name elsewhere is no one's folder, and is free.
+    const elsewhere = await publishAs('Retro', { category: 'tools' });
+    assert.equal(elsewhere.status, 201, elsewhere.text);
+    assert.equal(elsewhere.json.app.slug, 'retro');
+
+    // Refiled under games by its owner, that app is not moved to where the subcategory's folder goes.
+    assert.ok(!fs.existsSync(path.join(s.dataDir, 'apps', 'games', 'retro')));
+    const refiled = await s.api('PATCH', '/api/apps/retro', { body: { category: 'games' }, headers: { 'X-Edit-Key': elsewhere.json.editKey } });
+    assert.equal(refiled.status, 200, refiled.text);
+    assert.ok(!fs.existsSync(path.join(s.dataDir, 'apps', 'games', 'retro')), 'the subcategory\'s name is still its own');
+    assert.ok(fs.existsSync(path.join(s.dataDir, 'apps', 'tools', 'retro', 'v1.softn')));
+    assert.equal((await s.api('GET', '/api/apps/retro')).status, 200);
+  } finally {
+    await s.stop();
+  }
+});
+
+test('a legacy category id takes a subcategory its category has, and makes none', skip, async () => {
+  // `story` and `strategy` moved under games. Whatever subcategory was sent
+  // beside one was taken as written: a folder and a listed, approved
+  // subcategory of that name, with none of what a suggestion is held to.
+  const s = await server({
+    prefix: 'softn-cat-alias-',
+    config: { seedDemos: false, folderLayout: 'categorized' },
+  });
+  try {
+    const alone = await s.publish('Lantern Tale', {}, { category: 'story' });
+    assert.deepEqual([alone.app.category, alone.app.subcategory], ['games', 'story']);
+    // Another of games' subcategories, by its slug or by its name.
+    const bySlug = await s.publish('Maze Tale', {}, { category: 'story', subcategory: 'puzzle' });
+    assert.deepEqual([bySlug.app.category, bySlug.app.subcategory], ['games', 'puzzle']);
+    const byName = await s.publish('Card Tale', {}, { category: 'strategy', subcategory: 'Retro & Tabletop' });
+    assert.deepEqual([byName.app.category, byName.app.subcategory], ['games', 'retro']);
+
+    // A visitor, with no key, and a subcategory games does not have: the app goes where the id moved.
+    const fd = new FormData();
+    fd.append('bundle', new Blob([makeBundle('Shelf Tale')]), 'app.softn');
+    fd.append('category', 'strategy');
+    fd.append('subcategory', 'A Shelf Of My Own');
+    const made = await s.api('POST', '/api/apps', { body: fd });
+    assert.equal(made.status, 201, made.text);
+    assert.deepEqual([made.json.app.category, made.json.app.subcategory], ['games', 'strategy']);
+    assert.ok(!fs.existsSync(path.join(s.dataDir, 'apps', 'games', 'a-shelf-of-my-own')), 'no folder was made for it');
+    assert.ok(fs.existsSync(path.join(s.dataDir, 'apps', 'games', 'strategy', 'shelf-tale', 'v1.softn')));
+    const games = (await s.api('GET', '/api/categories')).json.categories.find((c) => c.id === 'games');
+    assert.ok(!games.subcategories.some((sub) => sub.slug === 'a-shelf-of-my-own'), 'and no subcategory is listed');
+  } finally {
+    await s.stop();
+  }
+});
+
 test('backup.php export, verify, and restore round-trips nested category/subcategory directories', skip, async () => {
   const s = await server({
     prefix: 'softn-nested-backup-',

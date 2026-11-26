@@ -1109,8 +1109,13 @@ impl SyncManager {
                     pull.chunk.push(record);
                     !full_chunk
                 });
+                // A read that failed part way is refused like the pool error above, for the
+                // client to ask again. What it had read is not sent: as the collection's
+                // last message, with no `more`, it told the client it had everything.
                 if let Err(e) = read {
                     tracing::warn!("Failed to read collection '{}' for a sync pull: {}", collection, e);
+                    pull.next_collection();
+                    return Some(ServerMessage::pull_refused(format!("Could not read collection: {}", collection), vec![collection], true));
                 }
             }
             drop(conn);

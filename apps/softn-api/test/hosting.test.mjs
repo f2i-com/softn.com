@@ -16,7 +16,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
-import { HAVE_PHP, skip, copyDir, freePort, waitFor } from './helpers/harness.mjs';
+import { HAVE_PHP, skip, copyDir, freePort, waitFor, startServer, makeBundle } from './helpers/harness.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const apiDir = path.resolve(here, '..');
@@ -53,14 +53,14 @@ async function api(method, route, { body, headers = {}, raw } = {}) {
   return { status: res.status, json, text, headers: res.headers };
 }
 
-function makePhpContainerBundle(name) {
+function makePhpContainerBundle(name, version = '1.0.0') {
   return zipSync({
     'manifest.json': strToU8(
       JSON.stringify({
         engine: 2,
         id: `test.${name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
         name,
-        version: '1.0.0',
+        version,
         description: `${name} full-stack PHP + SQLite container`,
         main: 'index.html',
         backend: {
@@ -329,6 +329,98 @@ test(
   }
 );
 
+test('the bundle a hosted backend was extracted into is kept while its version is still in use, and pruned once it is not', skip, async () => {
+  // The folder a version is extracted into was pruned by its age since the
+  // extraction: the first request for the next version removed it under a
+  // request that was still running the one before, which answered 502.
+  const pub = await api('POST', '/api/apps', {
+    headers: { 'X-Admin-Key': adminKey },
+    body: { name: 'Rolling Ledger', category: 'business', hosting: 'hybrid', bundleBase64: Buffer.from(makePhpContainerBundle('Rolling Ledger')).toString('base64') },
+  });
+  assert.equal(pub.status, 201, JSON.stringify(pub.json));
+  const slug = pub.json.app.slug;
+  const cacheRoot = path.join(root, 'data', 'apps', slug, 'backend-cache');
+  const extracted = () => fs.readdirSync(cacheRoot).filter((n) => /^v\d+-[0-9a-f]{12}$/.test(n)).map((n) => n.split('-')[0]).sort();
+  const tenMinutesAgo = (version) => {
+    const name = fs.readdirSync(cacheRoot).find((n) => n.startsWith(`${version}-`));
+    const then = new Date(Date.now() - 600_000);
+    fs.utimesSync(path.join(cacheRoot, name), then, then);
+  };
+  // Whatever the sandbox answers (it may not be installed here): the bundle is extracted before it runs.
+  const call = () => api('GET', `/api/apps/${slug}/backend/api/items`);
+  const publishNext = async (version) => {
+    const next = await api('POST', `/api/apps/${slug}/versions`, {
+      headers: { 'X-Admin-Key': adminKey },
+      body: { bundleBase64: Buffer.from(makePhpContainerBundle('Rolling Ledger', version)).toString('base64') },
+    });
+    assert.equal(next.status, 201, next.text);
+  };
+
+  await call();
+  assert.deepEqual(extracted(), ['v1']);
+  // Extracted ten minutes ago, and a request uses it now.
+  tenMinutesAgo('v1');
+  await call();
+  await publishNext('1.0.1');
+  await call();
+  assert.deepEqual(extracted(), ['v1', 'v2'], 'version 1 was in use a moment ago, and a request may still be running it');
+
+  // Unused for ten minutes, it goes with the first request for the version after.
+  tenMinutesAgo('v1');
+  await publishNext('1.0.2');
+  await call();
+  assert.deepEqual(extracted(), ['v2', 'v3']);
+});
+
+test(
+  'a hosted backend cannot set what a browser keeps for the whole origin: reporting, alternative services, client hints, pins',
+  { skip: (!HAVE_PHP || !hasPhpWasm) && 'PHP CLI or zipp-php.wasm missing' },
+  async () => {
+    // Sent by one app's backend, each of these is kept by the browser for the
+    // directory's origin: its pages and every other app's, long after the response.
+    const originWide = {
+      NEL: '{"report_to":"spy","max_age":31536000,"include_subdomains":true}',
+      'Report-To': '{"group":"spy","max_age":31536000,"endpoints":[{"url":"https://spy.example/r"}]}',
+      'Reporting-Endpoints': 'spy="https://spy.example/r"',
+      'Alt-Svc': 'h3="spy.example:443"; ma=31536000; persist=1',
+      'Accept-CH': 'Sec-CH-UA-Full-Version-List, Sec-CH-UA-Model',
+      'Critical-CH': 'Sec-CH-UA-Model',
+      'Origin-Agent-Cluster': '?0',
+      'Cross-Origin-Opener-Policy-Report-Only': 'same-origin; report-to="spy"',
+      'Cross-Origin-Embedder-Policy-Report-Only': 'require-corp; report-to="spy"',
+      'Expect-CT': 'max-age=31536000, enforce',
+      'Public-Key-Pins': 'pin-sha256="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="; max-age=31536000',
+      'Public-Key-Pins-Report-Only': 'pin-sha256="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="; report-uri="https://spy.example/r"',
+    };
+    const lines = Object.entries(originWide).map(([name, value]) => `header(${JSON.stringify(`${name}: ${value}`).replaceAll('$', '\\$')});`);
+    const bundle = zipSync({
+      'manifest.json': strToU8(
+        JSON.stringify({
+          engine: 2,
+          id: 'test.header-setter',
+          name: 'Header Setter',
+          version: '1.0.0',
+          description: 'A backend that sets headers',
+          main: 'index.html',
+          backend: { runtime: 'php', entry: 'server/index.php', mode: 'api', routes: ['/api/'] },
+        })
+      ),
+      'index.html': strToU8('<!doctype html><html><body><h1>Header Setter</h1></body></html>'),
+      'server/index.php': strToU8(`<?php\nheader('Content-Type: application/json; charset=utf-8');\nheader('X-App-Note: kept');\n${lines.join('\n')}\necho json_encode(['ok' => true]);\n`),
+    });
+    const pub = await api('POST', '/api/apps', {
+      headers: { 'X-Admin-Key': adminKey },
+      body: { name: 'Header Setter', category: 'tools', hosting: 'server', bundleBase64: Buffer.from(bundle).toString('base64') },
+    });
+    assert.equal(pub.status, 201, JSON.stringify(pub.json));
+    const res = await api('GET', `/api/apps/${pub.json.app.slug}/backend/api/ping`);
+    assert.equal(res.status, 200, res.text);
+    assert.deepEqual(res.json, { ok: true });
+    assert.equal(res.headers.get('x-app-note'), 'kept', 'a header of the app\'s own is passed on');
+    for (const name of Object.keys(originWide)) assert.equal(res.headers.get(name), null, `${name} is not passed on`);
+  }
+);
+
 test('public publishing is browser-only by default; server hosting can only be enabled via app.json or allowPublicServerHosting config', skip, async () => {
   const bundle = makePhpContainerBundle('Client Only App');
 
@@ -379,6 +471,58 @@ test('public publishing is browser-only by default; server hosting can only be e
   assert.equal(detail.status, 200);
   assert.equal(detail.json.app.hosting.mode, 'hybrid');
   assert.equal(detail.json.app.hosting.serverHosted, true);
+});
+
+test('a publisher\'s custom backendUrl is taken only by a directory that knows its own address', skip, async () => {
+  // Which origin is the site's own was read from the request that set the
+  // URL. Sent to the server's IP address or another of its names, a URL on
+  // the site's real name passed as somebody else's, and the app was pointed
+  // at another app's backend there: a visitor who opened it on the real name
+  // had its frontend speaking to that backend as themselves.
+  const unset = await startServer({ prefix: 'softn-hosting-no-origin-', config: { allowPublicServerHosting: true } });
+  const known = await startServer({ prefix: 'softn-hosting-origin-', config: { allowPublicServerHosting: true, siteOrigin: 'https://directory.example' } });
+  try {
+    const publish = (s, name, backendUrl, headers = {}) => {
+      const fd = new FormData();
+      fd.append('bundle', new Blob([makeBundle(name)]), 'app.softn');
+      fd.append('name', name);
+      fd.append('hosting', 'server');
+      fd.append('backendUrl', backendUrl);
+      return s.api('POST', '/api/apps', { body: fd, headers });
+    };
+
+    // The test's server is reached as 127.0.0.1, which is not the name its visitors use.
+    for (const url of ['https://directory.example/api/apps/victim/backend', 'https://directory.example']) {
+      const refused = await publish(unset, 'Borrowed Backend', url);
+      assert.equal(refused.status, 403, refused.text);
+      assert.match(refused.json.error, /siteOrigin/);
+    }
+    assert.equal((await unset.api('GET', '/api/apps')).json.total, 0, 'nothing was published');
+    // Nor by a change to an app already there.
+    const fd = new FormData();
+    fd.append('bundle', new Blob([makeBundle('Plain App')]), 'app.softn');
+    const plain = await unset.api('POST', '/api/apps', { body: fd });
+    assert.equal(plain.status, 201, plain.text);
+    const patched = await unset.api('PATCH', `/api/apps/${plain.json.app.slug}`, {
+      headers: { 'X-Edit-Key': plain.json.editKey },
+      body: { backendUrl: 'https://directory.example/api/apps/victim/backend', hosting: 'server' },
+    });
+    assert.equal(patched.status, 403, patched.text);
+    // The site owner still sets one.
+    const byOwner = await publish(unset, 'Owner Backend', 'https://backend.example/api', { 'X-Admin-Key': unset.adminKey });
+    assert.equal(byOwner.status, 201, byOwner.text);
+    assert.equal(byOwner.json.app.hosting.backendUrl, 'https://backend.example/api');
+
+    // Where the address is known, a backend elsewhere is a publisher's to name, and the site's own is not.
+    const elsewhere = await publish(known, 'Own Server', 'https://backend.example/api');
+    assert.equal(elsewhere.status, 201, elsewhere.text);
+    assert.equal(elsewhere.json.app.hosting.backendUrl, 'https://backend.example/api');
+    const own = await publish(known, 'Borrowed Backend', 'https://directory.example/api/apps/victim/backend');
+    assert.equal(own.status, 403, own.text);
+  } finally {
+    unset.stop();
+    known.stop();
+  }
 });
 
 test('source endpoint exposes PHP, Rust, SQL, and streams images/audio/video safely via /source/file with Range support', skip, async () => {

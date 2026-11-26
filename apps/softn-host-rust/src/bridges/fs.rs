@@ -55,6 +55,9 @@ const MAX_SANDBOX_ENTRIES: usize = 4096;
 const MAX_LIST_DIR_ENTRIES: usize = 10_000;
 const MAX_PATH_BYTES: usize = 1024;
 const MAX_PATH_DEPTH: usize = 32;
+/// The longest name the common filesystems take. A longer one fails only when it is tried, by
+/// which time `create_dir_all` has made the directories above it.
+const MAX_PATH_SEGMENT_BYTES: usize = 255;
 
 #[derive(Default)]
 struct FsUsageState {
@@ -167,6 +170,9 @@ impl NativeFsBridge {
                         let seg = s.to_string_lossy();
                         if seg.contains(':') || is_windows_reserved_name(&seg) {
                             return Err("Reserved or invalid path segment rejected".into());
+                        }
+                        if seg.len() > MAX_PATH_SEGMENT_BYTES {
+                            return Err("Path segment exceeds maximum length".into());
                         }
                     }
                     Component::CurDir => {}
@@ -355,7 +361,12 @@ impl FsBridge for NativeFsBridge {
         if next_total > MAX_SANDBOX_TOTAL_BYTES {
             return Err("Sandbox total storage quota exceeded".into());
         }
-        self.ensure_parent(&resolved)?;
+        // Some of the directories may have been made before the one that failed: count
+        // again next time, as `mkdir` does, or they are never held against the entry quota.
+        if let Err(e) = self.ensure_parent(&resolved) {
+            usage_guard.cached = None;
+            return Err(e);
+        }
         let mut opts = std::fs::OpenOptions::new();
         opts.write(true).create(true).truncate(true);
         let mut file = match open_nofollow(&mut opts, &resolved) {
@@ -408,7 +419,10 @@ impl FsBridge for NativeFsBridge {
         if next_total > MAX_SANDBOX_TOTAL_BYTES {
             return Err("Sandbox total storage quota exceeded".into());
         }
-        self.ensure_parent(&resolved)?;
+        if let Err(e) = self.ensure_parent(&resolved) {
+            usage_guard.cached = None;
+            return Err(e);
+        }
         let mut opts = std::fs::OpenOptions::new();
         opts.create(true).append(true);
         let mut file = match open_nofollow(&mut opts, &resolved) {
@@ -531,6 +545,52 @@ mod tests {
             assert!(!fs.exists(bad), "{bad} exists");
         }
         assert!(!dir.parent().unwrap().join("escape.txt").exists());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The bytes and entries the quota believes the sandbox holds.
+    fn counted(fs: &NativeFsBridge) -> Option<(u64, usize)> {
+        fs.quota.state.lock().unwrap().cached
+    }
+
+    /// A name no filesystem takes is refused before the directories above it are made. It
+    /// used to fail in `create_dir_all`, after them, and they were never counted: a script
+    /// could make directories without end under a quota of 4,096 entries.
+    #[test]
+    fn a_name_too_long_to_make_is_refused_before_the_directories_above_it() {
+        let dir = sandbox("long");
+        let mut fs = NativeFsBridge::new(dir.clone());
+        let long = "x".repeat(256);
+        for path in [format!("made/{long}/f.txt"), format!("made/sub/{long}")] {
+            assert!(fs.write_file(&path, "no").is_err());
+            assert!(fs.append_file(&path, "no").is_err());
+            assert!(fs.mkdir(&path).is_err());
+            assert!(!fs.exists(&path));
+        }
+        assert!(!dir.join("made").exists());
+        fs.write_file("made/f.txt", "kept").unwrap();
+        assert_eq!(counted(&fs), Some((4, 2)));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// When making a file's directories fails part way, the ones made are counted: the usage
+    /// is read from the disk again, as after a failed `mkdir`. Windows has names that are
+    /// well-formed paths and still cannot be made, which is how this fails there.
+    #[cfg(windows)]
+    #[test]
+    fn directories_made_before_a_write_fails_are_counted() {
+        let dir = sandbox("partial");
+        let mut fs = NativeFsBridge::new(dir.clone());
+        fs.write_file("first.txt", "1").unwrap();
+        assert_eq!(counted(&fs), Some((1, 1)));
+        assert!(fs.write_file("made/a*b/f.txt", "no").is_err());
+        assert!(dir.join("made").is_dir());
+        assert_eq!(counted(&fs), None);
+        assert!(fs.append_file("more/a*b/f.txt", "no").is_err());
+        assert!(dir.join("more").is_dir());
+        assert_eq!(counted(&fs), None);
+        fs.write_file("second.txt", "2").unwrap();
+        assert_eq!(counted(&fs), Some((2, 4)));
         std::fs::remove_dir_all(&dir).ok();
     }
 }

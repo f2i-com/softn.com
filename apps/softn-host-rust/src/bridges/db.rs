@@ -81,27 +81,46 @@ fn json_byte_size(val: &serde_json::Value) -> usize {
     c.0
 }
 
-fn collect_bounded_records(records: Vec<pool::SyncRecord>) -> Result<Vec<DbRecord>, String> {
-    let mut out = Vec::with_capacity(records.len());
-    let mut total_bytes = 0usize;
-    for r in records {
+/// What a `db.query` has read so far. The read hands it one record at a time and stops at the
+/// first that takes the result past [`MAX_BRIDGE_QUERY_BYTES`], so the host holds no more
+/// than the cap and that record. The whole page used to be read and parsed before its size
+/// was added up: ten thousand records of a megabyte each, in a call the VM's own limits do
+/// not see.
+#[derive(Default)]
+struct BoundedRecords {
+    records: Vec<DbRecord>,
+    total_bytes: usize,
+    over: bool,
+}
+
+impl BoundedRecords {
+    /// Keeps `r` and answers whether the read should go on.
+    fn take(&mut self, r: pool::SyncRecord) -> bool {
         let approx = r.id.len() + r.collection.len() + r.created_at.len() + r.updated_at.len() + json_byte_size(&r.data) + 64;
-        total_bytes = total_bytes.saturating_add(approx);
-        if total_bytes > MAX_BRIDGE_QUERY_BYTES {
-            return Err(format!(
-                "db.query exceeded maximum result size ({} bytes)",
-                MAX_BRIDGE_QUERY_BYTES
-            ));
+        self.total_bytes = self.total_bytes.saturating_add(approx);
+        if self.total_bytes > MAX_BRIDGE_QUERY_BYTES {
+            self.over = true;
+            return false;
         }
-        out.push(DbRecord {
+        self.records.push(DbRecord {
             id: r.id,
             collection: r.collection,
             data: r.data,
             created_at: r.created_at,
             updated_at: r.updated_at,
         });
+        true
     }
-    Ok(out)
+
+    fn finish(self) -> Result<Vec<DbRecord>, String> {
+        if self.over {
+            return Err(format!(
+                "db.query exceeded maximum result size ({} bytes)",
+                MAX_BRIDGE_QUERY_BYTES
+            ));
+        }
+        Ok(self.records)
+    }
 }
 
 impl DbBridge for NativeDbBridge {
@@ -110,23 +129,27 @@ impl DbBridge for NativeDbBridge {
             return self.query(collection);
         }
         let conn = self.db.read()?;
-        let records = pool::read_collection_where(&conn, collection, filter, pool::MAX_COLLECTION_ROWS)
+        let mut found = BoundedRecords::default();
+        pool::visit_collection_where(&conn, collection, filter, pool::MAX_COLLECTION_ROWS, &mut |record| found.take(record))
             .map_err(|e| format!("db.query failed: {}", e))?;
-        if records.len() as i64 >= pool::MAX_COLLECTION_ROWS {
+        if found.records.len() as i64 >= pool::MAX_COLLECTION_ROWS {
             pool::warn_capped("db.query with a filter", collection, pool::MAX_COLLECTION_ROWS);
         }
-        collect_bounded_records(records)
+        found.finish()
     }
 
     fn query(&self, collection: &str) -> Result<Vec<DbRecord>, String> {
         // Use read pool — concurrent with other reads and writes
         let conn = self.db.read()?;
-        let records = pool::read_collection(&conn, collection)
-            .map_err(|e| format!("db.query failed: {}", e))?;
-        if records.len() as i64 >= pool::MAX_COLLECTION_ROWS {
+        let mut found = BoundedRecords::default();
+        pool::visit_sync_records(&conn, collection, pool::SyncFrom::Page { after: None }, pool::MAX_COLLECTION_ROWS, &mut |record| {
+            found.take(record)
+        })
+        .map_err(|e| format!("db.query failed: {}", e))?;
+        if found.records.len() as i64 >= pool::MAX_COLLECTION_ROWS {
             pool::warn_capped("db.query", collection, pool::MAX_COLLECTION_ROWS);
         }
-        collect_bounded_records(records)
+        found.finish()
     }
 
     fn create(&mut self, collection: &str, data: &str) -> Result<DbRecord, String> {
@@ -281,6 +304,52 @@ mod tests {
         assert!(bridge.get("admin", &admin.id).unwrap().is_some());
         bridge.hard_delete("admin", &admin.id).unwrap();
         assert!(bridge.get("admin", &admin.id).unwrap().is_none());
+    }
+
+    /// `db.query` stops reading at the record that takes it past its size
+    /// cap: it read and parsed the whole page, up to ten thousand records,
+    /// before it added anything up.
+    #[test]
+    fn query_stops_reading_at_its_size_cap() {
+        let dir = crate::test_dirs::temp_path("softn-db-bridge", "");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("xdb.sqlite");
+        let db = ServerDb::new(xdb::create_shared_db(path.clone()).unwrap(), &path, 2).unwrap();
+        let mut bridge = NativeDbBridge::new(db);
+        // Twenty records of a megabyte: sixteen fit under the cap.
+        let body = "x".repeat(1_000_000);
+        for _ in 0..20 {
+            bridge.create("big", &format!(r#"{{"kind":"blob","body":"{body}"}}"#)).unwrap();
+        }
+        bridge.create("small", r#"{"kind":"blob"}"#).unwrap();
+        let filter = serde_json::json!({"kind": "blob"});
+        let filter = filter.as_object().unwrap();
+
+        let over = format!("db.query exceeded maximum result size ({MAX_BRIDGE_QUERY_BYTES} bytes)");
+        assert_eq!(bridge.query("big").unwrap_err(), over);
+        assert_eq!(bridge.query_where("big", filter).unwrap_err(), over);
+        assert_eq!(bridge.query("small").unwrap().len(), 1);
+        assert_eq!(bridge.query_where("small", filter).unwrap().len(), 1);
+
+        // Both reads hand over the seventeenth record and no more.
+        let conn = bridge.db.read().unwrap();
+        let mut handed = 0;
+        let mut found = BoundedRecords::default();
+        pool::visit_sync_records(&conn, "big", pool::SyncFrom::Page { after: None }, pool::MAX_COLLECTION_ROWS, &mut |record| {
+            handed += 1;
+            found.take(record)
+        })
+        .unwrap();
+        assert_eq!((handed, found.records.len(), found.over), (17, 16, true));
+        let mut handed = 0;
+        let mut found = BoundedRecords::default();
+        pool::visit_collection_where(&conn, "big", filter, pool::MAX_COLLECTION_ROWS, &mut |record| {
+            handed += 1;
+            found.take(record)
+        })
+        .unwrap();
+        assert_eq!((handed, found.records.len(), found.over), (17, 16, true));
+        assert!(found.finish().is_err());
     }
 
     /// What a route's (or a hook's) `db.*` writes reaches every connected

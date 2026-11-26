@@ -12,8 +12,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::LazyLock;
 use tauri::State;
 use xdb::tauri::{
-    CreateRecordPayload, NetworkStatus, RecoveryOutcome, SharedDbManager, SharedNetworkControl,
-    SharedNetworkState, UpdateRecordPayload,
+    CreateRecordPayload, NetworkStatus, PendingRestore, RecoveryOutcome, SharedDbManager,
+    SharedNetworkControl, SharedNetworkState, UpdateRecordPayload,
 };
 use xdb::{CollectionImport, DbStats, ImportSummary, Record};
 
@@ -259,6 +259,22 @@ fn sanitize_error_paths(mut message: String, base_dir: &Path, control: &SharedNe
     message
 }
 
+/// The id XDB gives the shared database: the only one it journals a restore for, and the id
+/// it puts on a record it could not read (`xdb::tauri::PendingRestore`).
+const SHARED_DATABASE: &str = "_default";
+
+/// Whether the app open now may see and resolve `pending`.
+///
+/// Only a readable record that names an app's own database is kept to that app. No bundle is
+/// bound to the shared database, so a record held to the bound app's id could be neither
+/// shown nor cleared when it was one XDB could not read, or one a restore of the shared
+/// database left behind: a truncated `pending-restore.json` kept synchronization paused for
+/// good, with nothing to say why. XDB shows an unreadable record in the status and lets it
+/// be acknowledged with `recover_restore` "discard" and nothing else, which changes no data.
+fn pending_restore_is_reachable(pending: &PendingRestore, bound: Option<&str>) -> bool {
+    pending.unreadable.is_some() || pending.app_id == SHARED_DATABASE || bound == Some(pending.app_id.as_str())
+}
+
 /// Network status with OS paths inside `pending_restore` redacted to basenames
 /// and any pending restore belonging to another app hidden from the open bundle.
 #[tauri::command]
@@ -268,22 +284,21 @@ pub async fn get_network_status(
     identity: State<'_, DataIdentity>,
 ) -> Result<NetworkStatus, String> {
     let mut status = xdb::tauri::get_network_status(network, control).await?;
-    let bound = identity.bound();
-    if let Some(pending) = status.pending_restore.as_ref() {
-        let same_app = pending.unreadable.is_none()
-            && bound.as_deref() == Some(pending.app_id.as_str());
-        if !same_app {
-            status.pending_restore = None;
-        }
-    }
-    if let Some(pending) = status.pending_restore.as_mut() {
-        pending.backup_path = redact_path(pending.backup_path.take());
-        pending.source_path = redact_path(pending.source_path.take());
-        if pending.unreadable.is_some() {
-            pending.unreadable = Some("pending-restore record is unreadable".to_string());
-        }
-    }
+    status.pending_restore = shown_pending_restore(status.pending_restore.take(), identity.bound().as_deref());
     Ok(status)
+}
+
+/// A pending restore as the page is shown it: not at all when it is another app's, and
+/// otherwise with its OS paths cut to their names and the reason it is unreadable, which
+/// holds one, left out.
+fn shown_pending_restore(pending: Option<PendingRestore>, bound: Option<&str>) -> Option<PendingRestore> {
+    let mut pending = pending.filter(|pending| pending_restore_is_reachable(pending, bound))?;
+    pending.backup_path = redact_path(pending.backup_path.take());
+    pending.source_path = redact_path(pending.source_path.take());
+    if pending.unreadable.is_some() {
+        pending.unreadable = Some("pending-restore record is unreadable".to_string());
+    }
+    Some(pending)
 }
 
 fn require_pending_restore_owner(
@@ -295,7 +310,7 @@ fn require_pending_restore_owner(
     }
     let bound = identity.bound();
     if let Some(pending) = control.pending_restore() {
-        if pending.unreadable.is_some() || bound.as_deref() != Some(pending.app_id.as_str()) {
+        if !pending_restore_is_reachable(&pending, bound.as_deref()) {
             return Err("Refused: pending restore belongs to another app".to_string());
         }
     }
@@ -342,4 +357,140 @@ pub async fn reconcile_network(
         return Err("Refused: no app is open".to_string());
     }
     xdb::tauri::reconcile_network(network).await
+}
+
+#[cfg(test)]
+mod tests {
+    //! A restore XDB left pending, as these commands decide who may see and resolve it.
+    //! No app is built here, not even a mock one: on Windows a test executable of this
+    //! library that builds one does not start (build.rs gives the manifest it would need to
+    //! the tests in tests/ only), so the commands' rules are called without their `State`.
+    use super::*;
+    use crate::data_identity::{bundle_digest, Step};
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use xdb::tauri::RecoveryStep;
+
+    const APP: &[u8] = b"the app open now";
+
+    /// Removed when the test ends, after the database opened in it has been let go.
+    struct Folder(PathBuf);
+    impl Drop for Folder {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// A runtime started on a data folder that holds `record` as its `pending-restore.json`.
+    /// Fields are dropped in the order they are declared: the folder last.
+    struct Runtime {
+        control: SharedNetworkControl,
+        identity: DataIdentity,
+        dir: Folder,
+    }
+
+    impl Runtime {
+        fn starting_with(name: &str, record: &str) -> Runtime {
+            let dir = std::env::temp_dir().join(format!("softn-loader-pending-{}-{}", name, std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(dir.join("apps").join(SHARED_DATABASE)).unwrap();
+            std::fs::write(PendingRestore::path(&dir), record).unwrap();
+            let shared = xdb::create_shared_db(dir.join("apps").join(SHARED_DATABASE).join("data.sqlite")).unwrap();
+            let control = Arc::new(xdb::NetworkControl::new(dir.clone(), xdb::NetworkSettings::default(), shared));
+            Runtime { control, identity: DataIdentity::open(&dir), dir: Folder(dir) }
+        }
+
+        /// The person opens the app and it starts on its own data.
+        fn open_app(&self) {
+            let path = self.dir.0.join("app.softn");
+            self.identity.bundle_chosen(&path);
+            self.identity.bundle_read(&path, APP);
+            let digest = bundle_digest(APP);
+            assert!(matches!(self.identity.prepare_bind(&digest, &digest, None, None, true), Ok(Step::Settled(()))));
+        }
+
+        /// What `resume_sync` and `recover_restore` ask before they do anything.
+        fn may_resolve(&self) -> Result<(), String> {
+            require_pending_restore_owner(&self.control, &self.identity)
+        }
+
+        /// What `get_network_status` shows of the record.
+        fn shown(&self) -> Option<PendingRestore> {
+            shown_pending_restore(self.control.pending_restore(), self.identity.bound().as_deref())
+        }
+
+        fn record_is_kept(&self) -> bool {
+            PendingRestore::path(&self.dir.0).exists()
+        }
+    }
+
+    fn record(app_id: &str, backup: Option<&std::path::Path>) -> String {
+        serde_json::json!({
+            "app_id": app_id, "scope": "local", "started_at": "2026-01-01T00:00:00Z", "applied": true,
+            "backup_path": backup.map(|path| path.to_string_lossy()),
+        })
+        .to_string()
+    }
+
+    /// A record cut short as it was written holds synchronization, as XDB means it to, and
+    /// XDB's way out of it is open: the status shows it and "discard" acknowledges it. It was
+    /// hidden and every way of resolving it refused, since no bundle is bound to the shared
+    /// database's id, which XDB puts on a record it cannot read.
+    #[test]
+    fn an_unreadable_pending_restore_is_shown_and_can_be_discarded() {
+        let runtime = Runtime::starting_with("unreadable", r#"{"app_id":"_default","scope":"loc"#);
+        assert!(runtime.control.gate().is_paused());
+        // Nobody resolves anything before an app is open.
+        assert_eq!(runtime.may_resolve().unwrap_err(), "Refused: no app is open");
+        runtime.open_app();
+        assert_eq!(runtime.may_resolve(), Ok(()));
+
+        // Shown, without the reason XDB gives, which names the data folder.
+        let folder = runtime.dir.0.to_string_lossy().into_owned();
+        assert!(runtime.control.pending_restore().unwrap().unreadable.unwrap().contains(&folder));
+        let shown = runtime.shown().expect("the record is in the status");
+        assert_eq!(shown.unreadable.as_deref(), Some("pending-restore record is unreadable"));
+
+        // XDB's own rules are what is left: such a record is not resumed, rolled back or
+        // completed, and its refusal reaches the page without the folder's path.
+        let refusal = runtime.control.resume_decision(false).unwrap_err();
+        let said = sanitize_error_paths(refusal, &runtime.dir.0, &runtime.control);
+        assert!(said.contains("cannot be read") && !said.contains(&folder), "{said}");
+        assert!(runtime.control.recovery_plan("rollback").is_err());
+        assert!(runtime.control.recovery_plan("complete").is_err());
+        assert_eq!(runtime.control.recovery_plan("discard"), Ok(RecoveryStep::Discard));
+        runtime.control.resolve_restore().unwrap();
+        assert!(!runtime.record_is_kept() && !runtime.control.gate().is_paused());
+        assert_eq!(runtime.shown(), None);
+    }
+
+    /// A restore of the shared database that an earlier version left unresolved is the
+    /// runtime's own, not another app's: it is shown, paths cut to their names, and resumed.
+    #[test]
+    fn a_restore_of_the_shared_database_is_shown_and_can_be_resumed() {
+        let backup = std::env::temp_dir().join("softn-loader-pending-elsewhere").join("data.sqlite.backup");
+        let runtime = Runtime::starting_with("shared", &record(SHARED_DATABASE, Some(&backup)));
+        runtime.open_app();
+        assert_eq!(runtime.may_resolve(), Ok(()));
+        let shown = runtime.shown().expect("the record is in the status");
+        assert_eq!((shown.app_id.as_str(), shown.backup_path.as_deref()), (SHARED_DATABASE, Some("data.sqlite.backup")));
+        assert!(runtime.control.resume_decision(false).unwrap().is_some());
+    }
+
+    /// A readable record that names an app's own database stays that app's: hidden from any
+    /// other, which can neither resume it nor recover it.
+    #[test]
+    fn a_restore_of_an_apps_own_database_is_kept_to_that_app() {
+        let other = format!("bundle-{}", "b".repeat(64));
+        let runtime = Runtime::starting_with("other-app", &record(&other, None));
+        runtime.open_app();
+        assert_eq!(runtime.may_resolve().unwrap_err(), "Refused: pending restore belongs to another app");
+        assert_eq!(runtime.shown(), None);
+        assert!(runtime.record_is_kept() && runtime.control.gate().is_paused());
+
+        let runtime = Runtime::starting_with("own-app", &record(&bundle_digest(APP), None));
+        runtime.open_app();
+        assert_eq!(runtime.may_resolve(), Ok(()));
+        assert_eq!(runtime.shown().map(|shown| shown.app_id), Some(bundle_digest(APP)));
+    }
 }

@@ -930,7 +930,8 @@ function handle(string $handler, array $args, Request $req): Response
                 'hidden' => count(array_filter($rows,fn($a)=>(bool)$a['hidden'])),
                 'versions' => array_sum(array_map(fn($d)=>count($d['versions']),$docs)),
                 'comments' => array_sum(array_map(fn($a)=>count(Catalog::comments((string)$a['slug'])),$rows)),
-                'ratings' => array_sum(array_map(fn($d)=>count($d['ratings']),$docs)),
+                // The votes there have been, which an app's rows no longer are (Social::MAX_RATINGS).
+                'ratings' => array_sum(array_column($rows,'rating_count')),
                 'runs' => array_sum(array_column($rows,'runs')),
                 'suggestedCategories' => array_values(array_filter(Categories::all(true), fn($c) => $c['status'] === 'suggested')),
                 'dataDir' => Config::dataDir(),

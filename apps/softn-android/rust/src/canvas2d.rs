@@ -689,14 +689,14 @@ pub(crate) fn sanitize_svg_for_raster(raw: &[u8]) -> Option<Vec<u8>> {
             }
             let attr_name = &text[attr_start..i];
             let attr_local = attr_name.rsplit(':').next().unwrap_or(attr_name);
-            let pre_eq = i;
             while i < len && bytes[i].is_ascii_whitespace() {
                 i += 1;
             }
             if i >= len || bytes[i] != b'=' {
-                // Boolean/valueless attribute (invalid in strict XML, fail closed if unexpected)
-                out.push_str(&text[attr_start..pre_eq]);
-                continue;
+                // XML has no valueless attributes, so fail closed. Emitting the bare name would
+                // drop the whitespace consumed above and glue it to the next attribute: `h ref="…"`
+                // was judged as `h` and `ref` but written out as an `href` nobody validated.
+                return None;
             }
             i += 1; // '='
             while i < len && bytes[i].is_ascii_whitespace() {
@@ -2090,5 +2090,23 @@ mod tests {
         assert!(!clean.contains("/etc/passwd"));
         assert!(!clean.contains("secret.png"));
         assert!(!clean.contains("evil.test"));
+    }
+
+    #[test]
+    fn sanitize_svg_for_raster_rejects_valueless_attributes() {
+        // `h` and `ref` are judged as two harmless attributes; written back without the
+        // whitespace between them they would be one unvalidated `href` to a local file.
+        let split_href = br#"<svg xmlns="http://www.w3.org/2000/svg"><image h ref="/x.png"/></svg>"#;
+        assert!(sanitize_svg_for_raster(split_href).is_none());
+        let split_xlink = b"<svg><image xlink:h\nref='/data/user/0/app/files/photo.png'/></svg>";
+        assert!(sanitize_svg_for_raster(split_xlink).is_none());
+
+        // A plain valueless attribute is not XML either, wherever it sits in the tag.
+        assert!(sanitize_svg_for_raster(b"<svg hidden><rect/></svg>").is_none());
+        assert!(sanitize_svg_for_raster(b"<svg><rect width=\"1\" hidden/></svg>").is_none());
+
+        // Well-formed attributes still pass through byte for byte.
+        let ok = br#"<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height='2'/></svg>"#;
+        assert_eq!(sanitize_svg_for_raster(ok).as_deref(), Some(&ok[..]));
     }
 }

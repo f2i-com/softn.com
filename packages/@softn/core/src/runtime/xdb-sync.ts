@@ -37,7 +37,7 @@ import { XDBService, getDefaultSignaling, _setSyncModuleRef, STAMP_AHEAD_LIMIT_M
 import type { XDBRecord } from '../types';
 import { deepEqual } from './vm-state';
 import { debug } from './debug';
-import { isRoomCollectionList } from './sync-room-security';
+import { MAX_OPEN_SYNC_ROOMS_PER_APP, MAX_SYNC_ROOM_NAME_LEN, isRoomCollectionList, isSyncRoomName } from './sync-room-security';
 
 // ── Types ─────────────────────────────────────────────────
 
@@ -146,6 +146,14 @@ export class XDBSyncAdapter {
   private awarenessWhilePaused: Record<string, unknown> | null = null;
   /** The collections the room carries (options.collections), or null for every one. */
   private readonly carried: Set<string> | null;
+  /** Bytes of updates the document took from the room (or its cache) since its size was last measured. */
+  private takenSinceMeasured = 0;
+  private sizeGuard: ((update: Uint8Array, origin: unknown) => void) | null = null;
+  /**
+   * Told when the room's document has grown past what a room holds (MAX_ROOM_DOC_BYTES): the
+   * room is to be left and its cache deleted. Set by whoever keeps the adapter (startSync).
+   */
+  onOvergrown: (() => void) | null = null;
 
   constructor(xdb: XDBService, options: XDBSyncOptions) {
     // A list that cannot be read refuses the room rather than carry everything.
@@ -153,6 +161,8 @@ export class XDBSyncAdapter {
     this.xdb = xdb;
     this.options = options;
     this.ydoc = new Y.Doc();
+    // Before the cache is opened, so what it loads is counted too.
+    this.watchSize();
 
     // Optional: IndexedDB persistence for offline CRDT cache
     if (options.persist !== false) {
@@ -166,6 +176,41 @@ export class XDBSyncAdapter {
   /** The document, for a host that wants to exchange updates itself (tests, relays). */
   get doc(): Y.Doc {
     return this.ydoc;
+  }
+
+  /**
+   * The document is held to a size. What reaches the store from a peer is bounded (the
+   * records a room carries, within the store's budget), but the document took every update
+   * a peer sent: maps the room does not carry, values that are no record. A peer of a shared
+   * room is anyone who knows its name, and one that kept sending grew the document, in memory
+   * and in the cache beside it, until the page died; opened again, the saved room loaded the
+   * same cache and died again.
+   *
+   * Measured only after another ROOM_MEASURE_EVERY_BYTES have come in from the room or its
+   * cache (never for this device's own writes, which the store's budget holds), so a room in
+   * ordinary use is measured rarely and a flood is caught within one measure of the bound.
+   */
+  private watchSize(): void {
+    this.sizeGuard = (update, origin) => {
+      // This device's own writes are made with no origin (transact).
+      if (origin === null || origin === undefined || this.closed) return;
+      this.takenSinceMeasured += update.byteLength;
+      if (this.takenSinceMeasured < ROOM_MEASURE_EVERY_BYTES) return;
+      this.takenSinceMeasured = 0;
+      let size = 0;
+      try {
+        size = Y.encodeStateAsUpdate(this.ydoc).byteLength;
+      } catch {
+        // A document too large to write out is too large.
+        size = Infinity;
+      }
+      if (size <= MAX_ROOM_DOC_BYTES) return;
+      const told = this.onOvergrown;
+      this.onOvergrown = null;
+      if (told) told();
+      else void this.destroy();
+    };
+    this.ydoc.on('update', this.sizeGuard);
   }
 
   /**
@@ -372,6 +417,10 @@ export class XDBSyncAdapter {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    if (this.sizeGuard) {
+      this.ydoc.off('update', this.sizeGuard);
+      this.sizeGuard = null;
+    }
     try {
       this.disconnect();
     } finally {
@@ -1087,6 +1136,11 @@ import { isAppShown, onAppActivity } from './sync-activity';
 /** Adapters, keyed by app scope and room together. */
 const syncAdapters = new Map<string, XDBSyncAdapter>();
 
+/** The most a room's document holds, written out: several times an app's own records with their history. */
+export const MAX_ROOM_DOC_BYTES = 32 * 1024 * 1024;
+/** How much comes in from a room between two measures of its document. */
+export const ROOM_MEASURE_EVERY_BYTES = 2 * 1024 * 1024;
+
 /**
  * The registry key for an app's room: a JSON tuple, so no app identifier or
  * room label can be spelled to collide with another pair.
@@ -1115,7 +1169,33 @@ export function startSync(options: XDBSyncOptions): XDBSyncAdapter {
     console.warn(`[XDB Sync] Room "${options.room}" already has an active sync adapter. Returning existing adapter — new options are ignored.`);
     return existing;
   }
+  // Held here too, for a caller that is not the script's own `db.startSync` (a saved room
+  // resumed after a reload): the name is written to the page's storage below as it is, and
+  // each open room is a peer connection and a kept copy of the app's records.
+  if (!isSyncRoomName(options.room)) {
+    throw new Error(`[XDB Sync] A room's name is 1 to ${MAX_SYNC_ROOM_NAME_LEN} characters.`);
+  }
+  let open = 0;
+  for (const openKey of syncAdapters.keys()) if (inScope(openKey, options.appId)) open++;
+  if (open >= MAX_OPEN_SYNC_ROOMS_PER_APP) {
+    throw new Error(`[XDB Sync] An app syncs at most ${MAX_OPEN_SYNC_ROOMS_PER_APP} rooms at a time; stop one before starting "${options.room.slice(0, 64)}".`);
+  }
   const adapter = new XDBSyncAdapter(getXDB(options.appId), options);
+  // A room whose document outgrew what a room holds is left for good: its cache deleted, and
+  // not the room the app goes back to after a reload, which would load it again.
+  adapter.onOvergrown = () => {
+    if (syncAdapters.get(key) === adapter) syncAdapters.delete(key);
+    try {
+      const savedKey = getSyncRoomKey(options.appId);
+      if (localStorage.getItem(savedKey) === options.room) localStorage.removeItem(savedKey);
+    } catch {
+      // localStorage may be unavailable in restricted contexts
+    }
+    console.error(
+      `[XDB Sync] Room "${options.room.slice(0, 64)}" was left and its saved copy deleted: what the room sent grew past what a room holds (${MAX_ROOM_DOC_BYTES / (1024 * 1024)} MB). The app's own records are untouched.`
+    );
+    void adapter.destroy();
+  };
   if (!isAppShown(options.appId)) adapter.pause();
   adapter.connect();
   syncAdapters.set(key, adapter);

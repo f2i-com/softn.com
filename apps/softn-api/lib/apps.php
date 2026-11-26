@@ -66,10 +66,15 @@ final class Apps
     /**
      * A slug no app has, or had: a retired one is never handed out again
      * (Catalog::retiredSlugs says why), except to the seeded demo that had it.
+     * Nor one that has no room where the app is to be filed, `$category` and
+     * `$subcategory` as resolvePair gave them: a subcategory's folder is not
+     * an app's to be written into (Catalog::roomFor).
      */
-    private static function uniqueSlug(string $base, bool $seed = false): string {
+    private static function uniqueSlug(string $base, string $category, ?string $subcategory, bool $seed = false): string {
         $rows = Catalog::all(); $retired = Catalog::retiredSlugs(); $slug=$base;
+        $subcategories = Categories::subcategorySlugs($category);
         $free = static fn(string $s): bool => !isset($rows[$s]) && !Catalog::hasFolder($s)
+            && Catalog::roomFor($s, $category, $subcategory, $subcategories)
             && (!isset($retired[$s]) || ($seed && ($retired[$s]['seed'] ?? false) === true));
         for ($n=2;$n<1000;$n++) { if ($free($slug)) return $slug; $slug=substr($base,0,44).'-'.$n; }
         // Past a thousand of one name (every name with no Latin letter in it is
@@ -246,7 +251,20 @@ final class Apps
             $targetOrigin = $normOrigin($parsedUrl);
             $selfOrigins = [];
             $siteOrigin = Pages::origin();
-            if ($siteOrigin !== null) $selfOrigins[] = $siteOrigin;
+            // Which origin is the site's own is `siteOrigin`'s to say, and not
+            // the request's: the publisher chooses the name the request is
+            // addressed to. Sent to the server's IP address, or to another
+            // name it answers to, a URL on the site's real name was no origin
+            // this knew, and an app could be pointed at
+            // https://<the site>/api/apps/<another app>/backend, or at the
+            // site itself. Opened on the real name, its frontend then spoke
+            // to that other app's backend as the visitor, cookies and all.
+            // No path makes such a URL safe to take (the app chooses the
+            // paths it asks for under it), so without `siteOrigin` none is.
+            if ($siteOrigin === null) {
+                throw new ApiError(403, 'A custom backendUrl needs this directory to know its own address first: the site owner sets siteOrigin in data/config.json, or sets the backendUrl with the admin key.');
+            }
+            $selfOrigins[] = $siteOrigin;
             foreach (['HTTP_ORIGIN', 'HTTP_HOST'] as $hdr) {
                 $raw = $_SERVER[$hdr] ?? '';
                 if (!is_string($raw) || trim($raw) === '') continue;
@@ -419,9 +437,9 @@ final class Apps
                 'bundle' => $verUrl,
             ];
         }
-        $breakdown = [1=>0,2=>0,3=>0,4=>0,5=>0];
-        foreach ($doc['ratings'] as $r) $breakdown[(int)$r['stars']]++;
-        $hiddenRemixes=json_decode((string)($row['hidden_remixes']??'[]'),true)?:[];
+        $breakdown = Catalog::ratingStars($slug);
+        // Read as text too: one saved as a number before hiddenRemixes kept them as text is still in its app.json.
+        $hiddenRemixes=array_map('strval',array_filter(json_decode((string)($row['hidden_remixes']??'[]'),true)?:[],'is_scalar'));
         $kids=array_values(array_filter($rows,fn($r)=>$r['parent_slug']===$slug && !$r['hidden'] && !in_array($r['slug'],$hiddenRemixes,true)));
         usort($kids,fn($a,$b)=>$b['created_at']<=>$a['created_at']);
         $remixes=[];
@@ -607,7 +625,7 @@ final class Apps
         self::refuseKeysOf($info, 'bundle');
         // A seed names its own slug: the id the site already uses for that demo.
         $wanted = is_string($opts['slug'] ?? null) && $opts['slug'] !== '' ? self::slugify($opts['slug']) : self::slugify($name);
-        $slug = self::uniqueSlug($wanted, $source === 'seed');
+        $slug = self::uniqueSlug($wanted, $category, $subcategory, $source === 'seed');
         // Everything that can refuse is settled before the folder exists: a
         // parent that is hidden is a 404 here, not after the bundle is on disk.
         $rootSlug = null;
@@ -1011,7 +1029,10 @@ final class Apps
             if (($rows[$child]['parent_slug'] ?? null) === $slug) $out[$child] = true;
         }
         if (count($out) > self::MAX_HIDDEN_REMIXES) throw new ApiError(400, 'At most ' . self::MAX_HIDDEN_REMIXES . ' remixes can be hidden.');
-        return array_keys($out);
+        // As text: PHP hands back a key that is all digits as a number, and a
+        // remix called "2048" was saved as one, which is no slug the page's
+        // list matches and no name this takes when the list is sent back.
+        return array_map('strval', array_keys($out));
     }
 
     /**
@@ -1509,18 +1530,24 @@ final class Categories
             if ($subText === '') $subText = trim($sPart);
         }
         if ($catText === '') return ['other', null];
-        if (($alias = self::legacyAlias($catText)) !== null) {
-            return [$alias[0], $subText !== '' ? (Apps::slugOf($subText) ?: $alias[1]) : $alias[1]];
-        }
+        // A legacy id is the subcategory it moved to, unless another of that
+        // category's is named with it: one there is, found as any other is
+        // below. Taken as written, whatever was sent beside `story` or
+        // `strategy` was a subcategory from then on, listed as approved: past
+        // the `suggested` status and the limits a suggestion is held to.
+        $alias = self::legacyAlias($catText);
+        if ($alias !== null && $subText === '') return $alias;
         $merged = self::merged();
-        $catSlug = Apps::slugOf($catText);
-        $catLower = mb_strtolower($catText);
-        $resolvedCat = 'other';
-        foreach ($merged as $r) {
-            if ($r['parent'] !== null || $r['status'] === 'hidden') continue;
-            if (($catSlug !== '' && $r['id'] === $catSlug) || mb_strtolower($r['name']) === $catLower) {
-                $resolvedCat = $r['id'];
-                break;
+        $resolvedCat = $alias !== null ? $alias[0] : 'other';
+        if ($alias === null) {
+            $catSlug = Apps::slugOf($catText);
+            $catLower = mb_strtolower($catText);
+            foreach ($merged as $r) {
+                if ($r['parent'] !== null || $r['status'] === 'hidden') continue;
+                if (($catSlug !== '' && $r['id'] === $catSlug) || mb_strtolower($r['name']) === $catLower) {
+                    $resolvedCat = $r['id'];
+                    break;
+                }
             }
         }
         if ($subText === '') return [$resolvedCat, null];
@@ -1535,7 +1562,20 @@ final class Categories
                 break;
             }
         }
-        return [$resolvedCat, $resolvedSub];
+        return [$resolvedCat, $resolvedSub ?? ($alias !== null ? $alias[1] : null)];
+    }
+
+    /**
+     * The names `$category`'s subcategories go by, the hidden ones too and
+     * whether or not a folder has been made for one yet: what an app filed
+     * straight into the category is not named (Catalog::roomFor).
+     *
+     * @return array<string, true>
+     */
+    public static function subcategorySlugs(string $category): array {
+        $out = [];
+        foreach (self::merged() as $r) if ($r['parent'] === $category) $out[(string) $r['slug']] = true;
+        return $out;
     }
 
     /** A main category id the visitor gave, or 'other'. */

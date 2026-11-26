@@ -127,6 +127,9 @@ export interface WorkerRuntimeOptions {
 /** Host calls resolved per chain before it is judged a runaway. */
 const MAX_HOST_CALL_ROUNDS = 256;
 
+/** The requests that are an entry into the script: each is answered with what the entry did (an EntryResult). */
+const ENTRY_REQUESTS: ReadonlySet<string> = new Set(['call_fn', 'resolve_host_call', 'dispatch_event']);
+
 /** What a lost db mutation is reported as: the record or collection it named. */
 function mutationKey(m: DBMutation): string {
   switch (m.type) {
@@ -185,6 +188,15 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
    * and the worker is left alone.
    */
   private static readonly RPC_TIMEOUT_MS = 15000;
+  /**
+   * Requests whose caller was told to stop waiting (the soft deadline) while the script went
+   * on: an entry into the script, whose answer is still the app's when it comes. It carries
+   * what the entry did (records written, storage, state, the calls and timers it queued), and
+   * the worker has already counted all of that as handed over; dropped with the caller, a
+   * function that took sixteen seconds had saved its records as far as the script could tell,
+   * and none of them reached the store.
+   */
+  private late = new Set<number>();
   /**
    * The hard deadline: a request unanswered this long is a worker that is not
    * coming back, and the worker is terminated. The soft timeout used to be
@@ -753,7 +765,16 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
     // the caller, the request is no longer outstanding.
     this.unanswered.delete(msg.id);
     const pending = this.pending.get(msg.id);
-    if (!pending) return;
+    if (!pending) {
+      // No one is waiting for it any more, and what it did is applied all the same.
+      if (this.late.delete(msg.id) && msg.ok && msg.result !== null && typeof msg.result === 'object') {
+        const out = msg.result as EntryResult & { stopped?: unknown };
+        if (out.failure !== undefined) this.reportFailure('a function', out.failure);
+        void this.applyEntry(out);
+        if (out.stopped === true) queueMicrotask(() => this.teardown('worker_engine_stopped', true));
+      }
+      return;
+    }
     this.pending.delete(msg.id);
     if (msg.ok) pending.resolve(msg.result);
     else pending.reject(new Error(msg.error || 'worker_rpc_failed'));
@@ -786,6 +807,7 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
       this.watchdog = null;
     }
     this.unanswered.clear();
+    this.late.clear();
     this.timers.dispose();
     if (typeof window !== 'undefined') {
       for (const [type, listener] of this.nativeListeners) window.removeEventListener(type, listener);
@@ -823,9 +845,14 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
     }
     const id = this.nextId++;
     return new Promise<T>((resolve, reject) => {
-      const timeout = setTimeout(() => {
+      // The script's start is not held to the soft deadline: the worker starts only once the
+      // page has handed it the engine, which on a first visit over a slow line takes longer
+      // than a caller waits for a function, and the app was shown as failed while its worker
+      // went on to start. The hard deadline is what ends a start that never comes.
+      const timeout = type === 'init' ? undefined : setTimeout(() => {
         if (!this.pending.has(id)) return;
         this.pending.delete(id);
+        if (ENTRY_REQUESTS.has(type)) this.late.add(id);
         reject(new Error(`worker_rpc_timeout:${type}`));
       }, WorkerScriptRuntime.RPC_TIMEOUT_MS);
 

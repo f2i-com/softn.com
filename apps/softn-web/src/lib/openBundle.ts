@@ -180,8 +180,12 @@ export interface OpenBundleRequest {
   initialPage?: string;
   /** The app's slug in the site's directory, when it came from there. */
   directorySlug?: string;
-  /** Optional hosted ZIPP safe-sandbox backend URL when running a server-hosted container app. */
-  backendUrl?: string;
+  /**
+   * The hosted ZIPP safe-sandbox backend of a server-hosted container app, as this open found
+   * it: `null` when the directory said there is none (or the person asked for the app to run
+   * here), nothing when this open did not ask.
+   */
+  backendUrl?: string | null;
   /**
    * The tab the caller put in the bar while the bytes were on their way; this
    * open adopts that tab and no other. A placeholder used to be found by name

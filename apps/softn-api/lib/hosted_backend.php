@@ -35,7 +35,24 @@ final class HostedBackend
         'cross-origin-opener-policy' => true,
         'cross-origin-embedder-policy' => true,
         'cross-origin-resource-policy' => true,
+        'cross-origin-opener-policy-report-only' => true,
+        'cross-origin-embedder-policy-report-only' => true,
         'referrer-policy' => true,
+        // What a browser keeps for the whole origin once one response has said
+        // it, the directory's pages and every other app's with it: where its
+        // network errors and policy reports are sent, another server to reach
+        // the origin at, which client hints go with every request, how the
+        // origin is keyed, and the pins an older browser still honours.
+        'nel' => true,
+        'report-to' => true,
+        'reporting-endpoints' => true,
+        'alt-svc' => true,
+        'accept-ch' => true,
+        'critical-ch' => true,
+        'origin-agent-cluster' => true,
+        'expect-ct' => true,
+        'public-key-pins' => true,
+        'public-key-pins-report-only' => true,
         'access-control-allow-origin' => true,
         'access-control-allow-methods' => true,
         'access-control-allow-headers' => true,
@@ -297,7 +314,16 @@ final class HostedBackend
         $cacheRoot = $appDir . '/backend-cache';
         $target = $cacheRoot . '/v' . $versionNum . '-' . $shaPrefix;
         if (is_dir($target) && is_file($target . '/manifest.json')) {
-            return $target;
+            // In use now, which is what the pruning below goes by. The folder's
+            // time was when it was extracted and nothing later, so a request
+            // still running version N answered 502 when the first request for
+            // N+1 pruned the folder its runner was reading.
+            @touch($target);
+            clearstatcache(true, $target);
+            if (is_dir($target)) return $target;
+            // Pruned in between: touch made a file of the name, which would be
+            // in the way of the folder. It goes, and the bundle is extracted again.
+            @unlink($target);
         }
         Config::requireRoom();
         if (!is_dir($cacheRoot) && !@mkdir($cacheRoot, 0775, true) && !is_dir($cacheRoot)) {
@@ -385,8 +411,9 @@ final class HostedBackend
             if (is_dir($target) && is_file($target . '/manifest.json')) return $target;
             throw new ApiError(503, 'Could not finalize hosted backend bundle cache.');
         }
-        // Prune superseded version caches older than the max request timeout + grace window
-        // so concurrent requests executing against the previous version are never deleted mid-flight.
+        // Prune superseded version caches unused for longer than the max request timeout + grace window
+        // (each use touches its folder, above) so concurrent requests executing against the previous
+        // version are never deleted mid-flight.
         $activeName = basename($target);
         $pruneCutoff = time() - 120;
         foreach (@scandir($cacheRoot) ?: [] as $entry) {

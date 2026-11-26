@@ -170,7 +170,14 @@ Missing fields are filled on discovery. A generated file contains `app`
 `ratings`, and `runsDaily`. Tags and permissions are JSON arrays/objects,
 not embedded JSON strings. `app.runs` counts successful opens;
 `app.launches` counts presses of Play. Plays, comments, moderation and ratings
-update this file atomically. A folder-added app belongs to the administrator;
+update this file atomically. An app's comments and its rating rows move out of
+it into `comments.json` and `ratings.json` beside it, with the next comment or
+rating made: `app.json` is read by every request, and those two have no end of
+their own. Each is bounded (the newest 500 comments, the latest 2,000 voters);
+`app.rating_stars` counts every vote by its stars, so the count, the average
+and the breakdown still include a voter whose row has gone, who is no longer
+told what they gave and whose next rating is a new vote. A folder-added app
+belongs to the administrator;
 published apps retain their edit keys. Keep the entire `data/` folder private:
 metadata includes hashed identities and ownership information.
 
@@ -436,7 +443,15 @@ times the limit.
 ## The site's own address, and who may use the owner routes
 
 `siteOrigin` in `data/config.json` (`"https://softn.example"`) is the
-address the site is reached at. Two things depend on it:
+address the site is reached at. Three things depend on it:
+
+- With `allowPublicServerHosting` on, a publisher may point an app at a
+  backend of their own (`backendUrl`), and never at this site: its frontend
+  would speak to another app's hosted backend there as the visitor. Which
+  origin is the site's is `siteOrigin`'s to say — the name a request was
+  addressed to is the publisher's choice, the server's IP address or another
+  of its names — so while it is unset a publisher's `backendUrl` is refused
+  with a `403`, and the admin key still sets one.
 
 - The share page `/app/{slug}` and the play page carry the app's canonical
   address and `og:url`, which a link unfurler needs absolute. Without

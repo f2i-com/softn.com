@@ -19,7 +19,7 @@
 
 import { bindSyncOptions } from './host-bound-sync-options';
 import { filterSignalingUrls } from './egress-policy';
-import { applyRoomSecurity, forgetRoomCollections, privateRoomSecret, unmarkRoomShared } from './sync-room-security';
+import { MAX_SYNC_ROOM_NAME_LEN, applyRoomSecurity, forgetRoomCollections, isSyncRoomName, privateRoomSecret, unmarkRoomShared } from './sync-room-security';
 import { readSavedSyncRoom } from './xdb-sync-key';
 import { appClosings } from './sync-activity';
 import type { PermissionConfig } from './script-runtime';
@@ -124,6 +124,12 @@ export function createSyncControls(options: SyncControlsOptions): SyncControls {
       // each of them did.
       if (permissionConfig?.consentPending || permissionConfig?.permissions?.sync?.enabled !== true) {
         refuse(permissionConfig?.consentPending ? 'pending' : 'denied');
+        return;
+      }
+      // A room's name is text of a name's length (sync-room-security.ts): it is kept in the
+      // page's storage as written, where nothing counts it against the app.
+      if (!isSyncRoomName(room)) {
+        console.error(`[XDB Sync] A room's name is 1 to ${MAX_SYNC_ROOM_NAME_LEN} characters; sync was not started.`);
         return;
       }
       // The host's identity and the room the script named go on last: options

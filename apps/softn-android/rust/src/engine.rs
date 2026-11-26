@@ -668,38 +668,22 @@ struct VfsNetProvider {
     host_allows_net: bool,
 }
 
-fn contains_ascii_icase(haystack: &[u8], needle: &[u8]) -> bool {
-    if needle.is_empty() || haystack.len() < needle.len() {
-        return false;
-    }
-    haystack.windows(needle.len()).any(|w| w.eq_ignore_ascii_case(needle))
-}
-
 fn looks_like_svg(url: &str, bytes: &[u8]) -> bool {
     let url_lower = url.to_ascii_lowercase();
     let path_part = url_lower.split(['?', '#']).next().unwrap_or("");
     if path_part.ends_with(".svg") || path_part.ends_with(".svgz") || url_lower.starts_with("data:image/svg+xml") {
         return true;
     }
-    // Skip genuine raster image formats and font binaries in O(1).
-    if image::guess_format(bytes).is_ok() {
-        return false;
-    }
-    if bytes.len() >= 4
-        && (bytes.starts_with(b"wOFF")
-            || bytes.starts_with(b"wOF2")
-            || bytes.starts_with(b"OTTO")
-            || bytes.starts_with(&[0x00, 0x01, 0x00, 0x00]))
-    {
-        return false;
-    }
-    // Scan the full bounded payload (byte-level, immune to UTF-8 slicing across multi-byte
-    // boundaries, leading XML comments, or >512-byte XML prologs).
-    let scan = &bytes[..bytes.len().min(crate::canvas2d::MAX_SVG_INPUT_BYTES)];
-    contains_ascii_icase(scan, b"<svg")
-        || contains_ascii_icase(scan, b"<?xml")
-        || contains_ascii_icase(scan, b"<!doctype")
-        || contains_ascii_icase(scan, b"<!entity")
+    // The image handler hands any bytes it cannot decode as raster to `usvg`, whatever the URL
+    // says, so every payload its XML parser could accept has to be sanitized. That parser allows
+    // nothing ahead of the first `<` except a UTF-8 BOM and whitespace, which covers a leading
+    // comment, a long prolog, a DOCTYPE and a prefixed `<s:svg>` root without scanning for
+    // markers. Searching the whole payload for `<svg` instead sent stylesheets through the
+    // sanitizer: one with an inline `data:image/svg+xml` icon and a `@media (width < 600px)`
+    // query was dropped as malformed SVG and the page rendered unstyled. No raster or font
+    // format starts this way, so those need no separate check.
+    let body = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes);
+    body.iter().find(|b| !b.is_ascii_whitespace()) == Some(&b'<')
 }
 
 fn deliver_sanitized_bytes(url_str: &str, bytes: Vec<u8>, handler: Box<dyn NetHandler>) {
@@ -4384,4 +4368,69 @@ fn extract_attr(tag: &str, attr_name: &str) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    struct Capture(Arc<Mutex<Option<Vec<u8>>>>);
+
+    impl NetHandler for Capture {
+        fn bytes(self: Box<Self>, _resolved_url: String, bytes: Bytes) {
+            *self.0.lock().unwrap() = Some(bytes.to_vec());
+        }
+    }
+
+    fn deliver(url: &str, bytes: &[u8]) -> Option<Vec<u8>> {
+        let slot = Arc::new(Mutex::new(None));
+        deliver_sanitized_bytes(url, bytes.to_vec(), Box::new(Capture(slot.clone())));
+        let delivered = slot.lock().unwrap().take();
+        delivered
+    }
+
+    #[test]
+    fn stylesheets_mentioning_svg_are_delivered_untouched() {
+        // An inline SVG icon plus a range media query: `<svg` appears mid-payload and the bare
+        // `<` is not a tag, which the SVG sanitizer rejects as malformed.
+        let css = br#"@charset "utf-8";
+.icon{background:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'><!DOCTYPE x><?xml?></svg>")}
+@media (width < 600px){.icon{display:none}}"#;
+        assert!(crate::canvas2d::sanitize_svg_for_raster(css).is_none());
+        for url in ["https://softn.local/app.css", "blob:softn/1", "https://softn.local/app.css?v=.svg"] {
+            assert!(!looks_like_svg(url, css), "{url}");
+            assert_eq!(deliver(url, css).as_deref(), Some(&css[..]), "{url}");
+        }
+    }
+
+    #[test]
+    fn every_payload_the_svg_parser_could_accept_is_still_sanitized() {
+        // None of these say SVG in the URL; each opens the way an XML document may.
+        let local = [
+            &b"<svg><image href=\"/data/secret.png\"/></svg>"[..],
+            b"\xEF\xBB\xBF \r\n\t<svg><image href=\"/data/secret.png\"/></svg>",
+            b"<!-- note --><svg><image href=\"/data/secret.png\"/></svg>",
+            b"<?xml version=\"1.0\"?><svg><image href=\"/data/secret.png\"/></svg>",
+            b"<s:svg xmlns:s=\"http://www.w3.org/2000/svg\"><s:image href=\"/data/secret.png\"/></s:svg>",
+        ];
+        for svg in local {
+            assert!(looks_like_svg("https://softn.local/pic.png", svg));
+            let clean = deliver("https://softn.local/pic.png", svg).expect("sanitized, not dropped");
+            assert!(!String::from_utf8(clean).unwrap().contains("secret.png"));
+        }
+        // A DTD is refused outright, so nothing is delivered.
+        let dtd = b"<!DOCTYPE svg [<!ENTITY x SYSTEM \"file:///etc/passwd\">]><svg/>";
+        assert!(looks_like_svg("blob:softn/2", dtd));
+        assert!(deliver("blob:softn/2", dtd).is_none());
+
+        // The URL alone is enough, whatever the payload starts with.
+        assert!(looks_like_svg("https://softn.local/icon.SVG?v=2", b"not xml"));
+        assert!(looks_like_svg("data:image/svg+xml;base64,AAAA", b"not xml"));
+
+        // Raster and font payloads never open with `<`, so they skip the sanitizer.
+        assert!(!looks_like_svg("https://softn.local/a.png", b"\x89PNG\r\n\x1a\n"));
+        assert!(!looks_like_svg("https://softn.local/a.woff2", b"wOF2\x00\x01\x00\x00"));
+        assert!(!looks_like_svg("https://softn.local/empty", b""));
+    }
 }

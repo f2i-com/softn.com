@@ -80,6 +80,24 @@ describe('a bundle that declared no net, once consent is answered', () => {
       'https://author.example/'
     );
   });
+
+  it('keeps an address the person follows to a page of the app, from the root or from a folder up', () => {
+    // `navigate` is a link's address under another name (NavItem draws it as one). Held to
+    // the rule for what the render fetches, `/about.html` was taken off and the item was no link.
+    const registry = new ComponentRegistry();
+    registry.register('NavItem', (props: SoftNProps) => React.createElement('a', { href: props.navigate as string | undefined }, 'item'));
+    const nav = (source: string): string => {
+      const context = { state: {}, setState: () => {}, data: {}, functions: {}, computed: {}, consentPending: false, egress: declaredNothing } as unknown as SoftNRenderContext;
+      return renderToStaticMarkup(React.createElement(React.Fragment, null, renderDocument(parse(source), context, registry)));
+    };
+    expect(nav(`<NavItem navigate="about.html" />`)).toContain('href="about.html"');
+    expect(nav(`<NavItem navigate="/about.html" />`)).toContain('href="/about.html"');
+    expect(nav(`<NavItem navigate="../index.html" />`)).toContain('href="../index.html"');
+    expect(html(`<a href="/about.html">about</a>`, declaredNothing)).toContain('href="/about.html"');
+    // What the render itself would ask the site the app is opened on for is still taken off.
+    expect(html(`<img src="/api/apps"/>`, declaredNothing)).not.toContain('/api/apps');
+    expect(html(`<img src="../secret.png"/>`, declaredNothing)).not.toContain('secret.png');
+  });
 });
 
 describe('a bundle scoped to one host', () => {
