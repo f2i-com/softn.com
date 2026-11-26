@@ -58,6 +58,9 @@ describe('the keys a script adds to its window', () => {
       });
       const engine = (runtime as unknown as { vmEngine: LogicEngine }).vmEngine;
       const windowIndex = (runtime as unknown as { windowBridge: { windowGlobalIndex: number } }).windowBridge.windowGlobalIndex;
+      // ZIPP digests the window, so the runtime can tell it has not moved. An engine that gives
+      // no digest (the host-JavaScript one answers null) has it read after every call instead.
+      const digests = (engine.getGlobalsFingerprint?.([windowIndex]) ?? null) !== null;
       const reads = vi.spyOn(engine, 'getGlobal');
       const windowReads = () => reads.mock.calls.filter(([index]) => index === windowIndex).length;
 
@@ -66,8 +69,8 @@ describe('the keys a script adds to its window', () => {
       const afterTicks = windowReads();
       await loaded.functions.tick!();
       await loaded.functions.tick!();
-      // Nothing on the window moved: it is not read again.
-      expect(windowReads()).toBe(afterTicks);
+      // Nothing on the window moved: with a digest it is not read again.
+      expect(windowReads()).toBe(digests ? afterTicks : afterTicks + 2);
 
       await loaded.functions.arm!();
       expect(windowReads()).toBeGreaterThan(afterTicks);
