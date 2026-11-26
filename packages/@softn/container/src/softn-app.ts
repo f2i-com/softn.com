@@ -16,7 +16,7 @@ import { renderConsentBar, renderSaveBar, renderStoppedBar } from './consent-bar
 import type { ContainerDeviceBridge } from './device-bridge';
 import { HostDomPatcher } from './dom-patcher';
 import { databaseOfPart, holdByLease, indexedDbBacking, localStorageBacking, partBytes, partPrefixes, type IdbBacking, type LeaseFence } from './idb-backing';
-import { hostFileName, hostLabel, hostTitle, slotsAreContained, type FontScopeContext } from './host-policy';
+import { MAX_NESTING_DEPTH, hostFileName, hostLabel, hostTitle, isNestedAppFile, newEmbedBudget, slotsAreContained, type EmbedAllowance, type EmbedBudget, type FontScopeContext } from './host-policy';
 import type { LocalBackendTransport } from './local-backend-transport';
 import { isSafeVirtualRoute, loadContainerSession, saveContainerSession, type PersistedContainerSession } from './session-store';
 import { extractSanitizedFontFaces, prepareHtmlDocument } from './sanitize';
@@ -31,6 +31,7 @@ import {
   type ContainerBootStatus,
   type ContainerLimits,
   type ContainerManifest,
+  type ContainerPermissions,
   type DatabaseConfig,
   type HostToWorkerMsg,
   type SaveRequest,
@@ -104,6 +105,77 @@ interface WorkerTransport {
 
 const shadowRootRegistry = new WeakMap<HTMLElement, ShadowRoot>();
 let fontScopeSeq = 0;
+
+/**
+ * What a mount is told when it is an app nested in another (`<softn-app>` in an app's page):
+ * how deep it is, and what the app around it declared. Kept by the options object the
+ * container itself made for it, so that no host and no app can say it of a mount.
+ */
+interface NestedMount {
+  depth: number;
+  outer: ContainerPermissions;
+  /** What the pages of the app the person opened, and of every app nested in it, hold between them. */
+  budget: EmbedBudget;
+  /**
+   * Whether the app around it has stopped it (its box is gone or names another archive, or
+   * that app has itself ended), asked while it starts: a start takes as long as an archive
+   * takes to open and a script to answer, and one not wanted any more is not carried through.
+   */
+  stopped: () => boolean;
+  /**
+   * Called once the mount can be told things, before its script starts: from then on the app
+   * around it says what it is allowed, whether it is on screen and when it ends. Until its
+   * start had finished it could be told none of that, so an app that took its time starting
+   * kept what the person had since taken back, and ran on behind an app that had closed.
+   */
+  attach: (controls: NestedControls) => void;
+}
+/** What the app around a nested app says of it, from before its script starts. */
+interface NestedControls {
+  setGrantedCapabilities(caps: Capability[]): void;
+  setActive(active: boolean): void;
+  dispose(): void;
+}
+const nestedMounts = new WeakMap<SoftNContainerOptions, NestedMount>();
+
+/**
+ * What an app nested in another may keep while it runs: a share of what an app keeps. It is
+ * kept in memory and goes with the page (see `persistStorage` in the mount): every archive an
+ * app carries would otherwise be a store of its own beside the app's, each to the app's full
+ * quota, and the bound on what one app keeps in the embedding page would be no bound.
+ */
+function nestedLimits(limits: Required<ContainerLimits>): ContainerLimits {
+  return {
+    ...limits,
+    storageQuotaBytes: Math.min(limits.storageQuotaBytes, 1024 * 1024),
+    idbQuotaBytes: Math.min(limits.idbQuotaBytes, 8 * 1024 * 1024),
+  };
+}
+
+/** The largest archive an app nests: what an app's page is given of its own files at once. */
+const MAX_NESTED_ARCHIVE_BYTES = 64 * 1024 * 1024;
+
+/** What the start of a nested app ends with when the app around it stopped it first. */
+const NESTED_STOPPED = 'The nested app was stopped before it had started.';
+
+/**
+ * What a nested app declares, as far as the app it is nested in declared it too: for each
+ * capability both ask for, the outer app's own terms (its hosts for `net`, not the nested
+ * app's). The person was asked about the app they opened and what it named; an app inside it
+ * is part of it, and is allowed nothing that was not in that question.
+ */
+export function nestedPermissions(declared: ContainerPermissions, outer: ContainerPermissions): ContainerPermissions {
+  const asked = declared.permissions ?? {};
+  const had = outer.permissions ?? {};
+  const enabled = (entry: unknown): entry is { enabled: true } =>
+    typeof entry === 'object' && entry !== null && (entry as { enabled?: unknown }).enabled === true;
+  const permissions: NonNullable<ContainerPermissions['permissions']> = {};
+  for (const name of Object.keys(asked)) {
+    if (BLOCKED_SESSION_KEYS.has(name)) continue;
+    if (enabled(asked[name]) && Object.prototype.hasOwnProperty.call(had, name) && enabled(had[name])) permissions[name] = had[name];
+  }
+  return { permissions };
+}
 const MAX_BACKEND_SOCKETS = 8;
 const MAX_BACKEND_FETCH_BODY_B64 = 64 * 1024 * 1024;
 const MAX_BACKEND_WS_TEXT_CHARS = 16 * 1024 * 1024;
@@ -591,11 +663,37 @@ export async function mountSoftNContainer(
     storageRefused = true;
     options.onError?.(new Error('This app’s data could not be kept: the browser’s storage for this page is full or unavailable.'));
   };
-  const permissions = options.permissionsOverride ?? archive.permissions;
-  const requestedCaps = options.permissionsOverride
+  // An app nested in another (`<softn-app>` in an app's page): a web app, as the app around it is.
+  const nested = nestedMounts.get(options);
+  if (nested && archive.manifest.mode === 'legacy-ui') {
+    archive.dispose();
+    throw new Error('An app nested in another is a web app (an HTML page), not a .ui bundle.');
+  }
+  if (nested?.stopped()) {
+    archive.dispose();
+    throw new Error(NESTED_STOPPED);
+  }
+  const declaredPermissions = options.permissionsOverride ?? archive.permissions;
+  // Nested, it is allowed what the app around it declared, of what it declares itself.
+  const permissions = nested ? nestedPermissions(declaredPermissions, nested.outer) : declaredPermissions;
+  const requestedCaps = options.permissionsOverride || nested
     ? inspectDeclaration(permissions).requested
     : archive.requestedCapabilities;
   const allowedCaps = new Set<Capability>(requestedCaps);
+  // What of another document the app's page may hold (host-policy.ts): a frame of a site it
+  // was allowed, only for an app that declares the network at all; and an app of its own,
+  // down to the depth apps nest.
+  const nestingDepth = nested?.depth ?? 0;
+  const embeds: EmbedAllowance = {
+    // Frames only where the host said so: a frame is a document of another site's in the
+    // host's page, which a host that mounts an app as it did before is not given unasked.
+    frames: options.frames === 'allow' && permissions.permissions?.net?.enabled === true,
+    apps: options.nestedApps !== 'deny' && nestingDepth < MAX_NESTING_DEPTH,
+  };
+  /** What this app's page and those of the apps nested in it hold between them: the tree's, made by the app the person opened. */
+  const embedBudget: EmbedBudget = nested?.budget ?? newEmbedBudget();
+  /** The apps nested in this one's page, from before each one's script starts. */
+  const nestedControls = new Set<NestedControls>();
   let deviceBridge: ContainerDeviceBridge | null = options.deviceBridge ?? null;
   let deviceBridgeModPromise: Promise<typeof import('./device-bridge')> | null = null;
   const loadDeviceBridge = () => {
@@ -664,13 +762,53 @@ export async function mountSoftNContainer(
   frameEl.appendChild(boxEl);
   /** The bar asking whether to save a file the app made, while one is unanswered. */
   let saveEl: HTMLElement | null = null;
+  /** What answers the app nested in this one whose file the bar is about, while it is unanswered. */
+  let answerNestedSave: ((save: boolean) => void) | null = null;
+  /**
+   * A file an app nested in this one asks to save. The person is asked where this app's own
+   * question is put: by the host, or in this mount's own frame, which for the app the person
+   * opened is outside every app's box. Asked in the nested app's own frame, the bar sat in a
+   * box this app styles and covers: made see-through under a button of this app's, a press on
+   * the button was a yes to the file.
+   */
+  const askForNested = (request: SaveRequest): Promise<boolean> => {
+    if (disposed || options.downloads === 'deny') return Promise.resolve(false);
+    if (options.onSaveRequest) {
+      const ask = options.onSaveRequest;
+      return Promise.resolve()
+        .then(() => ask(request))
+        .then((yes) => yes === true && !disposed, () => false);
+    }
+    // One question at a time, this app's own among them.
+    if (saveEl) return Promise.resolve(false);
+    return new Promise<boolean>((resolve) => {
+      const holder = document.createElement('div');
+      holder.setAttribute('data-softn-container-save', '');
+      holder.style.cssText = CONSENT_STYLE;
+      const answer = (save: boolean): void => {
+        if (answerNestedSave !== answer) return;
+        answerNestedSave = null;
+        holder.remove();
+        if (saveEl === holder) saveEl = null;
+        resolve(save && !disposed);
+      };
+      holder.attachShadow({ mode: 'closed' }).appendChild(
+        renderSaveBar(hostLabel(archive.manifest.name) || 'This app', hostFileName(request.name), request.size, (save) => answer(save === true))
+      );
+      frameEl.insertBefore(holder, boxEl);
+      saveEl = holder;
+      answerNestedSave = answer;
+    });
+  };
 
   let disposed = false;
   let currentPatcher: HostDomPatcher | null = null;
   let currentTransport: WorkerTransport | null = null;
   let threeHost: SplitRealmSceneHost | null = null;
   let threeHostPromise: Promise<SplitRealmSceneHost | null> | null = null;
-  const persistStorage = options.persistStorage !== false;
+  // An app nested in another keeps nothing between visits: what it stores lasts as long as
+  // the page does (nestedLimits).
+  const persistStorage = options.persistStorage !== false && !nested;
   const storage = persistStorage ? options.storage ?? browserStorage() : undefined;
   let cachedPersistedBytes: number | null = null;
   // What another tab keeps for the same app, told to its Worker as it happens: each tab reads
@@ -1708,6 +1846,7 @@ export async function mountSoftNContainer(
     pageRoot.replaceChildren();
     for (const bar of Array.from(frameEl.children)) if (bar !== boxEl && bar !== navEl) bar.remove();
     saveEl = null;
+    answerNestedSave?.(false);
     if (frameEl.parentNode !== shadowRoot) shadowRoot.replaceChildren(frameStyle, frameEl);
 
     if (overrideHtml === undefined && !archive.isFrontendPath(pagePath)) {
@@ -1772,7 +1911,8 @@ export async function mountSoftNContainer(
       archive,
       permissions,
       grantedCaps.has('net'),
-      fontScope
+      fontScope,
+      embeds
     );
     if (virtualUrlPath !== undefined) {
       const cleanVirtual = virtualUrlPath.startsWith('/') ? virtualUrlPath : `/${virtualUrlPath}`;
@@ -1813,6 +1953,8 @@ export async function mountSoftNContainer(
             type: 'permissions-updated',
             grantedCapabilities: [...grantedCaps],
           });
+          // The apps nested in this one are allowed what it now is (each of what it asks for itself).
+          for (const child of nestedControls) child.setGrantedCapabilities([...grantedCaps]);
         } else {
           consentDenied = true;
         }
@@ -1929,7 +2071,110 @@ export async function mountSoftNContainer(
       netGranted: grantedCaps.has('net'),
       filesGranted: grantedCaps.has('files'),
       fontScope,
+      embeds,
+      embedBudget,
       callbacks: {
+        // An app of the app's own (`<softn-app src>`), run in the box the page has for it: a
+        // container like this one, made here with what this one was given. Nothing of how it
+        // runs is the app's to say: not where its engine comes from, not what it is allowed,
+        // not where its data is kept.
+        onNestedApp: (box, source, initialPath) => {
+          if (disposed || !owns() || currentPatcher !== patcher) return null;
+          // Read by the file's own name, which reads as itself (host-policy.ts nestedAppSource).
+          const file = source.replace(/^\/+/, '');
+          if (!isNestedAppFile(archive, file)) return null;
+          const bytes = archive.readBytes(file);
+          if (!bytes) return null;
+          if (bytes.byteLength > MAX_NESTED_ARCHIVE_BYTES) {
+            options.onConsole?.('warn', `The nested app ${source} is larger than an app nests (${MAX_NESTED_ARCHIVE_BYTES / (1024 * 1024)} MB) and was not started.`);
+            return null;
+          }
+          const childOptions: SoftNContainerOptions = {
+            // A copy: the archive's own bytes are this app's, and are let go of with it.
+            source: bytes.slice(),
+            runtimeUrl,
+            workerUrl: options.workerUrl,
+            engineWasm: options.engineWasm,
+            xdbWasm: options.xdbWasm,
+            xdbGlueUrl: options.xdbGlueUrl,
+            hostThree: options.hostThree,
+            deviceBridge: options.deviceBridge,
+            downloads: options.downloads,
+            // A file it asks to save is asked about where this app's own are (askForNested).
+            onSaveRequest: askForNested,
+            theme: options.theme,
+            isolation: options.isolation,
+            // It keeps nothing between visits, and less while it runs (nestedLimits).
+            persistStorage: false,
+            limits: nestedLimits(limits),
+            frames: options.frames,
+            nestedApps: options.nestedApps,
+            initialPath,
+            // A name of its own under this app's: never the one the same archive has when it is
+            // opened by itself, whose data this app would then be drawn around.
+            appId: `${appId}/nested${source}`,
+            storagePrefix: `${storageBase}nested:${safeStorageAppId(source)}:`,
+            // It asks the person nothing itself: it has what this app was allowed.
+            permissionMode: 'deny',
+            initialGrantedCapabilities: [...grantedCaps],
+            onConsole: options.onConsole,
+            onExternalLink: options.onExternalLink,
+            onError: (error) => options.onError?.(error),
+          };
+          // Stopped by this app (the box is gone, or names another archive), or with it.
+          let stopped = false;
+          const isStopped = (): boolean => stopped || disposed || !owns() || currentPatcher !== patcher;
+          let controls: NestedControls | null = null;
+          /** What says the nested app has ended, once it has started and is stopped. */
+          let whenStopped: (() => void) | null = null;
+          nestedMounts.set(childOptions, {
+            depth: nestingDepth + 1,
+            outer: permissions,
+            budget: embedBudget,
+            stopped: isStopped,
+            attach: (told) => {
+              controls = told;
+              nestedControls.add(told);
+              // What this app is allowed, and whether it is on screen, as they are now: either
+              // may have changed since the nested app was asked for.
+              told.setGrantedCapabilities([...grantedCaps]);
+              if (paused) told.setActive(false);
+            },
+          });
+          const ended = new Promise<void>((resolveEnded) => {
+            mountSoftNContainer(box, childOptions).then(
+              (child) => {
+                if (isStopped()) {
+                  if (controls) nestedControls.delete(controls);
+                  child.dispose();
+                  resolveEnded();
+                  return;
+                }
+                whenStopped = resolveEnded;
+              },
+              (error) => {
+                if (controls) nestedControls.delete(controls);
+                if (!isStopped()) {
+                  options.onConsole?.('warn', `The nested app ${source} could not be started: ${error instanceof Error ? error.message : String(error)}`);
+                }
+                resolveEnded();
+              }
+            );
+          });
+          return {
+            // At any time: one still starting is told to stop, and its start ends there.
+            dispose: () => {
+              if (stopped) return;
+              stopped = true;
+              if (controls) {
+                nestedControls.delete(controls);
+                (controls as NestedControls).dispose();
+              }
+              whenStopped?.();
+            },
+            ended,
+          };
+        },
         onStyleFonts: (sheet, fontFacesCss) => {
           const MAX_DYNAMIC_FONT_BYTES = 512 * 1024;
           if (fontFacesCss && fontFacesCss.length <= MAX_DYNAMIC_FONT_BYTES) {
@@ -1975,6 +2220,11 @@ export async function mountSoftNContainer(
                   saveAsked = false;
                 }
               );
+            return;
+          }
+          // One question at a time, a nested app's among them.
+          if (saveEl) {
+            saveAsked = false;
             return;
           }
           // The container's own bar, above the app's box and out of its stylesheet's reach: it
@@ -2095,6 +2345,7 @@ export async function mountSoftNContainer(
 
     const initialTags = prepared.mountInitialDom(viewportEl, patcher.nodes, docRootEl);
     patcher.adoptReadableImages(viewportEl);
+    patcher.adoptEmbeds();
     for (const tag of initialTags) {
       void ensureUiExtension(tag, runtimeUrl);
     }
@@ -2913,7 +3164,44 @@ export async function mountSoftNContainer(
     cleanupBootFailure();
   };
 
+  const setGranted = (caps: Capability[]): void => {
+    grantedCaps = new Set(caps.filter((cap) => allowedCaps.has(cap)));
+    for (const bar of Array.from(frameEl.children)) {
+      if (bar.hasAttribute('data-softn-container-consent')) bar.remove();
+    }
+    currentPatcher?.updatePermissions(permissions, grantedCaps.has('net'), grantedCaps.has('files'));
+    currentTransport?.post({
+      type: 'permissions-updated',
+      grantedCapabilities: [...grantedCaps],
+    });
+    for (const child of nestedControls) child.setGrantedCapabilities([...grantedCaps]);
+  };
+  const setActiveNow = (active: boolean): void => {
+    if (disposed || paused === !active) return;
+    paused = !active;
+    // An app nested in this one is on screen when this one is.
+    for (const child of nestedControls) child.setActive(active);
+    if (paused) {
+      // A frame already asked of the browser is taken back, and owed.
+      if (rafHandle !== null) frameOwed = true;
+      clearRaf();
+      currentTransport?.post({ type: 'pause' });
+    } else {
+      currentTransport?.post({ type: 'resume' });
+      if (frameOwed) {
+        frameOwed = false;
+        scheduleNextRaf();
+      }
+    }
+  };
+
   try {
+    // Nested: from here the app around it says what it is allowed, whether it is on screen
+    // and when it ends, before any of its script has run.
+    if (nested) {
+      if (nested.stopped()) throw new Error(NESTED_STOPPED);
+      nested.attach({ setGrantedCapabilities: setGranted, setActive: setActiveNow, dispose: disposeContainer });
+    }
     if (disposed || !owns()) {
       // Superseded during async setup — tear down listeners, blob URLs, and backend workers.
       disposeContainer();
@@ -3028,33 +3316,8 @@ export async function mountSoftNContainer(
       if (!localBackendTransport) return null;
       return localBackendTransport.exportDatabase(dbName);
     },
-    setGrantedCapabilities(caps: Capability[]) {
-      grantedCaps = new Set(caps.filter((cap) => allowedCaps.has(cap)));
-      for (const bar of Array.from(frameEl.children)) {
-        if (bar.hasAttribute('data-softn-container-consent')) bar.remove();
-      }
-      currentPatcher?.updatePermissions(permissions, grantedCaps.has('net'), grantedCaps.has('files'));
-      currentTransport?.post({
-        type: 'permissions-updated',
-        grantedCapabilities: [...grantedCaps],
-      });
-    },
-    setActive(active: boolean) {
-      if (disposed || paused === !active) return;
-      paused = !active;
-      if (paused) {
-        // A frame already asked of the browser is taken back, and owed.
-        if (rafHandle !== null) frameOwed = true;
-        clearRaf();
-        currentTransport?.post({ type: 'pause' });
-      } else {
-        currentTransport?.post({ type: 'resume' });
-        if (frameOwed) {
-          frameOwed = false;
-          scheduleNextRaf();
-        }
-      }
-    },
+    setGrantedCapabilities: setGranted,
+    setActive: setActiveNow,
     dispose: disposeContainer,
   };
 }

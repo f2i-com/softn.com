@@ -174,6 +174,11 @@ window.addEventListener('message', async event => {
         : null;
     container = await mountSoftNContainer(target, {
       source, appId: data.appId, runtimeUrl, storage: store.storage,
+      // No frames of other sites here: this document's policy names no `frame-src`
+      // (framePolicy.ts), and it runs in the parent's sandbox with no origin of its own, which
+      // a frame in it would inherit (a video player keeps nothing there and does not play).
+      // An app of the app's own (`<softn-app>`) needs neither, and is nested as anywhere.
+      frames: 'deny',
       ...(hostBackend ? { backendTransport: hostBackend } : {}),
       initialPage: validPlaceFile ?? undefined,
       ...(initialPlace?.section && (initialPlace.file === null || validPlaceFile !== null)

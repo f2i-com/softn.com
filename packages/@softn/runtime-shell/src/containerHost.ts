@@ -73,13 +73,31 @@ const ownThree = (): Promise<unknown> => import('three');
  */
 export function hostedContainerOptions(
   env: HostEnv | undefined = (import.meta as unknown as { env?: HostEnv }).env
-): Required<Pick<SoftNContainerOptions, 'runtimeUrl' | 'engineWasm' | 'hostThree'>> & Pick<SoftNContainerOptions, 'workerUrl'> {
+): Required<Pick<SoftNContainerOptions, 'runtimeUrl' | 'engineWasm' | 'hostThree' | 'frames'>> & Pick<SoftNContainerOptions, 'workerUrl'> {
   return {
     runtimeUrl: containerRuntimeUrl(env),
     ...(env?.VITE_SOFTN_CONTAINER_WORKER ? { workerUrl: `${(env.BASE_URL ?? './').replace(/\/?$/, '/')}${env.VITE_SOFTN_CONTAINER_WORKER}` } : {}),
     engineWasm: { javascript: coreEngine, python: coreEngine, 'python-torch': coreEngine },
     hostThree: ownThree,
+    frames: pageShowsFrames() ? 'allow' : 'deny',
   };
+}
+
+/**
+ * Whether this page can show a frame of another site at all (an app's `<iframe>` of a site
+ * the person allowed it, such as a video player). A desktop shell's page is kept to its own
+ * files by its policy (`default-src 'self'` and no `frame-src`: the loader's and the Builder's
+ * `tauri.conf.json`), so a frame there is an element the page would refuse to fill, and the
+ * container is told to make none. A browser's page has no such policy and shows them.
+ */
+export function pageShowsFrames(
+  page: { __TAURI__?: unknown; __TAURI_INTERNALS__?: unknown; location?: { protocol?: string; hostname?: string } } | undefined = typeof window !== 'undefined'
+    ? (window as unknown as { __TAURI__?: unknown; __TAURI_INTERNALS__?: unknown; location?: { protocol?: string; hostname?: string } })
+    : undefined
+): boolean {
+  if (!page) return false;
+  if (page.__TAURI__ !== undefined || page.__TAURI_INTERNALS__ !== undefined) return false;
+  return page.location?.protocol !== 'tauri:' && page.location?.hostname !== 'tauri.localhost';
 }
 
 /** The tiers given core's engine above, and what that engine says it is (the container picks its bindings by it). */

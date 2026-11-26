@@ -11,7 +11,7 @@
  */
 import type { ContainerArchive } from './archive';
 import type { ContainerPermissions } from './types';
-import { sanitizeContainerCss, sanitizeHostAssetUrl } from './sanitize';
+import { sanitizeContainerCss, sanitizeFrameUrl, sanitizeHostAssetUrl } from './sanitize';
 import { isAllowedUiExtension } from './ui-extensions/registry';
 
 export const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -25,6 +25,11 @@ export const MATH_NS = 'http://www.w3.org/1998/Math/MathML';
  * container inside the embedding page's realm. (`link` and `style` are not here:
  * each has a rule of its own in the patcher, which reads their CSS before the page does.
  * `slot` has one below.)
+ *
+ * Two of these a mount may let an app have, each by a rule of its own and never as the app
+ * wrote it ([`EmbedAllowance`]): an `iframe` of a site the person allowed the app, and a
+ * `softn-app` of an archive the app carries. Asked without an allowance, both are refused
+ * as they always were.
  */
 const FORBIDDEN_ELEMENTS = new Set([
   'script',
@@ -64,10 +69,13 @@ export function slotsAreContained(): boolean {
  * `svg:script` up in its list, found nothing, and created it. The prefix is dropped, so the
  * element made is the one that was checked.
  */
-export function hostElementName(rawTag: string, ns?: 'svg' | 'math'): string | null {
+export function hostElementName(rawTag: string, ns?: 'svg' | 'math', embeds?: EmbedAllowance): string | null {
   const local = String(rawTag).slice(String(rawTag).lastIndexOf(':') + 1);
   if (!/^[A-Za-z][A-Za-z0-9._-]*$/.test(local)) return null;
   const lower = local.toLowerCase();
+  // The two documents a mount may let the page hold, as HTML elements only: each is made by
+  // createHostElement, which decides what it is, and its attributes by hostAttributeValue.
+  if (!ns && embeds && ((lower === 'iframe' && embeds.frames === true) || (lower === NESTED_APP_TAG && embeds.apps === true))) return lower;
   if (FORBIDDEN_ELEMENTS.has(lower)) return null;
   // Never let untrusted guest HTML instantiate a custom element already defined by the
   // embedding host page (e.g. host widgets or container elements), except allowlisted SoftN UI
@@ -87,7 +95,267 @@ export function hostElementName(rawTag: string, ns?: 'svg' | 'math'): string | n
 
 /** The element `name` (from hostElementName) in its namespace. */
 export function createHostElement(name: string, ns?: 'svg' | 'math'): Element {
-  return ns === 'svg' ? document.createElementNS(SVG_NS, name) : ns === 'math' ? document.createElementNS(MATH_NS, name) : document.createElement(name);
+  if (ns === 'svg') return document.createElementNS(SVG_NS, name);
+  if (ns === 'math') return document.createElementNS(MATH_NS, name);
+  if (name === 'iframe') return createFrameElement();
+  const el = document.createElement(name);
+  if (name === NESTED_APP_TAG) nestedAppElements.add(el);
+  return el;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Another document in the app's page: a frame of a site, and an app of the app's own
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * What of another document a mount lets its app put in the page. Both are off unless the
+ * mount turns them on: a rule asked without one answers as it did before either existed.
+ */
+export interface EmbedAllowance {
+  /** `<iframe>` of an `https:` site the app declared (`net`) and the person allowed. */
+  frames?: boolean;
+  /** `<softn-app src="…">` of an archive the app carries among its own files. */
+  apps?: boolean;
+}
+
+/** The element an app nests another app in. */
+export const NESTED_APP_TAG = 'softn-app';
+
+/** The most frames one app's page holds at once. Each is a whole document of another site's. */
+export const MAX_HOST_FRAMES = 12;
+
+/** The most apps one app's page nests at once. Each is a Worker and a VM of its own. */
+export const MAX_NESTED_APPS = 8;
+
+/** How deep apps nest: an app at this depth nests none. The page's own app is at depth 0. */
+export const MAX_NESTING_DEPTH = 3;
+
+/**
+ * The most apps nested under one app the person opened, at every depth together. The bounds
+ * above are each page's own, and multiply down the levels: eight in each of eight in each of
+ * eight is five hundred Workers from one archive, and twelve frames in each is seven thousand
+ * documents.
+ */
+export const MAX_TREE_NESTED_APPS = 16;
+
+/** How many nested apps are started under one app in NESTED_START_WINDOW_MS: a box that names another archive on every tick starts one each time. */
+export const MAX_NESTED_STARTS = 24;
+export const NESTED_START_WINDOW_MS = 10_000;
+
+/**
+ * What the pages of one app the person opened hold between them: its own page, and that of
+ * every app nested in it at any depth. Made by the mount of the app the person opened and
+ * handed down, so that the bounds are on what one archive brings to the embedding page.
+ */
+export interface EmbedBudget {
+  /** Frames the pages hold (MAX_HOST_FRAMES between them). */
+  frames: number;
+  /** Nested apps started and not yet ended, a start still under way among them. */
+  apps: number;
+  /** When each of the latest nested apps was started, the oldest first. */
+  starts: number[];
+}
+
+export function newEmbedBudget(): EmbedBudget {
+  return { frames: 0, apps: 0, starts: [] };
+}
+
+/**
+ * What a frame's document may do, whatever the app asked for. It runs its own script and
+ * keeps its own origin (a video player has neither without them), sends its own forms, opens
+ * a tab of its own when the person follows a link in it, and goes full screen. It is not let
+ * take the embedding page somewhere else (`allow-top-navigation`), put a dialog of the
+ * browser's over it (`allow-modals`), save a file (`allow-downloads`) or hold the pointer.
+ *
+ * `allow-same-origin` beside `allow-scripts` is safe only for a document of another origin
+ * than the embedding page's, which is what sanitizeFrameUrl lets a frame be asked for, and
+ * what guardFrame looks for again each time the frame has loaded.
+ */
+export const FRAME_SANDBOX: readonly string[] = [
+  'allow-scripts',
+  'allow-same-origin',
+  'allow-forms',
+  'allow-popups',
+  'allow-popups-to-escape-sandbox',
+  'allow-presentation',
+];
+
+/**
+ * What of the embedding page's own permissions a frame may be handed (`allow`): what a
+ * player needs. Never the camera, the microphone, where the person is, their screen or a
+ * payment: those are the person's answer to the embedding site, and the app's own to ask
+ * for through the container (`permission.json`), not a third site's by the app's say-so.
+ * Nor the clipboard, the share sheet or the device's motion, which a player's own embed code
+ * asks for and plays without: what the person allowed the app was a site to be shown.
+ */
+const FRAME_FEATURES = new Set(['autoplay', 'encrypted-media', 'picture-in-picture', 'fullscreen']);
+
+/**
+ * How much of the embedding page's address a frame's site is told. Its origin by default,
+ * which a player asks for before it plays (and a browser tells a frame its ancestors'
+ * origins whatever is written here). Never the whole address: the path and query of the
+ * embedding page are the person's, and may name what they are looking at.
+ */
+const FRAME_REFERRER = new Set(['no-referrer', 'origin', 'same-origin', 'strict-origin', 'strict-origin-when-cross-origin']);
+export const FRAME_REFERRER_DEFAULT = 'strict-origin-when-cross-origin';
+
+/** The attribute the host puts on every frame, and the app neither sets nor takes off (createHostElement). */
+export const FRAME_CREDENTIALLESS = 'credentialless';
+
+/** The attributes that are a frame's own, each read by frameAttributeValue. */
+const FRAME_ATTRIBUTES = new Set(['src', 'sandbox', 'allow', 'allowfullscreen', 'referrerpolicy', 'loading', 'width', 'height', 'frameborder', 'scrolling']);
+
+/** The attributes any element has that say nothing but how it looks and what it is called. */
+function isPlainAttribute(lower: string): boolean {
+  return (
+    lower === 'class' || lower === 'id' || lower === 'style' || lower === 'title' || lower === 'hidden' || lower === 'role' ||
+    lower === 'tabindex' || lower === 'lang' || lower === 'dir' || lower === 'slot' ||
+    ((lower.startsWith('data-') || lower.startsWith('aria-')) && !lower.startsWith('data-softn-'))
+  );
+}
+
+/** The sandbox a frame is given: the host's, less whatever the app itself asked to go without. */
+export function frameSandbox(asked?: string | null): string {
+  if (asked === undefined || asked === null) return FRAME_SANDBOX.join(' ');
+  const wanted = new Set(asked.toLowerCase().split(/\s+/).filter(Boolean));
+  return FRAME_SANDBOX.filter((token) => wanted.has(token)).join(' ');
+}
+
+/** A frame's own attribute by the host's rule, or null to leave it off. */
+function frameAttributeValue(lower: string, value: string, context: HostAttributeContext): string | null {
+  const text = value.trim();
+  switch (lower) {
+    case 'src':
+      return sanitizeFrameUrl(value, context.permissions, context.netGranted);
+    case 'sandbox':
+      // Only ever narrower than the host's: a token the host does not give is not one the app can add.
+      return frameSandbox(value);
+    case 'allow': {
+      const kept: string[] = [];
+      for (const part of text.split(';')) {
+        const feature = part.trim().split(/\s+/)[0]?.toLowerCase() ?? '';
+        if (FRAME_FEATURES.has(feature) && !kept.includes(feature)) kept.push(feature);
+      }
+      return kept.length > 0 ? kept.join('; ') : null;
+    }
+    case 'allowfullscreen':
+      return '';
+    case 'referrerpolicy':
+      return FRAME_REFERRER.has(text.toLowerCase()) ? text.toLowerCase() : FRAME_REFERRER_DEFAULT;
+    case 'loading':
+      return text.toLowerCase() === 'lazy' || text.toLowerCase() === 'eager' ? text.toLowerCase() : null;
+    case 'width':
+    case 'height':
+      return /^\d{1,5}(?:\.\d{1,3})?%?$/.test(text) ? text : null;
+    case 'frameborder':
+      return text === '0' || text === '1' ? text : null;
+    case 'scrolling':
+      return /^(?:yes|no|auto)$/i.test(text) ? text.toLowerCase() : null;
+    default:
+      return null;
+  }
+}
+
+/**
+ * A frame for the app's page: sandboxed before it has an address, so that no document is
+ * ever in it without one, and watched each time it has loaded.
+ */
+function createFrameElement(): HTMLIFrameElement {
+  const frame = document.createElement('iframe');
+  frame.setAttribute('sandbox', frameSandbox());
+  frame.setAttribute('referrerpolicy', FRAME_REFERRER_DEFAULT);
+  // Its site is shown as to someone it has never seen: none of the person's cookies or
+  // storage for it are there, so what the app frames is the site, not the person's account
+  // on it. And a page that is cross-origin isolated (softn.com sends
+  // `Cross-Origin-Embedder-Policy: credentialless` with every page) is shown no frame at all
+  // without this: a player that sends no such header of its own is refused by the browser.
+  frame.setAttribute(FRAME_CREDENTIALLESS, '');
+  frame.addEventListener('load', () => guardFrame(frame));
+  return frame;
+}
+
+/**
+ * A frame that has come to hold a document of the embedding page's own origin is emptied.
+ *
+ * The address the app asked for is another site's (sanitizeFrameUrl), but where a frame
+ * goes after that is the framed site's to say: a redirect, or its script, can bring it to a
+ * page of the embedding site, which the sandbox then runs as that site with the person
+ * signed in, inside the app's box. Only a document of the page's own origin can be read
+ * from here, so one that can be is one that must not be there.
+ *
+ * Answers whether it was. A frame found so stays empty for good (isTrippedFrame): the address
+ * that brought it there would bring it there again, and each time the embedding site's page
+ * is live in the app's box until this is asked.
+ *
+ * What this cannot see is a document of another origin of the embedding site's own (a
+ * sibling name, another port): it is as unreadable from here as any site's. Where that
+ * matters, the embedding site says of its own pages that they are not framed
+ * (`frame-ancestors`), which no script of the framed site's can undo.
+ */
+export function guardFrame(frame: HTMLIFrameElement): boolean {
+  let here: string | null = null;
+  try {
+    here = frame.contentWindow ? frame.contentWindow.location.href : null;
+  } catch {
+    return false; // Another origin's document: what the frame is for.
+  }
+  // An empty frame is the page's own `about:blank`, with nothing in it.
+  if (here === null || here === 'about:blank') return false;
+  trippedFrames.add(frame);
+  emptyFrame(frame);
+  return true;
+}
+
+/** The frames guardFrame found holding a document of the embedding page's own origin. */
+const trippedFrames = new WeakSet<HTMLIFrameElement>();
+
+/** Whether `frame` was found holding the embedding site's own page: it is shown nothing again. */
+export function isTrippedFrame(frame: HTMLIFrameElement): boolean {
+  return trippedFrames.has(frame);
+}
+
+/**
+ * Take a frame's document away: its address off the element, and the document it holds
+ * replaced by an empty one. (An address taken off an element leaves the document it loaded
+ * where it is.)
+ */
+export function emptyFrame(frame: HTMLIFrameElement): void {
+  frame.removeAttribute('src');
+  try {
+    frame.contentWindow?.location.replace('about:blank');
+  } catch {
+    // No document to replace (the frame is on no page), or none that can be.
+  }
+}
+
+/** The `<softn-app>` elements made for an app to nest another in: not ones the app's page has by any other way. */
+const nestedAppElements = new WeakSet<Element>();
+
+/** Whether `el` is a box an app nests another app in (made by createHostElement for the app's `<softn-app>`). */
+export function isNestedAppElement(el: unknown): el is HTMLElement {
+  return typeof el === 'object' && el !== null && nestedAppElements.has(el as Element);
+}
+
+/**
+ * The archive an app's `<softn-app src>` names: a `.softn` or `.zip` among the app's own
+ * front-end files, by its path in the archive, or null. Never an address: an app nests what
+ * it carries, which the person was given with it, and nothing it could fetch later.
+ */
+export function nestedAppSource(value: string, context: Pick<HostAttributeContext, 'archive' | 'entryPath'>): string | null {
+  const text = value.trim();
+  if (!text || /^[a-z][a-z0-9+.-]*:|^\/\//i.test(text)) return null;
+  const resolved = context.archive.resolveFrontendExistingPath(text.split(/[?#]/)[0], context.entryPath);
+  if (resolved === null || !/\.(?:softn|zip)$/i.test(resolved)) return null;
+  // The name is the file's own, and reads as itself: the mount reads the archive by what
+  // this answers, and a name that reads as another file's (`%73erver/x.zip`, which is
+  // `server/x.zip` read once more) would be checked as one file and run as another.
+  if (!isNestedAppFile(context.archive, resolved)) return null;
+  return `/${resolved.replace(/^\/+/, '')}`;
+}
+
+/** Whether `name` is, exactly, a front-end file of the archive: what a nested app is read by. */
+export function isNestedAppFile(archive: ContainerArchive, name: string): boolean {
+  return archive.resolveExistingPath(name) === name && archive.isFrontendPath(name);
 }
 
 export interface FontScopeContext {
@@ -228,6 +496,19 @@ export function hostAttributeValue(tag: string, name: string, value: string, con
   // (Firefox does) follows it by itself: it is no `<a>`, so nothing here hears the click as
   // a link's, and the page the app is embedded in would go where the app said.
   if (context.ns === 'math' && (lower === 'href' || lower === 'xlink:href')) return null;
+
+  // A frame and a nested app are each another document: of their own attributes only the
+  // ones read here are set, and of any element's only those that say how it looks.
+  if (!context.ns && tag === 'iframe') {
+    if (FRAME_ATTRIBUTES.has(lower)) return frameAttributeValue(lower, value, context);
+    if (!isPlainAttribute(lower)) return null;
+  }
+  if (!context.ns && tag === NESTED_APP_TAG) {
+    if (lower === 'src') return nestedAppSource(value, context);
+    // Where the nested app starts: a path of its own, which it reads by its own rule.
+    if (lower === 'initial-path') return /^\/[^\s\\]{0,511}$/.test(value.trim()) && !value.trim().startsWith('//') ? value.trim() : null;
+    if (!isPlainAttribute(lower)) return null;
+  }
 
   if (lower === 'target') {
     const target = value.trim().toLowerCase();

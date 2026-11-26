@@ -10,22 +10,37 @@ import { ContainerArchive, bytesToBase64, piecesSize, piecesToBytes } from './ar
 import { blobWithin } from './capped-body';
 import { replayCanvasCommands } from './canvas-replay';
 import {
+  FRAME_CREDENTIALLESS,
+  FRAME_REFERRER_DEFAULT,
   MATH_NS,
   MAX_EVENT_TYPES,
+  MAX_HOST_FRAMES,
   MAX_HOST_NODES,
+  MAX_NESTED_APPS,
+  MAX_NESTED_STARTS,
+  MAX_TREE_NESTED_APPS,
+  NESTED_START_WINDOW_MS,
   SVG_NS,
   canvasSide,
   createHostElement,
+  emptyFrame,
+  frameSandbox,
+  guardFrame,
   hostAttributeValue,
   hostElementName,
   hostTitle,
   isDeclaredElementProperty,
   isExternalHref,
   isLinkElement,
+  isNestedAppElement,
+  isTrippedFrame,
+  newEmbedBudget,
+  type EmbedAllowance,
+  type EmbedBudget,
   type FontScopeContext,
 } from './host-policy';
 import { splitTopLevelCss } from './css-policy';
-import { NODE_ID_ATTR, READABLE_ATTR, extractSanitizedFontFaces, sanitizeContainerCss, sanitizeHostAssetUrl } from './sanitize';
+import { FRAME_WANTED_ATTR, NODE_ID_ATTR, READABLE_ATTR, extractSanitizedFontFaces, sanitizeContainerCss, sanitizeHostAssetUrl } from './sanitize';
 import { isAllowedUiExtension } from './ui-extensions/registry';
 import type {
   Canvas2DCmd,
@@ -182,7 +197,28 @@ export interface DomPatcherCallbacks {
   onWarning?: (text: string) => void;
   /** Sanitized `@font-face` rules extracted from a dynamic `<style>`/`<link>` sheet (empty string when cleared/removed). */
   onStyleFonts?: (sheet: Element, fontFacesCss: string) => void;
+  /**
+   * An app the page nests (`<softn-app src>`) is to run in `box`: `source` is the archive's
+   * path among the app's own files, as host-policy.ts read it. Answers at once, with what
+   * stops it (at any time, a start still under way too) and when it has ended; or null when
+   * it was not started.
+   */
+  onNestedApp?: (box: HTMLElement, source: string, initialPath: string | undefined) => NestedRun | null;
 }
+
+/** A nested app that was started: what stops it, and when it has gone (stopped, or failed to start). */
+export interface NestedRun {
+  dispose(): void;
+  ended: Promise<void>;
+}
+
+/** An app nested in the page: what its box was last asked to run, if anything. */
+interface NestedApp {
+  running: { source: string; initialPath: string | undefined; live: boolean; dispose(): void } | null;
+}
+
+/** How often the frames of a page are looked at for a document that must not be in one (guardFrame). */
+const FRAME_WATCH_MS = 250;
 
 export class HostDomPatcher {
   readonly nodes = new Map<number, Node>();
@@ -296,6 +332,23 @@ export class HostDomPatcher {
   private quietUntil = 0;
   /** Browser actions deferred until the guest has had a chance to cancel their event. */
   private readonly heldDefaults = new WeakMap<Event, () => void>();
+  /** What of another document this mount lets the page hold (host-policy.ts). */
+  private readonly embeds: EmbedAllowance;
+  /** What this page and the others of its tree hold between them (host-policy.ts). */
+  private readonly budget: EmbedBudget;
+  /** The frames the app's page has, each with the address the app last asked it for (as written). */
+  private readonly frames = new Map<HTMLIFrameElement, string>();
+  /** The frames made in the turn being applied: on no page yet, and not ones to let go of for room. */
+  private readonly turnFrames = new Set<HTMLIFrameElement>();
+  /** The addresses that brought a frame to a page of the embedding site's own: shown in no frame again. */
+  private readonly trippedAddresses = new Set<string>();
+  private frameWatch: ReturnType<typeof setInterval> | null = null;
+  /** The boxes the app nests other apps in. */
+  private readonly nestedApps = new Map<HTMLElement, NestedApp>();
+  /** The nested apps of this page started and not yet gone. */
+  private liveApps = 0;
+  private nestedRetry: ReturnType<typeof setTimeout> | null = null;
+  private warnedEmbedLimit = false;
   private disposed = false;
 
   constructor(params: {
@@ -319,6 +372,10 @@ export class HostDomPatcher {
     sweepNodesEvery?: number;
     /** Per-mount font-family scoping context to prevent host-page @font-face hijacking. */
     fontScope?: FontScopeContext;
+    /** Whether the page may hold a frame of an allowed site, and an app of the app's own. Neither, unless said. */
+    embeds?: EmbedAllowance;
+    /** What the tree's pages hold between them: the mount's, shared with the apps nested in it. This page's alone when none is given. */
+    embedBudget?: EmbedBudget;
     callbacks: DomPatcherCallbacks;
   }) {
     this.viewportEl = params.viewportEl;
@@ -330,6 +387,8 @@ export class HostDomPatcher {
     this.filesGranted = params.filesGranted === true;
     this.fontScope = params.fontScope;
     this.sweepNodesEvery = Math.max(1, params.sweepNodesEvery ?? SWEEP_NODES_EVERY);
+    this.embeds = { frames: params.embeds?.frames === true, apps: params.embeds?.apps === true };
+    this.budget = params.embedBudget ?? newEmbedBudget();
     this.callbacks = params.callbacks;
     if (params.headEl) this.nodes.set(GUEST_HEAD_ID, params.headEl);
 
@@ -342,6 +401,203 @@ export class HostDomPatcher {
     this.netGranted = netGranted;
     this.filesGranted = filesGranted;
     this.inlineStyleCache.clear();
+    // A frame shows a site only while the app is allowed it: one whose site is no longer
+    // allowed is emptied, and one asked for before the person said yes is shown now.
+    for (const [frame, wanted] of this.frames) this.showFrame(frame, wanted);
+  }
+
+  /**
+   * Show in `frame` the address the app asked it for, if the app may have it there; empty it
+   * if not. Asked again whenever the answer may have changed (the address, or what the app
+   * is allowed).
+   */
+  private showFrame(frame: HTMLIFrameElement, wanted: string): void {
+    let clean = wanted
+      ? hostAttributeValue('iframe', 'src', wanted, { entryPath: this.entryPath, archive: this.archive, permissions: this.permissions, netGranted: this.netGranted })
+      : null;
+    // Nothing again in a frame that came to hold the embedding site's own page, and nowhere
+    // again the address that brought it there.
+    if (clean !== null && (isTrippedFrame(frame) || this.trippedAddresses.has(clean))) clean = null;
+    if (clean === null) {
+      if (frame.hasAttribute('src')) emptyFrame(frame);
+    } else if (frame.getAttribute('src') !== clean) {
+      frame.setAttribute('src', clean);
+    }
+  }
+
+  /**
+   * The frames and nested apps of the app's first markup, which sanitize.ts made: kept count
+   * of as those the script makes are, and each nested app started.
+   */
+  adoptEmbeds(): void {
+    if (!this.embeds.frames && !this.embeds.apps) return;
+    for (const node of this.nodes.values()) {
+      if (node instanceof HTMLIFrameElement) {
+        if (this.frames.has(node)) continue;
+        // The address as the app wrote it (sanitize.ts kept it beside the element), so that
+        // a site allowed later is shown then.
+        const wanted = node.getAttribute(FRAME_WANTED_ATTR) ?? node.getAttribute('src') ?? '';
+        node.removeAttribute(FRAME_WANTED_ATTR);
+        if (this.roomForFrame()) {
+          this.trackFrame(node, wanted);
+          this.showFrame(node, wanted);
+        } else {
+          // Past what the pages hold: it stays where the markup put it, with nothing in it.
+          emptyFrame(node);
+        }
+      } else if (isNestedAppElement(node) && !this.nestedApps.has(node)) {
+        this.nestedApps.set(node, { running: null });
+      }
+    }
+    this.syncNestedApps();
+  }
+
+  /** A frame the page now has: counted, and looked at whenever it loads a document and while it holds one. */
+  private trackFrame(frame: HTMLIFrameElement, wanted: string): void {
+    if (this.frames.has(frame)) return;
+    this.frames.set(frame, wanted);
+    this.budget.frames++;
+    // After the frame's own look at what it loaded (host-policy.ts createHostElement).
+    frame.addEventListener('load', () => this.checkFrame(frame));
+    if (this.frameWatch === null) {
+      // A document is in a frame from the moment it is committed, which is before `load`: a
+      // page of the embedding site's that a redirect brought there was live until then.
+      this.frameWatch = setInterval(() => {
+        for (const held of [...this.frames.keys()]) this.checkFrame(held);
+      }, FRAME_WATCH_MS);
+    }
+  }
+
+  /** A frame found holding the embedding site's own page is no longer the app's to show anything in, nor is its address. */
+  private checkFrame(frame: HTMLIFrameElement): void {
+    if (this.disposed || !this.frames.has(frame)) return;
+    if (!isTrippedFrame(frame) && !guardFrame(frame)) return;
+    const wanted = this.frames.get(frame) ?? '';
+    const clean = wanted
+      ? hostAttributeValue('iframe', 'src', wanted, { entryPath: this.entryPath, archive: this.archive, permissions: this.permissions, netGranted: this.netGranted })
+      : null;
+    if (clean !== null) this.trippedAddresses.add(clean);
+    this.forgetFrame(frame);
+    this.callbacks.onWarning?.('A frame was emptied: the site it showed sent it to a page of the site this app is shown on, which is not shown inside an app.');
+  }
+
+  /**
+   * Whether the pages of the tree have room for one more frame. This page's frames that are
+   * on no page are let go of first: not the one being made again (`replacing`, which gives
+   * its place to the new one), and not those made in the turn being applied, which are on no
+   * page only because a turn's elements are put in place at its end.
+   */
+  private roomForFrame(replacing?: HTMLIFrameElement): boolean {
+    const held = (): number => this.budget.frames - (replacing && this.frames.has(replacing) ? 1 : 0);
+    if (held() < MAX_HOST_FRAMES) return true;
+    for (const frame of [...this.frames.keys()]) {
+      if (held() < MAX_HOST_FRAMES) break;
+      if (frame !== replacing && !frame.isConnected && !this.turnFrames.has(frame)) this.forgetFrame(frame);
+    }
+    if (held() < MAX_HOST_FRAMES) return true;
+    this.warnEmbedLimit(`An app's pages hold at most ${MAX_HOST_FRAMES} frames between them; the rest are left empty.`);
+    return false;
+  }
+
+  /** A frame that is no longer the app's to show anything in. */
+  private forgetFrame(frame: HTMLIFrameElement): void {
+    if (this.frames.delete(frame)) this.budget.frames--;
+    this.turnFrames.delete(frame);
+    emptyFrame(frame);
+    if (this.frames.size === 0 && this.frameWatch !== null) {
+      clearInterval(this.frameWatch);
+      this.frameWatch = null;
+    }
+  }
+
+  private warnEmbedLimit(text: string): void {
+    if (this.warnedEmbedLimit) return;
+    this.warnedEmbedLimit = true;
+    this.callbacks.onWarning?.(text);
+  }
+
+  /** End what is running in a nested app's box, a start still under way too. */
+  private stopNestedApp(app: NestedApp): void {
+    const running = app.running;
+    app.running = null;
+    running?.dispose();
+  }
+
+  /**
+   * Each nested app's box runs what it now names. An app is started when its box is on the
+   * page, and started again when the box names another archive or another place in it; a box
+   * taken off the page keeps what it runs (a tab panel put back shows it as it was) until
+   * the page needs the room or forgets the box.
+   */
+  private syncNestedApps(): void {
+    if (this.disposed || this.nestedApps.size === 0) return;
+    for (const [box, app] of this.nestedApps) {
+      if (!box.isConnected) continue;
+      const source = box.getAttribute('src');
+      const initialPath = box.getAttribute('initial-path') ?? undefined;
+      if (app.running && app.running.source === source && app.running.initialPath === initialPath) continue;
+      this.stopNestedApp(app);
+      if (!source || !this.callbacks.onNestedApp) continue;
+      // No room now: asked again when one of this page's has gone, and a little later.
+      if (!this.roomForNestedApp()) continue;
+      const run = this.callbacks.onNestedApp(box, source, initialPath);
+      if (!run) {
+        // Not an archive the app may nest: nothing runs, and it is not asked for again as it is.
+        app.running = { source, initialPath, live: false, dispose: () => undefined };
+        continue;
+      }
+      this.budget.starts.push(Date.now());
+      app.running = { source, initialPath, live: true, dispose: () => run.dispose() };
+      // It holds its place from now until it has gone: one that is stopped while it starts
+      // is still a Worker until its start ends.
+      this.liveApps++;
+      this.budget.apps++;
+      void run.ended.then(() => {
+        this.liveApps--;
+        this.budget.apps--;
+        if (!this.disposed) this.syncNestedApps();
+      });
+    }
+  }
+
+  /**
+   * Whether one more nested app may be started now: there is room on this page and under the
+   * app the person opened, and not too many were started lately. Those of this page whose
+   * boxes are off it are ended for room, which is there once they have gone.
+   */
+  private roomForNestedApp(): boolean {
+    if (this.liveApps >= MAX_NESTED_APPS || this.budget.apps >= MAX_TREE_NESTED_APPS) {
+      let ending = false;
+      for (const [box, app] of this.nestedApps) {
+        if (!box.isConnected && app.running?.live) {
+          this.stopNestedApp(app);
+          ending = true;
+        }
+      }
+      if (!ending) {
+        this.warnEmbedLimit(`An app nests at most ${MAX_NESTED_APPS} apps at once, and ${MAX_TREE_NESTED_APPS} with those nested in them; the rest are not started.`);
+      }
+      this.retryNestedApps(1000);
+      return false;
+    }
+    const now = Date.now();
+    const starts = this.budget.starts;
+    while (starts.length > 0 && now - starts[0] >= NESTED_START_WINDOW_MS) starts.shift();
+    if (starts.length >= MAX_NESTED_STARTS) {
+      this.warnEmbedLimit(`An app starts at most ${MAX_NESTED_STARTS} nested apps in ${NESTED_START_WINDOW_MS / 1000} seconds; the rest wait.`);
+      this.retryNestedApps(starts[0] + NESTED_START_WINDOW_MS - now + 10);
+      return false;
+    }
+    return true;
+  }
+
+  /** Look again, in a while, for a nested app that had no room. */
+  private retryNestedApps(afterMs: number): void {
+    if (this.disposed || this.nestedRetry !== null) return;
+    this.nestedRetry = setTimeout(() => {
+      this.nestedRetry = null;
+      this.syncNestedApps();
+    }, Math.max(50, afterMs));
   }
 
   /** Apply a batch of `ShellOp` operations produced by a Worker VM turn. */
@@ -496,7 +752,13 @@ export class HostDomPatcher {
             const ns = rawNs === 'svg' || rawNs === 'math' ? rawNs : undefined;
             // The element's own name, by the host's rule (host-policy.ts): none for what the
             // page does not get, whatever prefix or case the operation spelled it with.
-            const name = hostElementName(rawTag, ns);
+            let name = hostElementName(rawTag, ns, this.embeds);
+            // No more frames than the pages hold (roomForFrame). One told again (moved) gives
+            // its place to the element made for it here.
+            if (name === 'iframe' && !ns) {
+              const toldFrame = this.nodes.get(id);
+              if (!this.roomForFrame(toldFrame instanceof HTMLIFrameElement ? toldFrame : undefined)) name = null;
+            }
             if (name === null) {
               const prevBlocked = this.nodes.get(id);
               if (prevBlocked) this.releaseNodeResources(prevBlocked);
@@ -533,7 +795,14 @@ export class HostDomPatcher {
             const el = isLink ? document.createElement('style') : createHostElement(name, ns);
             if (isLink) this.links.set(el, { rel: '', href: '' });
             else if (lower === 'style') this.styleSheets.set(el, []);
-            if (!ns && lower.startsWith('softn-')) {
+            if (el instanceof HTMLIFrameElement) {
+              // The one it replaces is let go of first, so the count is never past the bound.
+              const before = this.nodes.get(id);
+              if (before instanceof HTMLIFrameElement && this.frames.has(before)) this.forgetFrame(before);
+              this.trackFrame(el, '');
+              this.turnFrames.add(el);
+            } else if (isNestedAppElement(el)) this.nestedApps.set(el, { running: null });
+            else if (!ns && lower.startsWith('softn-')) {
               this.callbacks.onCustomTag?.(lower);
             }
             if (attrs && typeof attrs === 'object') {
@@ -771,6 +1040,9 @@ export class HostDomPatcher {
     }
     if (this.nodes.size >= this.nodesAtSweep + this.sweepNodesEvery) this.sweepNodes();
     this.limitOffPageCanvases();
+    // With the turn's tree in place: a nested app whose box reached the page, or names another archive, is started.
+    this.turnFrames.clear();
+    this.syncNestedApps();
 
     for (const [id, prop, val] of afterTree) this.applyProperty(id, prop, val);
     for (const [key, id, frames, timing] of started) this.startAnimation(key, id, frames, timing);
@@ -807,6 +1079,31 @@ export class HostDomPatcher {
         return;
       } else return;
       this.writeLinkedSheet(el, link);
+      return;
+    }
+
+    // A frame: its address is shown by showFrame, which is asked again when what the app is
+    // allowed changes; and what the host itself set on it is never taken off. Taken off, the
+    // sandbox would be gone from the next document the frame showed.
+    if (el instanceof HTMLIFrameElement && this.frames.has(el)) {
+      if (lowerName === 'src') {
+        this.frames.set(el, val ?? '');
+        this.showFrame(el, val ?? '');
+        return;
+      }
+      if (val === null && lowerName === 'sandbox') {
+        el.setAttribute('sandbox', frameSandbox());
+        return;
+      }
+      if (val === null && lowerName === 'referrerpolicy') {
+        el.setAttribute('referrerpolicy', FRAME_REFERRER_DEFAULT);
+        return;
+      }
+      // The host's own, as the sandbox is: with it off, the next document the frame showed
+      // had the person's cookies for its site.
+      if (lowerName === FRAME_CREDENTIALLESS) return;
+    } else if (lowerTag === 'iframe' && el.namespaceURI !== SVG_NS && el.namespaceURI !== MATH_NS) {
+      // A frame that is no longer the app's (let go of for room): nothing more is set on it.
       return;
     }
 
@@ -974,6 +1271,12 @@ export class HostDomPatcher {
   private releaseNodeResources(node: Node, id?: number): void {
     if (node instanceof Element) this.resizeObserver?.unobserve(node);
     if (node instanceof HTMLImageElement) this.cancelReadable(node);
+    if (node instanceof HTMLIFrameElement && this.frames.has(node)) this.forgetFrame(node);
+    const nested = node instanceof HTMLElement ? this.nestedApps.get(node) : undefined;
+    if (nested) {
+      this.stopNestedApp(nested);
+      this.nestedApps.delete(node as HTMLElement);
+    }
     if (id !== undefined) {
       this.offPage2d.delete(id);
       this.lastMeasuredBoxes.delete(id);
@@ -2467,6 +2770,12 @@ export class HostDomPatcher {
     this.scrolledSince.clear();
     this.resizeObserver?.disconnect();
     this.resizeObserver = null;
+    // What the page held of other documents ends with it: each nested app, and each frame's site.
+    for (const app of this.nestedApps.values()) this.stopNestedApp(app);
+    this.nestedApps.clear();
+    if (this.nestedRetry !== null) clearTimeout(this.nestedRetry);
+    this.nestedRetry = null;
+    for (const frame of [...this.frames.keys()]) this.forgetFrame(frame);
     this.nodes.clear();
     this.shadowSheets.clear();
     this.rootIds.clear();

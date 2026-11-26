@@ -14,7 +14,7 @@
 
 import { ContainerArchive, readRunnableModule, RUNTIME_BLOB_URL, VIRTUAL_ORIGIN } from './archive';
 import { collectFontFaceFamilies, extractFontFaces, namespaceContainerFonts, rewriteCss, transformContainerCss } from './css-policy';
-import { MATH_NS, SVG_NS, createHostElement, hostAttributeValue, hostElementName, isExternalHref, isLinkElement, type FontScopeContext } from './host-policy';
+import { MATH_NS, SVG_NS, createHostElement, hostAttributeValue, hostElementName, isExternalHref, isLinkElement, type EmbedAllowance, type FontScopeContext } from './host-policy';
 import { findInlineScriptStartLines } from './source-map';
 import { SOFTN_UI_CSS } from './ui-css';
 import type {
@@ -320,6 +320,56 @@ export function sameSite(a: string, b: string): boolean {
   return one.includes('.') && other.includes('.') && tail(one) === tail(other);
 }
 
+/** The embedding page's own host, lower-cased, or '' where it has none (a file, an opaque origin, no page at all). */
+function embeddingPageHost(): string {
+  try {
+    const here = (globalThis as { location?: { origin?: string; href?: string } }).location;
+    if (!here) return '';
+    const rawOrigin = here.origin && here.origin !== 'null' ? here.origin : here.href ? new URL(here.href).origin : '';
+    if (!rawOrigin || rawOrigin === 'null') return '';
+    const emb = new URL(rawOrigin);
+    if (emb.protocol !== 'https:' && emb.protocol !== 'http:') return '';
+    return emb.hostname.toLowerCase().replace(/\.+$/, '');
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * The address a frame of the app's (`<iframe src>`) may show, or null for one it may not.
+ *
+ * A frame is a document of another site's, drawn in the app's box with that site's own
+ * script and the person's session there. So it is held to more than a picture is:
+ *   - `https:` only, written whole (`//host/…` is read as https). Never a file of the app's,
+ *     a `blob:`, a `data:` or `about:` address: each would be a document of the embedding
+ *     page's own origin, or script of the app's run outside its VM.
+ *   - a host the app declared and the person allowed (`net`, `allowed_hosts`), by the rule a
+ *     `fetch` or a picture is held to, and never a private or local address even where one
+ *     is listed: a frame is something the person clicks in.
+ *   - never the embedding page's own site. Its pages, shown in a frame beside the app's own
+ *     elements with the person signed in, are the embedding site's to be clicked through.
+ */
+export function sanitizeFrameUrl(rawValue: string, permissions: ContainerPermissions, netGranted: boolean): string | null {
+  // eslint-disable-next-line no-control-regex -- as a browser reads an address: the controls in it dropped
+  const cleaned = String(rawValue ?? '').replace(/[\u0000-\u001f\u007f]+/g, '').trim();
+  if (!cleaned) return null;
+  const absolute = cleaned.startsWith('//') ? `https:${cleaned}` : cleaned;
+  if (!/^https:\/\//i.test(absolute)) return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(absolute);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== 'https:' || parsed.username || parsed.password) return null;
+  const hostname = parsed.hostname.toLowerCase().replace(/\.+$/, '');
+  if (!hostname || isPrivateOrLocalHost(hostname) || isMetadataOrUnspecifiedHost(hostname)) return null;
+  const embedding = embeddingPageHost();
+  if (targetsEmbeddingHost(parsed.href) || (embedding !== '' && sameSite(hostname, embedding))) return null;
+  if (!isExternalUrlAllowed(parsed.href, permissions.permissions?.net, netGranted)) return null;
+  return parsed.href;
+}
+
 /** Sanitize a single URL attribute value (`src`, `href`, etc.) for the host DOM. */
 function stripAsciiControlAndSpace(input: string): string {
   let out = '';
@@ -530,6 +580,8 @@ export { extractFontFaces as extractSanitizedFontFaces };
 
 /** The attribute an image asked for with CORS in the app's first markup carries its address in, for the patcher to load (dom-patcher.ts `adoptReadableImages`). */
 export const READABLE_ATTR = 'data-softn-readable';
+/** On a frame of the first page's markup, until the patcher takes it: the address the app wrote for it. */
+export const FRAME_WANTED_ATTR = 'data-softn-frame';
 
 /** The types a browser runs a script of (its "JavaScript MIME types"), and the container's own for TypeScript and Python. */
 const JS_SCRIPT_TYPES = new Set([
@@ -645,7 +697,9 @@ export function prepareHtmlDocument(
   archive: ContainerArchive,
   permissions: ContainerPermissions,
   netGranted: boolean,
-  fontScope?: FontScopeContext
+  fontScope?: FontScopeContext,
+  /** What of another document the page may hold (a frame, an app of its own): nothing, unless the mount says. */
+  embeds?: EmbedAllowance
 ): PreparedDocument {
   const parser = new DOMParser();
   const parsed = parser.parseFromString(htmlSource, 'text/html');
@@ -815,7 +869,7 @@ export function prepareHtmlDocument(
   // element's own name whatever prefix it was written with (host-policy.ts), and a
   // `<meta http-equiv>`, which is a navigation.
   for (const el of Array.from(parsed.body.querySelectorAll('*'))) {
-    const resolvedName = hostElementName(el.localName, undefined);
+    const resolvedName = hostElementName(el.localName, undefined, embeds);
     const resolvedLower = resolvedName?.toLowerCase();
     // Namespace-prefixed `<x:style>` / `<x:link>` are missed by `querySelectorAll('link, style, script')`
     // above, yet `hostElementName` strips the prefix to `'style'`/`'link'`. Drop them unconditionally
@@ -906,7 +960,7 @@ export function prepareHtmlDocument(
     // The name the element is made by: its own, without a prefix, and none for what the page
     // does not get (host-policy.ts). `<svg:script>` inside `<svg>` was looked up whole, not
     // found, and created by that name, which makes an SVG `script`.
-    const tag = hostElementName(el.localName, ns);
+    const tag = hostElementName(el.localName, ns, embeds);
     if (tag === null) return { seed: null, bp: null };
     const lowerTag = tag.toLowerCase();
     // All legitimate initial `<style>` and `<link>` elements were already extracted and sanitized
@@ -932,6 +986,14 @@ export function prepareHtmlDocument(
       seedAttrs[name] = attr.value;
       const clean = hostAttributeValue(lowerTag, name, attr.value, context);
       if (clean !== null) hostAttrs[name] = clean;
+    }
+
+    // A frame: the address the app wrote goes to the patcher beside the element (adoptEmbeds),
+    // which shows it when the app may have it. Read here alone, a frame of a site the person
+    // had not yet allowed stayed empty after they did.
+    if (lowerTag === 'iframe' && !ns) {
+      const wanted = Object.entries(seedAttrs).find(([name]) => name.toLowerCase() === 'src')?.[1];
+      if (typeof wanted === 'string' && wanted.trim()) hostAttrs[FRAME_WANTED_ATTR] = wanted;
     }
 
     // An image asked for with CORS from a site the app may reach: loaded by the patcher, which

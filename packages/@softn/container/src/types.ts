@@ -476,6 +476,28 @@ export interface SoftNContainerOptions {
    * the file as the app made it. The file is saved when this answers true.
    */
   onSaveRequest?: (file: SaveRequest) => boolean | Promise<boolean>;
+  /**
+   * Whether the app's page may hold frames (`<iframe src="https://…">`), such as a video
+   * player. `'allow'`: of a site the app declared in `permission.json` (`net`,
+   * `allowed_hosts`) and the person allowed, over `https:`, sandboxed by the container, shown
+   * without the person's cookies for that site (`credentialless`), and never of the
+   * embedding page's own site. `'deny'` (the default): an `<iframe>` is not made at all, as
+   * before there were any. A frame is another site's document in the host's page, so a host
+   * turns it on; one that does should also keep its own pages from being framed by others
+   * (`frame-ancestors`), which is what stops a framed site sending the frame to a sibling
+   * origin of the host's. An app that declares no `net` has none either way.
+   */
+  frames?: 'allow' | 'deny';
+  /**
+   * Whether the app may nest apps of its own (`<softn-app src="widgets/clock.softn">`, an
+   * archive among its own files). `'allow'` (the default): each runs in a Worker and a VM of
+   * its own and is allowed no more than the app it is nested in was (of what it asks for
+   * itself). It keeps nothing between visits: what it stores lasts as long as the page, and
+   * is a share of what an app may keep. A file it asks to save is asked about where the
+   * app's own are. Apps nest three deep, eight to a page and sixteen under one app.
+   * `'deny'`: none.
+   */
+  nestedApps?: 'allow' | 'deny';
   /** Permission mode: `'prompt'` shows non-blocking consent bar; `'preapproved'` grants declared permissions; `'deny'` denies all. */
   permissionMode?: 'prompt' | 'preapproved' | 'deny';
   /** Override `permission.json` from host deployment configuration. */

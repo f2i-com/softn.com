@@ -2054,6 +2054,41 @@
           ]
         },
         {
+          "id": "frames-and-nested-apps",
+          "title": "Other sites and other apps inside an app",
+          "blocks": [
+            {
+              "type": "paragraph",
+              "text": "A web app's page can hold two kinds of other document: a frame of another site, such as a video player, and another SoftN app that the app carries among its own files. Neither is made as the page wrote it. SoftN makes each one itself and decides what it may do."
+            },
+            {
+              "type": "code",
+              "language": "html",
+              "code": "<!-- permission.json: { \"permissions\": { \"net\": { \"enabled\": true, \"allowed_hosts\": [\"www.youtube.com\"] } } } -->\n<iframe src=\"https://www.youtube.com/embed/VIDEO_ID\" width=\"560\" height=\"315\" title=\"A video\"\n  allow=\"autoplay; encrypted-media; picture-in-picture; fullscreen\" allowfullscreen></iframe>\n\n<!-- An app of the app's own: widgets/clock.softn is a file in this app's archive. -->\n<softn-app src=\"widgets/clock.softn\" style=\"display:block; height:240px\"></softn-app>",
+              "caption": "A video in a frame, and an app nested in the page. VIDEO_ID is a placeholder."
+            },
+            {
+              "type": "definitions",
+              "items": [
+                {
+                  "term": "`<iframe src>`",
+                  "description": "Shows an `https` site the app declared (`net`, with the site in `allowed_hosts`) once the person has allowed the app the network; before that, and for any other address, the frame stays empty. It is never a file of the app's, a `data:` or `blob:` address, a private or local address, or a page of the site the app is opened on. SoftN sandboxes it: the framed site runs its own script, and cannot take the page somewhere else, open a dialog over it, or save a file. It is shown as to someone it has never seen: the person's cookies and sign-in for that site are not in the frame, so a player plays, and does not know whose account is watching. Of `allow`, only what a player needs is passed on (autoplay, encrypted media, picture in picture, full screen): never the camera, the microphone, where the person is, the clipboard, sharing or motion sensors. The framed site is told the origin of the page the app is opened on and no more. An app and the apps nested in it hold at most 12 frames between them. A frame that the framed site sends to a page of the site the app is opened on is emptied, and that address is not shown again. The app's own code cannot read the frame or send it messages."
+                },
+                {
+                  "term": "`<softn-app src>`",
+                  "description": "Runs a `.softn` or `.zip` archive that is a file of the app's own (a web app, with an HTML page as its entry), in a box in the page. `src` is a path in the archive, never an address. The nested app runs apart from the app around it, in a Worker and engine of its own, and neither can read the other's page. It keeps nothing between visits: what it stores (`localStorage`, IndexedDB, its database) lasts as long as the page is open, and is a share of what an app may keep. Keep what must last in the outer app. It asks the person for nothing: of what it declares in its own `permission.json`, it is allowed what the outer app declared and the person allowed, on the outer app's terms (its `allowed_hosts`, not the nested app's). A file it offers to save is asked about in the outer app's own bar. `initial-path` names where it starts. Give the element a height. A page nests at most 8 apps at once, apps nest three deep, and an app holds at most 16 nested apps at every depth together; an app whose box is changed again and again is started no more than 24 times in ten seconds."
+                }
+              ]
+            },
+            {
+              "type": "callout",
+              "tone": "note",
+              "title": "Where frames are shown",
+              "text": "Frames are shown where an app runs in a browser: the SoftN web runtime and an app hosted on its own website. An app hosted on FormLogic, and an app opened in the desktop apps, shows none: those pages are kept to their own files. A site that embeds apps with the container itself shows none unless it turns them on (`frames: 'allow'`). Nested apps run wherever the app's archive is opened whole. FormLogic does not yet take an archive among an app's files, so an app hosted there nests none."
+            }
+          ]
+        },
+        {
           "id": "authoring-tools",
           "title": "Create and edit full-stack containers in Studio and Builder",
           "blocks": [
@@ -2872,7 +2907,12 @@
                   "Python logic has no `localStorage` or `db.*`; records shared on a server need the storage permission and a directory that publishes the app"
                 ],
                 [
-                  "`<iframe>`, `<embed>`, `<object>`",
+                  "`<iframe>`",
+                  "Supported in a web app (`engine: 2`) for an `https` site the app was allowed: sandboxed by SoftN, and never a page of the site the app is opened on. Not in `.ui` markup, and not in an app hosted on FormLogic or opened in the desktop apps",
+                  "Declare `net` with the site in `allowed_hosts` in `permission.json` (`www.youtube.com` for a video)"
+                ],
+                [
+                  "`<embed>`, `<object>`",
                   "Not supported: not drawn",
                   "Link to the page instead, or build that part as a page of the app"
                 ],
