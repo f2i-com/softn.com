@@ -149,6 +149,13 @@ export function compact(ctl: Conversation, step: number, aggressive: boolean): S
   if (shortened.size === 0) return forgotten;
   const results = new Map<string, { content: string; isError: boolean }>();
   for (const turn of ctl.turns) if (turn.role === 'tool') for (const r of turn.results) results.set(r.id, r);
+  // A file renamed since is the text that was read under its new name (rename_file carries the
+  // read across): what the conversation no longer holds of the one, it does not hold of the other.
+  for (const [id, call] of callOf) {
+    if (call.name !== 'rename_file' || !results.get(id) || results.get(id)!.isError) continue;
+    const [from, to] = [call.input.from, call.input.to].map((p) => (typeof p === 'string' ? p.trim().replace(/^\.\//, '') : ''));
+    if (from && to && shortened.has(from)) shortened.add(to);
+  }
   for (const path of shortened) {
     const changedAt = lastChange.get(path) ?? 0;
     let held = false;

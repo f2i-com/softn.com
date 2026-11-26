@@ -887,6 +887,26 @@ fn an_api_v1_handler_always_has_the_two_headers_it_reads() {
     assert!(legacy.get("authorization").is_none() && legacy.get("idempotency-key").is_none());
 }
 
+/// A header sent on several lines reaches a handler as one value, the lines in order and
+/// joined with ", ", as Apache hands them to the PHP host (`softn_request_headers` reads
+/// `$_SERVER`). Only the last line used to arrive: behind a proxy that adds a line of its own
+/// to `X-Forwarded-For`, a handler read the proxy's line and nothing of the client's.
+#[test]
+fn a_header_sent_on_several_lines_reaches_a_handler_as_one_value() {
+    let mut headers = axum::http::HeaderMap::new();
+    headers.append("x-forwarded-for", "198.51.100.1".parse().unwrap());
+    headers.append("accept-language", "en-AU".parse().unwrap());
+    headers.append("x-forwarded-for", "10.0.0.8".parse().unwrap());
+    headers.append("accept-language", "en;q=0.8".parse().unwrap());
+    headers.append("x-request-id", "abc".parse().unwrap());
+    let seen = script_headers(&headers, false, false);
+    assert_eq!(seen["x-forwarded-for"], "198.51.100.1, 10.0.0.8");
+    assert_eq!(seen["accept-language"], "en-AU, en;q=0.8");
+    assert_eq!(seen["x-request-id"], "abc");
+    // In the order the names first came.
+    assert_eq!(seen.keys().collect::<Vec<_>>(), ["x-forwarded-for", "accept-language", "x-request-id"]);
+}
+
 /// A photo is decoded only while one of the host's decodes is free; past
 /// that the upload is told to come back, not queued.
 #[tokio::test]
@@ -1280,4 +1300,226 @@ fn a_sync_token_that_is_the_operator_token_is_refused() {
     std::fs::write(bundle.join("manifest.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
     let refused = AppContext::load(bundle, Some(root.join("data")), Some(1), false).err().unwrap_or_default();
     assert!(refused.contains("is the operator token"), "{refused}");
+}
+
+/// `len` bytes that say where they are: byte `i` is `i % 251`.
+fn numbered(len: usize) -> Vec<u8> {
+    (0..len).map(|i| (i % 251) as u8).collect()
+}
+
+/// A legacy bundle with `assets/clip.bin` of `len` numbered bytes and no routes.
+fn clip_app(len: usize) -> Arc<AppContext> {
+    let root = crate::test_dirs::temp_path("softn-clip", "");
+    let bundle = root.join("bundle");
+    std::fs::create_dir_all(bundle.join("server")).unwrap();
+    std::fs::create_dir_all(bundle.join("assets")).unwrap();
+    std::fs::write(bundle.join("assets/clip.bin"), numbered(len)).unwrap();
+    let manifest = serde_json::json!({"id":"com.example.clip","name":"Clip","version":"1","server":{"routes":[]}});
+    std::fs::write(bundle.join("manifest.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
+    std::fs::write(bundle.join("server/main.logic"), "function unused(req) { return {status: 200, body: {}}; }").unwrap();
+    AppContext::load(bundle, Some(root.join("data")), Some(1), false).unwrap()
+}
+
+/// A container app whose frontend holds `public/clip.mp4` of `len` numbered bytes.
+fn clip_container_app(len: usize) -> Arc<AppContext> {
+    let root = crate::test_dirs::temp_path("softn-clip-container", "");
+    let bundle = root.join("bundle");
+    std::fs::create_dir_all(bundle.join("public")).unwrap();
+    std::fs::create_dir_all(bundle.join("backend")).unwrap();
+    let manifest = serde_json::json!({"id":"com.example.clip-container","name":"Clip","version":"1","engine":2,
+        "main":"public/index.html","frontendRoot":"public",
+        "backend":{"runtime":"javascript","entry":"backend/server.js","mode":"api","routes":["/api/"]}});
+    std::fs::write(bundle.join("manifest.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
+    std::fs::write(bundle.join("public/index.html"), "<!doctype html><video src=\"clip.mp4\"></video>").unwrap();
+    std::fs::write(bundle.join("public/clip.mp4"), numbered(len)).unwrap();
+    std::fs::write(bundle.join("backend/server.js"), "function handleRequest(req) { return { status: 200, json: {} }; }").unwrap();
+    AppContext::load(bundle, Some(root.join("data")), Some(1), false).unwrap()
+}
+
+/// Status, lower-cased head and the body's bytes of one raw request, read to the end.
+async fn send_bytes(addr: SocketAddr, request: String) -> (u16, String, Vec<u8>) {
+    let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut buf = Vec::new();
+    tokio::time::timeout(std::time::Duration::from_secs(10), stream.read_to_end(&mut buf)).await.unwrap().unwrap();
+    let end = buf.windows(4).position(|w| w == b"\r\n\r\n").expect("an answer's head");
+    let head = String::from_utf8_lossy(&buf[..end]).to_ascii_lowercase();
+    let status = head[9..12].parse().unwrap();
+    (status, head, buf[end + 4..].to_vec())
+}
+
+/// A PHP app behind a front controller (`RewriteRule ^ index.php`, as Laravel, Slim and
+/// WordPress ship it) reads the address it was asked for in `REQUEST_URI`, as Apache, the PHP
+/// host and the browser's container give it, and the rewritten query in `QUERY_STRING` and
+/// `$_GET`. It read the rewritten one, `/index.php`, so every page of the app was its home page.
+#[tokio::test]
+async fn a_php_front_controller_reads_the_address_it_was_asked_for() {
+    let root = crate::test_dirs::temp_path("softn-front-controller", "");
+    let bundle = root.join("bundle");
+    std::fs::create_dir_all(&bundle).unwrap();
+    let manifest = serde_json::json!({"id":"com.example.front","name":"Front","version":"1","engine":2,
+        "backend":{"runtime":"php","entry":"index.php","mode":"ssr"}});
+    std::fs::write(bundle.join("manifest.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
+    std::fs::write(
+        bundle.join(".htaccess"),
+        "RewriteEngine On\nRewriteRule ^old/(.*)$ index.php?legacy=$1 [QSA,L]\nRewriteCond %{REQUEST_FILENAME} !-f\nRewriteRule ^ index.php [L]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        bundle.join("index.php"),
+        r#"<?php
+header('Content-Type: application/json');
+echo json_encode(['uri' => $_SERVER['REQUEST_URI'], 'query' => $_SERVER['QUERY_STRING'], 'get' => $_GET, 'script' => $_SERVER['SCRIPT_NAME']]);
+"#,
+    )
+    .unwrap();
+    let ctx = AppContext::load(bundle, Some(root.join("data")), Some(1), false).unwrap();
+    let addr = serve(ctx).await;
+    for (asked, uri, query, get) in [
+        ("/blog/hello?x=1", "/blog/hello?x=1", "x=1", serde_json::json!({"x": "1"})),
+        ("/blog/hello", "/blog/hello", "", serde_json::json!([])),
+        ("/old/post-7?page=2", "/old/post-7?page=2", "legacy=post-7&page=2", serde_json::json!({"legacy": "post-7", "page": "2"})),
+        ("/index.php?y=2", "/index.php?y=2", "y=2", serde_json::json!({"y": "2"})),
+    ] {
+        let (status, _, body) = send(addr, format!("GET {asked} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n")).await;
+        assert_eq!(status, 200, "{asked}: {body}");
+        let seen: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(
+            seen,
+            serde_json::json!({"uri": uri, "query": query, "get": get, "script": "/index.php"}),
+            "{asked}"
+        );
+    }
+}
+
+/// A media player asks for a file in pieces (`Range`), and Safari will not play a video
+/// whose server does not answer them: a bundle's file, and a container app's, are sent in the
+/// range asked for (206), or answered 416 for a range past their end, and say they take
+/// ranges. A range this host does not read (another unit, several at once, one for another
+/// version of the file by `If-Range`) is answered with the whole file, as a server may. Both
+/// answered every range with the whole file, as a 200.
+#[tokio::test]
+async fn a_bundle_file_is_sent_in_the_range_a_player_asks_for() {
+    const LEN: usize = 300_000;
+    let whole = numbered(LEN);
+    for (label, ctx, path) in [
+        ("a legacy bundle's file", clip_app(LEN), "/assets/clip.bin"),
+        ("a container app's file", clip_container_app(LEN), "/clip.mp4"),
+    ] {
+        let addr = serve(ctx).await;
+        let ask = |method: &str, extra: &str| {
+            format!("{method} {path} HTTP/1.1\r\nHost: {addr}\r\n{extra}Connection: close\r\n\r\n")
+        };
+        let (status, head, body) = send_bytes(addr, ask("GET", "")).await;
+        assert_eq!(status, 200, "{label}");
+        assert!(head.contains("accept-ranges: bytes"), "{label}: {head}");
+        assert_eq!(body, whole, "{label}");
+        let etag = head.lines().find_map(|l| l.strip_prefix("etag: ")).unwrap().to_string();
+
+        for (range, from, to) in [
+            ("bytes=0-99", 0, 99),
+            ("bytes=299990-", 299_990, LEN - 1),
+            ("bytes=-5", LEN - 5, LEN - 1),
+            ("bytes=100-100", 100, 100),
+            ("bytes=299000-999999", 299_000, LEN - 1),
+            ("Bytes = 10 - 19", 10, 19),
+            ("bytes=-999999", 0, LEN - 1),
+        ] {
+            let (status, head, body) = send_bytes(addr, ask("GET", &format!("Range: {range}\r\n"))).await;
+            assert_eq!(status, 206, "{label}: {range}\n{head}");
+            assert!(head.contains(&format!("content-range: bytes {from}-{to}/{LEN}")), "{label}: {range}\n{head}");
+            assert!(head.contains(&format!("content-length: {}", to - from + 1)), "{label}: {range}\n{head}");
+            assert_eq!(body.as_slice(), &whole[from..=to], "{label}: {range}");
+            // The same range, asked for this version of the file.
+            let (status, _, body) = send_bytes(addr, ask("GET", &format!("Range: {range}\r\nIf-Range: {etag}\r\n"))).await;
+            assert_eq!((status, body.len()), (206, to - from + 1), "{label}: {range} with its If-Range");
+        }
+        for range in ["bytes=300000-", "bytes=300000-300010", "bytes=-0"] {
+            let (status, head, _) = send_bytes(addr, ask("GET", &format!("Range: {range}\r\n"))).await;
+            assert_eq!(status, 416, "{label}: {range}\n{head}");
+            assert!(head.contains(&format!("content-range: bytes */{LEN}")), "{label}: {range}\n{head}");
+        }
+        for extra in [
+            "Range: bytes=0-1,5-6\r\n".to_string(),
+            "Range: items=0-1\r\n".to_string(),
+            "Range: bytes=9-5\r\n".to_string(),
+            "Range: bytes=x-5\r\n".to_string(),
+            "Range: bytes=0-99\r\nIf-Range: \"another-version\"\r\n".to_string(),
+            "Range: bytes=0-99\r\nIf-Range: Wed, 21 Oct 2015 07:28:00 GMT\r\n".to_string(),
+            format!("Range: bytes=0-99\r\nIf-Range: W/{etag}\r\n"),
+        ] {
+            let (status, _, body) = send_bytes(addr, ask("GET", &extra)).await;
+            assert_eq!((status, body.len()), (200, LEN), "{label}: {extra}");
+        }
+        // HEAD says what the GET would, and sends none of it.
+        let (status, head, body) = send_bytes(addr, ask("HEAD", "Range: bytes=0-99\r\n")).await;
+        assert_eq!((status, body.len()), (206, 0), "{label}");
+        assert!(head.contains("content-length: 100") && head.contains(&format!("content-range: bytes 0-99/{LEN}")), "{label}: {head}");
+        // A copy that is current is not sent again, a range of it or not.
+        let (status, _, body) = send_bytes(addr, ask("GET", &format!("Range: bytes=0-99\r\nIf-None-Match: {etag}\r\n"))).await;
+        assert_eq!((status, body.len()), (304, 0), "{label}");
+    }
+}
+
+/// A large file of a bundle is sent as the client takes it: a download held up by its client
+/// holds a piece of the file, not the file. Each was read whole into memory and held until the
+/// client had taken the last byte, so a few clients that asked for a 64 MiB video and read
+/// slowly held hundreds of megabytes between them, and one visitor could keep 64 such downloads.
+///
+/// The figure is the process's, so it is measured in a process of its own, this test binary
+/// started again to run this test alone.
+#[test]
+fn a_large_file_is_read_as_the_client_takes_it() {
+    const ALONE: &str = "SOFTN_TEST_ALLOCATION_ALONE";
+    if std::env::var_os(ALONE).is_none() {
+        let run = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "http::hardening_tests::a_large_file_is_read_as_the_client_takes_it", "--test-threads=1", "--nocapture"])
+            .env(ALONE, "1")
+            .output()
+            .unwrap();
+        let said = format!("{}{}", String::from_utf8_lossy(&run.stdout), String::from_utf8_lossy(&run.stderr));
+        assert!(run.status.success() && said.contains("1 passed"), "the measurement, run alone:\n{said}");
+        return;
+    }
+    const LEN: usize = 24 << 20;
+    const DOWNLOADS: usize = 4;
+    let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+    let (conn_tx, conn_rx) = tokio::sync::mpsc::channel::<()>(1);
+    std::mem::forget(conn_rx);
+    let router = build_single_tenant_router(clip_app(LEN), &test_options(false), conn_tx);
+    // The answers as the host hands them to the connection, which writes each as its client
+    // takes it (the system's own buffers on this side of a slow link hold a few megabytes
+    // at most). Their bodies are not read here: that is the client taking nothing yet.
+    let (answers, grew) = crate::alloc::peak::growth(|| {
+        runtime.block_on(async {
+            let mut answers = Vec::new();
+            for _ in 0..DOWNLOADS {
+                let mut request = axum::http::Request::get("/assets/clip.bin")
+                    .header("host", "127.0.0.1:3000")
+                    .body(axum::body::Body::empty())
+                    .unwrap();
+                request.extensions_mut().insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 50_000))));
+                let answer = tower::ServiceExt::oneshot(router.clone(), request).await.unwrap();
+                assert_eq!(answer.status(), StatusCode::OK);
+                answers.push(answer);
+            }
+            answers
+        })
+    });
+    println!("{DOWNLOADS} unread downloads of a {} MiB file: {} KiB held", LEN >> 20, grew >> 10);
+    assert!(
+        grew < 8 << 20,
+        "{DOWNLOADS} downloads of a {} MiB file held {} MiB while their clients took nothing",
+        LEN >> 20,
+        grew >> 20
+    );
+    // And each is the whole file when its client does take it.
+    let expected = numbered(LEN);
+    runtime.block_on(async {
+        for answer in answers {
+            assert_eq!(answer.headers()["content-length"], LEN.to_string());
+            let body = axum::body::to_bytes(answer.into_body(), usize::MAX).await.unwrap();
+            assert!(body == expected, "a download was not the file");
+        }
+    });
 }

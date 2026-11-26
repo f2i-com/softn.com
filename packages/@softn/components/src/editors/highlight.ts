@@ -475,8 +475,20 @@ function scanJson(s: Scanner): void {
     if (ch === '"') {
       const start = s.pos;
       scanQuoted(s, '"');
-      // A string followed by a colon is a key.
-      if (nextNonSpace(s.src, s.pos) === ':') s.tokens[s.tokens.length - 1] = { kind: 'property', text: s.src.slice(start, s.pos) };
+      // A string followed by a colon is a key. Only its own text: pushed
+      // straight after another string (`"a""b": 1`, a comma deleted), it was
+      // merged into that one, which was replaced whole, and the text before
+      // the key went missing from under the editor's caret.
+      if (nextNonSpace(s.src, s.pos) === ':') {
+        const key = s.src.slice(start, s.pos);
+        const last = s.tokens[s.tokens.length - 1];
+        if (last.text.length > key.length) {
+          last.text = last.text.slice(0, last.text.length - key.length);
+          s.push('property', key);
+        } else {
+          s.tokens[s.tokens.length - 1] = { kind: 'property', text: key };
+        }
+      }
       continue;
     }
     const number = /[-\d]/.test(ch) ? matchAt(s, /-?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?/y) : null;

@@ -392,6 +392,7 @@ export class LocalBackendTransport implements BackendTransport {
   >();
   private readonly wsHandlers = new Map<string, (event: BackendWsEvent) => void>();
   private readonly persistedDbSizes = new Map<string, number>();
+  private readonly unsavedDbWarned = new Set<string>();
   private resolveReady!: () => void;
   private rejectReady!: (err: Error) => void;
   private isReady = false;
@@ -563,22 +564,37 @@ export class LocalBackendTransport implements BackendTransport {
         this.onConsole?.(msg.level, msg.text);
         return;
 
-      case 'sqlite-persist':
-        if (this.persistStorage && msg.bytes.byteLength <= Math.min(MAX_SINGLE_SQLITE_BYTES, this.maxTotalSqliteBytes)) {
-          if (!this.persistedDbSizes.has(msg.dbKey) && this.persistedDbSizes.size >= MAX_PERSISTED_SQLITE_DBS) {
-            return;
-          }
-          let totalBytes = msg.bytes.byteLength;
-          for (const [k, sz] of this.persistedDbSizes) {
-            if (k !== msg.dbKey) totalBytes += sz;
-          }
-          if (totalBytes > this.maxTotalSqliteBytes) {
-            return;
-          }
-          this.persistedDbSizes.set(msg.dbKey, msg.bytes.byteLength);
-          void savePersistedBlob(`${this.storagePrefix}sqlite:${msg.dbKey}`, msg.bytes, this.storage);
+      case 'sqlite-persist': {
+        if (!this.persistStorage) return;
+        // A database over what is kept is not saved, and the app is told once: it kept working,
+        // and what it wrote since was gone at the next visit without a word.
+        const unsaved = (why: string) => {
+          if (this.unsavedDbWarned.has(msg.dbKey)) return;
+          this.unsavedDbWarned.add(msg.dbKey);
+          this.onConsole?.('warn', `[backend] ${msg.dbKey} is not saved for the next visit: ${why}`);
+        };
+        const maxOne = Math.min(MAX_SINGLE_SQLITE_BYTES, this.maxTotalSqliteBytes);
+        if (msg.bytes.byteLength > maxOne) {
+          unsaved(`it is ${msg.bytes.byteLength} bytes, over the ${maxOne} kept`);
+          return;
         }
+        if (!this.persistedDbSizes.has(msg.dbKey) && this.persistedDbSizes.size >= MAX_PERSISTED_SQLITE_DBS) {
+          unsaved(`only ${MAX_PERSISTED_SQLITE_DBS} databases are kept`);
+          return;
+        }
+        let totalBytes = msg.bytes.byteLength;
+        for (const [k, sz] of this.persistedDbSizes) {
+          if (k !== msg.dbKey) totalBytes += sz;
+        }
+        if (totalBytes > this.maxTotalSqliteBytes) {
+          unsaved(`the app's databases come to ${totalBytes} bytes, over the ${this.maxTotalSqliteBytes} kept`);
+          return;
+        }
+        this.unsavedDbWarned.delete(msg.dbKey);
+        this.persistedDbSizes.set(msg.dbKey, msg.bytes.byteLength);
+        void savePersistedBlob(`${this.storagePrefix}sqlite:${msg.dbKey}`, msg.bytes, this.storage);
         return;
+      }
 
       case 'php-overlay-persist':
         if (this.persistStorage && msg.overlayJson.length <= 16 * 1024 * 1024) {
@@ -596,8 +612,12 @@ export class LocalBackendTransport implements BackendTransport {
         const pending = this.pendingFetch.get(msg.reqId);
         if (!pending) return;
         this.pendingFetch.delete(msg.reqId);
-        if (this.cookieJar.ingestResponseHeaders(msg.headers) && this.persistStorage) {
-          void savePersistedBlob(`${this.storagePrefix}cookies`, this.cookieJar.serialize(), this.storage);
+        try {
+          if (this.cookieJar.ingestResponseHeaders(msg.headers) && this.persistStorage) {
+            void savePersistedBlob(`${this.storagePrefix}cookies`, this.cookieJar.serialize(), this.storage);
+          }
+        } catch {
+          // A request taken off the pending list is answered whatever its headers hold.
         }
         pending.resolve({
           status: msg.status,
@@ -765,16 +785,17 @@ export class LocalBackendTransport implements BackendTransport {
     const jarCookie = this.cookieJar.getCookieHeader(cleanPath, true);
     if (jarCookie) headers['cookie'] = jarCookie;
 
-    let closed = false;
     this.wsHandlers.set(wsId, onEvent);
+    // A socket is open while its handler is registered: closed by the app, by the backend, or
+    // with every other socket when the transport ends (`rejectAllPending`), it has had its
+    // close, and is given no second one.
+    const live = () => this.wsHandlers.get(wsId) === onEvent;
 
     const openNow = () => {
-      if (this.disposed || this.disposing || closed) {
-        if (!closed) {
-          closed = true;
-          this.wsHandlers.delete(wsId);
-          onEvent({ type: 'close', code: 1001, reason: 'LocalBackendTransport disposed', wasClean: false });
-        }
+      if (!live()) return;
+      if (this.disposed || this.disposing) {
+        this.wsHandlers.delete(wsId);
+        onEvent({ type: 'close', code: 1001, reason: 'LocalBackendTransport disposed', wasClean: false });
         return;
       }
       this.post({
@@ -790,8 +811,7 @@ export class LocalBackendTransport implements BackendTransport {
       openNow();
     } else {
       void this.ready.then(openNow, (err) => {
-        if (closed) return;
-        closed = true;
+        if (!live()) return;
         this.wsHandlers.delete(wsId);
         onEvent({ type: 'error', message: err instanceof Error ? err.message : String(err) });
         onEvent({ type: 'close', code: 1006, reason: 'Backend failed to start', wasClean: false });
@@ -800,7 +820,7 @@ export class LocalBackendTransport implements BackendTransport {
 
     return {
       send: (data: string | Uint8Array) => {
-        if (this.disposed || this.disposing || closed) return;
+        if (this.disposed || this.disposing || !live()) return;
         if (typeof data === 'string') {
           this.post({ type: 'ws-send', wsId, data, binary: false });
         } else {
@@ -816,8 +836,7 @@ export class LocalBackendTransport implements BackendTransport {
         }
       },
       close: (code?: number, reason?: string) => {
-        if (closed) return;
-        closed = true;
+        if (!live()) return;
         this.wsHandlers.delete(wsId);
         if (!this.disposed && !this.disposing) {
           this.post({ type: 'ws-close', wsId, code: code ?? 1000, reason: reason ?? '' });

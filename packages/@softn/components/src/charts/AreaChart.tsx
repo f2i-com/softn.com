@@ -557,7 +557,9 @@ export function AreaChart({
             {formatXLabel(hoveredTick.value)}
           </div>
           {series.map((s, seriesIndex) => {
-            const color = s.color || defaultColors[seriesIndex % defaultColors.length];
+            // The colour its area is drawn in: `s.color` as given was another
+            // colour wherever the area could not take it (safeSvgPaint).
+            const { color } = plotted[seriesIndex];
             const idx = hoveredPointOf(seriesIndex);
             const point = idx === undefined ? undefined : s.data[idx];
             if (!point) return null;
@@ -591,7 +593,7 @@ export function AreaChart({
           }}
         >
           {series.map((s, idx) => {
-            const color = s.color || defaultColors[idx % defaultColors.length];
+            const { color } = plotted[idx];
             const isActive = hoveredIndex === null || hoveredIndex === idx;
             return (
               <div

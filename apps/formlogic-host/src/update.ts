@@ -387,6 +387,13 @@ export interface OpenApp<Composed extends object> {
    */
   page?(): string | null;
   /**
+   * The run of a page on screen, as one value that is another whenever another run is put there:
+   * a link followed, or a place the parent sent the app to (main.tsx's navigatePlace), which may be
+   * a run of the same page file. A version handed to a run taken down before it answered is handed
+   * to the one now showing. Left out, the page file alone tells them apart.
+   */
+  run?(): unknown;
+  /**
    * The page file it was showing is not in the version: opens the app at its main page from
    * `revision`, afresh, as a link back to the main page opens it. Without it, such a version is
    * answered `reopen`.
@@ -548,6 +555,7 @@ export function createUpdater<Composed extends object>(options: UpdaterOptions<C
     // That page is what the version is composed with while the version has it. One without it is
     // opened at its main page, which only an app that can leave a page does where it stands.
     const stood = running.page?.() ?? null;
+    const ran = running.run?.();
     const stays = stood !== null && options.hasPage?.(client, plan.main, stood) === true ? stood : null;
     const leaves = stood !== null && stays === null;
     if (leaves && !running.leave) return { outcome: 'reopen', reason: 'The page it was showing is not in this version, so it has to be opened again.' };
@@ -593,10 +601,12 @@ export function createUpdater<Composed extends object>(options: UpdaterOptions<C
     const gone = notRunning();
     if (gone) return gone;
     if (result.outcome === 'kept') {
-      // A link was followed while the version was being taken: the page that was handed it is no
-      // longer there to take it, and the page now showing was composed from the version before.
-      // It is handed the version in its turn, composed with that page.
-      if ((running.page?.() ?? null) !== stood) {
+      // A link was followed while the version was being taken, or the parent sent the app to a
+      // place: the run that was handed it is no longer there to take it, and the one now showing
+      // was composed from the version before. It is handed the version in its turn, composed with
+      // its page. (A run of the same page file was answered kept, "The app was closed.", and went on
+      // showing the version before.)
+      if ((running.page?.() ?? null) !== stood || running.run?.() !== ran) {
         media = hadMedia;
         return take(client, assets);
       }

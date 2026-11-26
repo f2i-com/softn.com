@@ -198,6 +198,21 @@ export const GUEST_EXTENSIONS_SOURCE = String.raw`
     self._shadowBlur = 0;
     self._shadowOffsetX = 0;
     self._shadowOffsetY = 0;
+    self._miterLimit = 10;
+    self._lineDashOffset = 0;
+    self._direction = 'inherit';
+    self._letterSpacing = '0px';
+    self._wordSpacing = '0px';
+    self._fontKerning = 'auto';
+    self._fontStretch = 'normal';
+    self._fontVariantCaps = 'normal';
+    self._textRendering = 'auto';
+    self._imageSmoothingEnabled = true;
+    self._imageSmoothingQuality = 'low';
+    self._filter = 'none';
+    self._lineDash = [];
+    // What save() kept, for restore() to put back (setting the canvas's size empties it too).
+    self._saved = [];
   }
 
   // A command was given to ctx: what the context drawn on before it was given goes first.
@@ -222,17 +237,23 @@ export const GUEST_EXTENSIONS_SOURCE = String.raw`
     if (canvas.__softnNode) __extraOps.push(['k2dreset', canvas.__softnNode, canvas.width, canvas.height]);
   }
 
-  [
+  // Each of the context's drawing properties the page draws with (host-policy.ts): those after
+  // the shadows were set on the object here and never reached the page, so a pixel-art game's
+  // imageSmoothingEnabled = false was drawn smoothed, and a dashed line's offset never moved.
+  var STATE_PROPS = [
     'fillStyle', 'strokeStyle', 'lineWidth', 'lineCap', 'lineJoin',
     'globalAlpha', 'globalCompositeOperation', 'font', 'textAlign',
     'textBaseline', 'shadowColor', 'shadowBlur', 'shadowOffsetX', 'shadowOffsetY',
-  ].forEach(function (prop) {
+    'miterLimit', 'lineDashOffset', 'direction', 'letterSpacing', 'wordSpacing', 'fontKerning',
+    'fontStretch', 'fontVariantCaps', 'textRendering', 'imageSmoothingEnabled', 'imageSmoothingQuality', 'filter',
+  ];
+  STATE_PROPS.forEach(function (prop) {
     var priv = '_' + prop;
     Object.defineProperty(Canvas2DContext.prototype, prop, {
       enumerable: true,
       get: function () { return this[priv]; },
       set: function (v) {
-        if (typeof v === 'string' || typeof v === 'number') {
+        if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
           this[priv] = v;
           this._cmds.push(['prop', prop, v]);
           markCanvasDirty(this);
@@ -260,7 +281,39 @@ export const GUEST_EXTENSIONS_SOURCE = String.raw`
     };
   });
 
-  Canvas2DContext.prototype.getLineDash = function () { return []; };
+  // What the context's properties are read back as after restore(), as in a browser: the
+  // drawing on the page was restored, and what the script read (its font, for measureText)
+  // was what it had set last, inside the save() it had left.
+  var plainSave = Canvas2DContext.prototype.save;
+  var plainRestore = Canvas2DContext.prototype.restore;
+  var plainSetLineDash = Canvas2DContext.prototype.setLineDash;
+  Canvas2DContext.prototype.save = function () {
+    var kept = { lineDash: this._lineDash };
+    for (var i = 0; i < STATE_PROPS.length; i++) kept[STATE_PROPS[i]] = this['_' + STATE_PROPS[i]];
+    this._saved.push(kept);
+    return plainSave.apply(this, arguments);
+  };
+  Canvas2DContext.prototype.restore = function () {
+    var kept = this._saved.pop();
+    if (kept) {
+      for (var i = 0; i < STATE_PROPS.length; i++) this['_' + STATE_PROPS[i]] = kept[STATE_PROPS[i]];
+      this._lineDash = kept.lineDash;
+    }
+    return plainRestore.apply(this, arguments);
+  };
+  // As a browser takes a dash: finite numbers, none below zero (else the call changes nothing), twice over when odd.
+  Canvas2DContext.prototype.setLineDash = function (segments) {
+    var list = [];
+    var given = segments && typeof segments.length === 'number' ? segments : [];
+    for (var i = 0; i < given.length; i++) {
+      var n = Number(given[i]);
+      if (!isFinite(n) || n < 0) return;
+      list.push(n);
+    }
+    this._lineDash = list.length % 2 ? list.concat(list) : list;
+    return plainSetLineDash.apply(this, arguments);
+  };
+  Canvas2DContext.prototype.getLineDash = function () { return this._lineDash.slice(); };
   Canvas2DContext.prototype.measureText = function (text) {
     var s = String(text || '');
     var sizeMatch = /(\d+(?:\.\d+)?)px/.exec(this._font);
@@ -277,10 +330,37 @@ export const GUEST_EXTENSIONS_SOURCE = String.raw`
   Canvas2DContext.prototype.createImageData = function (w, h) {
     return new GuestImageData(w, h);
   };
-  Canvas2DContext.prototype.putImageData = function (imgData, dx, dy) {
+  Canvas2DContext.prototype.putImageData = function (imgData, dx, dy, dirtyX, dirtyY, dirtyWidth, dirtyHeight) {
     if (!imgData || !imgData.data) return;
-    var b64 = bytesToB64(new Uint8Array(imgData.data.buffer, imgData.data.byteOffset, imgData.data.byteLength));
-    this._cmds.push(['putImageData', b64, imgData.width, imgData.height, dx || 0, dy || 0]);
+    var data = imgData.data;
+    var width = imgData.width;
+    var height = imgData.height;
+    var x = dx || 0;
+    var y = dy || 0;
+    if (arguments.length >= 7) {
+      // Only the dirty rectangle, held to the image as a browser holds it, and put where it is in
+      // the image: the whole image was written, over what the rest of the canvas had.
+      var rx = dirtyX | 0, ry = dirtyY | 0, rw = dirtyWidth | 0, rh = dirtyHeight | 0;
+      if (rw < 0) { rx += rw; rw = -rw; }
+      if (rh < 0) { ry += rh; rh = -rh; }
+      if (rx < 0) { rw += rx; rx = 0; }
+      if (ry < 0) { rh += ry; ry = 0; }
+      if (rx + rw > width) rw = width - rx;
+      if (ry + rh > height) rh = height - ry;
+      if (rw <= 0 || rh <= 0) return;
+      var part = new Uint8ClampedArray(rw * rh * 4);
+      for (var row = 0; row < rh; row++) {
+        var from = ((ry + row) * width + rx) * 4;
+        part.set(data.subarray(from, from + rw * 4), row * rw * 4);
+      }
+      data = part;
+      width = rw;
+      height = rh;
+      x = (x | 0) + rx;
+      y = (y | 0) + ry;
+    }
+    var b64 = bytesToB64(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
+    this._cmds.push(['putImageData', b64, width, height, x, y]);
     markCanvasDirty(this);
   };
   Canvas2DContext.prototype.createLinearGradient = function (x0, y0, x1, y1) {
@@ -669,21 +749,97 @@ export const GUEST_EXTENSIONS_SOURCE = String.raw`
   }
   g.__softnBytesFrom64 = b64ToBytes;
 
-  function ContainerResponse(payload, url) {
-    this.ok = !!payload.ok;
-    this.status = Number(payload.status) || 200;
-    this.statusText = payload.statusText || (this.ok ? 'OK' : 'Error');
-    this.url = url;
-    this.headers = new g.Headers(payload.headers || {});
-    this.bodyUsed = false;
-    Object.defineProperty(this, '_payload', { value: payload, enumerable: false });
+  // A response the container made for a request: its body as the Worker handed it over.
+  function responseOf(payload, url) {
+    var response = Object.create(ContainerResponse.prototype);
+    response.ok = !!payload.ok;
+    response.status = Number(payload.status) || 200;
+    response.statusText = payload.statusText || (response.ok ? 'OK' : 'Error');
+    response.url = url;
+    response.headers = new g.Headers(payload.headers || {});
+    response.bodyUsed = false;
+    Object.defineProperty(response, '_payload', { value: payload, enumerable: false });
+    return response;
   }
+  g.__softnResponse = responseOf;
+  // new Response(body, init), as the app's own code makes one (a stand-in for fetch, a blob or
+  // a stream read whole): the body as it was given, and the status and headers of init. It was
+  // read as one the Worker had handed over: its text was '', its status 200 whatever it was
+  // given, its headers none, and new Response(null) threw.
+  function ContainerResponse(body, init) {
+    if (!(this instanceof ContainerResponse)) throw new TypeError("Failed to construct 'Response': Please use the 'new' operator, this DOM object constructor cannot be called as a function.");
+    var options = init === undefined || init === null ? {} : init;
+    if (typeof options !== 'object' && typeof options !== 'function') throw new TypeError("Failed to construct 'Response': The provided value is not of type 'ResponseInit'.");
+    var status = options.status === undefined ? 200 : Number(options.status);
+    if (!(status >= 200 && status <= 599) || Math.floor(status) !== status) throw new RangeError("Failed to construct 'Response': The status provided (" + options.status + ') is outside the range [200, 599].');
+    var headers = new g.Headers(options.headers || {});
+    // Kept as the web keeps it when the response is made: words, a copy of bytes, a blob, or a stream read when it is asked for.
+    var kept;
+    var type = null;
+    if (body === undefined || body === null) kept = { body: '' };
+    else if (typeof body === 'string') { kept = { body: body }; type = 'text/plain;charset=UTF-8'; }
+    else if (body instanceof ArrayBuffer) kept = { bytes: new Uint8Array(body.slice(0)) };
+    else if (body.buffer instanceof ArrayBuffer && typeof body.byteLength === 'number') kept = { bytes: new Uint8Array(body.buffer.slice(body.byteOffset || 0, (body.byteOffset || 0) + body.byteLength)) };
+    else if (typeof g.URLSearchParams === 'function' && body instanceof g.URLSearchParams) { kept = { body: body.toString() }; type = 'application/x-www-form-urlencoded;charset=UTF-8'; }
+    else if (typeof g.FormData === 'function' && body instanceof g.FormData && typeof g.__softnFormBlob === 'function') { var form = g.__softnFormBlob(body); kept = { blob: form.blob }; type = form.type; }
+    else if (typeof body.arrayBuffer === 'function' && typeof body.size === 'number') { kept = { blob: body }; type = body.type ? String(body.type) : null; }
+    else if (typeof body.getReader === 'function') kept = { stream: body };
+    else { kept = { body: String(body) }; type = 'text/plain;charset=UTF-8'; }
+    if (type && !headers.has('content-type')) headers.set('content-type', type);
+    this.ok = status >= 200 && status < 300;
+    this.status = status;
+    this.statusText = options.statusText === undefined ? '' : String(options.statusText);
+    this.url = '';
+    this.headers = headers;
+    this.bodyUsed = false;
+    Object.defineProperty(this, '_payload', { value: kept, enumerable: false });
+  }
+  ContainerResponse.json = function (data, init) {
+    var text = JSON.stringify(data);
+    if (text === undefined) throw new TypeError("Failed to execute 'json' on 'Response': The data is not JSON serializable");
+    var options = init || {};
+    var headers = new g.Headers(options.headers || {});
+    if (!headers.has('content-type')) headers.set('content-type', 'application/json');
+    return new ContainerResponse(text, { status: options.status, statusText: options.statusText, headers: headers });
+  };
+  // The bytes of a body given as bytes, a blob or a stream: read once, and shared by its clones.
+  function givenBytes(kept) {
+    if (kept.bytes) return Promise.resolve(kept.bytes);
+    if (!kept.read) {
+      kept.read = kept.blob
+        ? kept.blob.arrayBuffer().then(function (buffer) { return new Uint8Array(buffer); })
+        : readWhole(kept.stream);
+    }
+    return kept.read;
+  }
+  function readWhole(stream) {
+    var reader = stream.getReader();
+    var parts = [];
+    var size = 0;
+    var step = function () {
+      return reader.read().then(function (got) {
+        if (got.done) {
+          var out = new Uint8Array(size);
+          for (var i = 0, at = 0; i < parts.length; at += parts[i].length, i++) out.set(parts[i], at);
+          return out;
+        }
+        var chunk = got.value;
+        if (!chunk || !(chunk.buffer instanceof ArrayBuffer) || typeof chunk.byteLength !== 'number') throw new TypeError('Failed to read the body of the response: a part of its stream is not bytes (a Uint8Array).');
+        parts.push(new Uint8Array(chunk.buffer, chunk.byteOffset || 0, chunk.byteLength).slice());
+        size += chunk.byteLength;
+        return step();
+      });
+    };
+    return step();
+  }
+  function isGiven(kept) { return !!(kept.bytes || kept.blob || kept.stream); }
   ContainerResponse.prototype.text = function () {
     this.bodyUsed = true;
     if (typeof this._payload.body === 'string') return Promise.resolve(this._payload.body);
     if (typeof this._payload.base64 === 'string') {
       return Promise.resolve(new g.TextDecoder().decode(b64ToBytes(this._payload.base64)));
     }
+    if (isGiven(this._payload)) return givenBytes(this._payload).then(function (u8) { return new g.TextDecoder().decode(u8); });
     return Promise.resolve('');
   };
   ContainerResponse.prototype.json = function () {
@@ -692,6 +848,8 @@ export const GUEST_EXTENSIONS_SOURCE = String.raw`
   ContainerResponse.prototype.bytes = function () {
     this.bodyUsed = true;
     if (typeof this._payload.base64 === 'string') return Promise.resolve(b64ToBytes(this._payload.base64));
+    // A copy each time: what the app does with one is not the body of the response or its clones.
+    if (isGiven(this._payload)) return givenBytes(this._payload).then(function (u8) { return u8.slice(); });
     return Promise.resolve(new g.TextEncoder().encode(this._payload.body || ''));
   };
   ContainerResponse.prototype.arrayBuffer = function () {
@@ -704,7 +862,12 @@ export const GUEST_EXTENSIONS_SOURCE = String.raw`
     });
   };
   ContainerResponse.prototype.clone = function () {
-    return new ContainerResponse(this._payload, this.url);
+    var copy = responseOf(this._payload, this.url);
+    copy.ok = this.ok;
+    copy.status = this.status;
+    copy.statusText = this.statusText;
+    copy.headers = new g.Headers(this.headers);
+    return copy;
   };
 
   g.Response = ContainerResponse;
@@ -721,7 +884,7 @@ export const GUEST_EXTENSIONS_SOURCE = String.raw`
         try {
           var vfsReply = host.callSync('vfs.fetch', rawUrl, g.location ? g.location.pathname : '/index.html');
           if (!vfsReply || !vfsReply.backend) {
-            resolve(new ContainerResponse(vfsReply, rawUrl));
+            resolve(responseOf(vfsReply, rawUrl));
             return;
           }
         } catch (err) {
@@ -751,7 +914,7 @@ export const GUEST_EXTENSIONS_SOURCE = String.raw`
         if (!reply || reply.error) {
           reject(new TypeError(reply && reply.error ? String(reply.error) : 'Network fetch denied or failed'));
         } else {
-          resolve(new ContainerResponse(reply, rawUrl));
+          resolve(responseOf(reply, rawUrl));
         }
       });
     });
@@ -861,7 +1024,7 @@ export const GUEST_EXTENSIONS_SOURCE = String.raw`
           var reply = await backend.call('nativeRequest', { url: path, options: options });
           if (!reply || reply.error || !reply.result) throw new TypeError(reply && reply.error || 'Backend request failed.');
           var result = reply.result;
-          return new ContainerResponse({
+          return responseOf({
             ok: result.status >= 200 && result.status < 300,
             status: result.status,
             headers: result.headers || { 'content-type': 'application/json' },

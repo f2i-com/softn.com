@@ -171,11 +171,32 @@ export function resolveModuleSpecifier(
 // Lexical Scanner & ESM Transformer
 // ============================================================================
 
+/**
+ * What a `{` opens: an object (a literal, a pattern, a TypeScript type's), a block (a
+ * statement's, a function's body), a class's body, the members of a TypeScript interface or
+ * enum, a template's `${`, or the names of an `import { … }` or `export { … }`.
+ */
+type BraceKind = 'object' | 'block' | 'class' | 'members' | 'template' | 'clause';
+
 interface Token {
   type: 'ident' | 'keyword' | 'punct' | 'string' | 'other';
   value: string;
   start: number;
   end: number;
+  /** For a `{`: what it opens. */
+  brace?: BraceKind;
+  /** For a `)`, `]` or `}`: the place among the tokens of the bracket it closes. */
+  open?: number;
+}
+
+/** The words the tokenizer reads as keywords (a name the code gives one of them is still read as one). */
+function isKeywordWord(word: string): boolean {
+  return (
+    word === 'import' || word === 'export' || word === 'from' || word === 'as' ||
+    word === 'default' || word === 'function' || word === 'class' || word === 'const' ||
+    word === 'let' || word === 'var' || word === 'async' || word === 'type' ||
+    word === 'interface' || word === 'enum' || CONTROL_HEAD_KEYWORDS.has(word) || REGEX_PRECEDING_KEYWORDS.has(word)
+  );
 }
 
 const REGEX_PRECEDING_KEYWORDS = new Set([
@@ -230,15 +251,106 @@ function tokenizeTopLevel(code: string): Token[] {
   const parenIsControlHead: boolean[] = [];
   let lastClosedControlHead = false;
   let activeBraceDepth = 0;
+  // The open brackets, by their places among the tokens: each closing one is told its opening one.
+  const openers: number[] = [];
+  // What the `{` the last `}` closed opened: a `/` after a block's (`if (a) {} /x/.test(s)`)
+  // begins a regular expression, and one after an object's divides. Every `}` was taken for an
+  // object's, and a module with such a line had all the code after it read as a pattern's: its
+  // brackets were lost, and its exports were left in its registration, which did not compile.
+  let lastClosedBrace: BraceKind | undefined;
+  // A `class` (an `interface`, an `enum`) whose body is the next `{` at the depth of its head.
+  let headDepth = -1;
+  let headKind: BraceKind = 'class';
+  let headAngles = 0;
+  let headWord = -1;
+
+  // A word after a `.` is a property's name (`x.default / 2`, `a?.in / b`), however it is spelled.
+  const afterDot = (k: number): boolean => k > 0 && tokens[k - 1].type === 'punct' && tokens[k - 1].value === '.';
 
   const canStartRegex = (): boolean => {
     if (!prevSig) return true;
-    if (prevSig.type === 'keyword') return REGEX_PRECEDING_KEYWORDS.has(prevSig.value);
+    if (prevSig.type === 'keyword') return REGEX_PRECEDING_KEYWORDS.has(prevSig.value) && !afterDot(tokens.length - 1);
     if (prevSig.type === 'punct') {
       if (prevSig.value === ')') return lastClosedControlHead;
+      if (prevSig.value === '}') return lastClosedBrace !== undefined && lastClosedBrace !== 'object';
       return REGEX_PRECEDING_PUNCT.has(prevSig.value);
     }
     return false;
+  };
+
+  // A `{` after a colon opens a block after `case x:`, `default:` or a label, and an object (a
+  // value, a conditional's other side, a TypeScript type) otherwise.
+  const colonOpensBlock = (colon: number): boolean => {
+    let words = 0;
+    for (let m = colon - 1; m >= 0; m--) {
+      const t = tokens[m];
+      if (t.type === 'punct') {
+        const v = t.value;
+        if ((v === ')' || v === ']' || v === '}') && t.open !== undefined) {
+          m = t.open;
+          words += 2;
+          continue;
+        }
+        if (v === '?' || v === ',') return false;
+        if (v === ';' || v === '{' || v === '(' || v === '[') return words === 1 && (v === ';' || (v === '{' && t.brace !== 'object' && t.brace !== 'template'));
+        words++;
+        continue;
+      }
+      if (t.type === 'keyword' && (t.value === 'case' || t.value === 'default')) {
+        // Unless it is a property's name (`{ default: { a } }`).
+        const before = tokens[m - 1];
+        if (!(before && before.type === 'punct' && (before.value === '.' || before.value === ',' || (before.value === '{' && before.brace === 'object')))) return true;
+      }
+      words++;
+    }
+    return words === 1;
+  };
+
+  // What the `{` about to be read opens, from what comes before it.
+  const braceKind = (): BraceKind => {
+    const k = tokens.length - 1;
+    if (headWord === k) {
+      // `class {`: an unnamed class's body.
+      headWord = -1;
+      return headKind;
+    }
+    if (headDepth === openers.length && headAngles <= 0) {
+      headDepth = -1;
+      return headKind;
+    }
+    const p = prevSig;
+    if (!p) return 'block';
+    if (p.type === 'punct') {
+      switch (p.value) {
+        // `>` for `=> {` (an arrow's body) and `): Promise<T> {` (a TypeScript return type).
+        case ')': case ']': case '}': case ';': case '++': case '--': case '>':
+          return 'block';
+        case '{':
+          return p.brace === 'template' ? 'object' : 'block';
+        case ':':
+          return colonOpensBlock(k) ? 'block' : 'object';
+        default:
+          return 'object';
+      }
+    }
+    if (p.type === 'keyword' && !afterDot(k)) {
+      switch (p.value) {
+        case 'else': case 'do':
+          return 'block';
+        case 'import': case 'export':
+          return 'clause';
+        case 'return': case 'yield':
+          // `return` and a line break end the statement there.
+          return /[\r\n\u2028\u2029]/.test(code.slice(p.end, i)) ? 'block' : 'object';
+        case 'const': case 'let': case 'var': case 'typeof': case 'instanceof': case 'in': case 'of': case 'new': case 'delete':
+        case 'void': case 'throw': case 'case': case 'await': case 'default': case 'as':
+          return 'object';
+        default:
+          return 'block';
+      }
+    }
+    if (p.type === 'ident' && (p.value === 'satisfies' || p.value === 'keyof' || p.value === 'extends') && !afterDot(k)) return 'object';
+    return 'block';
   };
 
   const scanTemplateChunk = (isHead: boolean): void => {
@@ -264,7 +376,8 @@ function tokenizeTopLevel(code: string): Token[] {
         const chunkEnd = i + 1;
         const headTok: Token = { type: 'other', value: code.slice(start, chunkEnd), start, end: chunkEnd };
         tokens.push(headTok);
-        const braceTok: Token = { type: 'punct', value: '{', start: i + 1, end: i + 2 };
+        const braceTok: Token = { type: 'punct', value: '{', start: i + 1, end: i + 2, brace: 'template' };
+        openers.push(tokens.length);
         tokens.push(braceTok);
         prevSig = braceTok;
         activeBraceDepth++;
@@ -357,7 +470,8 @@ function tokenizeTopLevel(code: string): Token[] {
     }
     if (ch === 123 /* { */) {
       activeBraceDepth++;
-      const tok: Token = { type: 'punct', value: '{', start: i, end: i + 1 };
+      const tok: Token = { type: 'punct', value: '{', start: i, end: i + 1, brace: braceKind() };
+      openers.push(tokens.length);
       tokens.push(tok);
       prevSig = tok;
       i++;
@@ -366,7 +480,10 @@ function tokenizeTopLevel(code: string): Token[] {
     if (ch === 125 /* } */) {
       const closingTemplate =
         templateBraceStack.length > 0 && templateBraceStack[templateBraceStack.length - 1] === activeBraceDepth;
-      const tok: Token = { type: 'punct', value: '}', start: i, end: i + 1 };
+      const open = openers.pop();
+      const tok: Token = { type: 'punct', value: '}', start: i, end: i + 1, open };
+      lastClosedBrace = open !== undefined ? tokens[open].brace : undefined;
+      if (headDepth > openers.length) headDepth = -1;
       tokens.push(tok);
       prevSig = tok;
       if (activeBraceDepth > 0) activeBraceDepth--;
@@ -383,12 +500,20 @@ function tokenizeTopLevel(code: string): Token[] {
       i++;
       while (i < len && isIdentPart(code.charCodeAt(i))) i++;
       const word = code.slice(start, i);
-      const isKw =
-        word === 'import' || word === 'export' || word === 'from' || word === 'as' ||
-        word === 'default' || word === 'function' || word === 'class' || word === 'const' ||
-        word === 'let' || word === 'var' || word === 'async' || word === 'type' ||
-        word === 'interface' || word === 'enum' || CONTROL_HEAD_KEYWORDS.has(word) || REGEX_PRECEDING_KEYWORDS.has(word);
-      const tok: Token = { type: isKw ? 'keyword' : 'ident', value: word, start, end: i };
+      const tok: Token = { type: isKeywordWord(word) ? 'keyword' : 'ident', value: word, start, end: i };
+      // The word after `class` (`interface`, `enum`): a class's head when it is its name or what a
+      // head goes on with, and the body is the next `{` at its depth (`{ class: 'x' }` has none).
+      if (headWord === tokens.length - 1) {
+        if (tok.type === 'ident' || word === 'extends' || word === 'implements') {
+          headDepth = openers.length;
+          headAngles = 0;
+        }
+        headWord = -1;
+      }
+      if ((word === 'class' || word === 'interface' || word === 'enum') && !afterDot(tokens.length)) {
+        headWord = tokens.length;
+        headKind = word === 'class' ? 'class' : 'members';
+      }
       tokens.push(tok);
       prevSig = tok;
       lastClosedControlHead = false;
@@ -420,15 +545,35 @@ function tokenizeTopLevel(code: string): Token[] {
     const start = i;
     const chStr = code[i];
     i++;
+    const tok: Token = { type: 'punct', value: chStr, start, end: i };
     if (chStr === '(') {
-      parenIsControlHead.push(prevSig?.type === 'keyword' && CONTROL_HEAD_KEYWORDS.has(prevSig.value));
+      // (Not `x.for(…)` or `a.with(i, v)`: a method's call.)
+      parenIsControlHead.push(prevSig?.type === 'keyword' && CONTROL_HEAD_KEYWORDS.has(prevSig.value) && !afterDot(tokens.length - 1));
       lastClosedControlHead = false;
     } else if (chStr === ')') {
       lastClosedControlHead = parenIsControlHead.pop() === true;
     } else {
       lastClosedControlHead = false;
     }
-    const tok: Token = { type: 'punct', value: chStr, start, end: i };
+    if (headWord === tokens.length - 1) {
+      // `class<T> {` (TypeScript's): a class's head.
+      if (chStr === '<') {
+        headDepth = openers.length;
+        headAngles = 0;
+      }
+      headWord = -1;
+    }
+    if (chStr === '(' || chStr === '[') {
+      openers.push(tokens.length);
+    } else if (chStr === ')' || chStr === ']') {
+      tok.open = openers.pop();
+      if (headDepth > openers.length) headDepth = -1;
+    } else if (headDepth === openers.length) {
+      // A class's head in TypeScript: its type parameters and arguments are between angles.
+      if (chStr === '<') headAngles++;
+      else if (chStr === '>' && !(prevSig?.value === '=' && prevSig.end === start)) headAngles--;
+      else if (chStr === ';') headDepth = -1;
+    }
     tokens.push(tok);
     prevSig = tok;
   }
@@ -564,6 +709,27 @@ function extractDeclaredNames(tokens: Token[], startIdx: number, endIdx: number)
   const at = (k: number): Token | undefined => (k < endIdx ? tokens[k] : undefined);
   const punct = (k: number, value: string): boolean => at(k)?.type === 'punct' && at(k)?.value === value;
   const nameAt = (k: number): boolean => at(k)?.type === 'ident' || (at(k)?.type === 'keyword' && NAME_KEYWORDS.has(at(k)!.value));
+  // What may follow a binding: its type, its value, the next one, the end of its pattern.
+  const followsBinding = (t: Token | undefined): boolean =>
+    t === undefined ||
+    (t.type === 'punct' && (t.value === '=' || t.value === ',' || t.value === ':' || t.value === '!' || t.value === '}' || t.value === ']' || t.value === ';')) ||
+    (t.type === 'keyword' && (t.value === 'in' || t.value === 'of'));
+  // Whether the comma at k ends a value: what follows it is the next binding (a name or a
+  // pattern, or a pattern's next property) and not more of a TypeScript type's arguments
+  // (`new Map<string, number>()`, `<A, B>(a: A, b: B) => …`), whose names were taken for bindings:
+  // a module exported a `number` that was not there, read as a ReferenceError.
+  const endsValue = (k: number): boolean => {
+    const t = at(k + 1);
+    if (t === undefined) return true;
+    if (t.type === 'punct') {
+      if (t.value === ',' || t.value === '.' || t.value === ']' || t.value === '}') return true;
+      if (t.value !== '{' && t.value !== '[') return false;
+      return followsBinding(at(skip(k + 2, []) + 1));
+    }
+    if (nameAt(k + 1)) return followsBinding(at(k + 2));
+    // A property's key in a pattern: a string or a number.
+    return at(k + 2)?.type === 'punct' && at(k + 2)?.value === ':';
+  };
   // To one of `stops` at this level, or to the bracket that closes it, past an expression or a type.
   const skip = (k: number, stops: string[], angles = false): number => {
     let depth = 0;
@@ -571,7 +737,7 @@ function extractDeclaredNames(tokens: Token[], startIdx: number, endIdx: number)
     while (k < endIdx) {
       const t = tokens[k];
       if (t.type === 'punct') {
-        if (depth === 0 && angle === 0 && stops.includes(t.value)) return k;
+        if (depth === 0 && angle === 0 && stops.includes(t.value) && (t.value !== ',' || angles || endsValue(k))) return k;
         if (t.value === '(' || t.value === '[' || t.value === '{') depth++;
         else if (t.value === ')' || t.value === ']' || t.value === '}') {
           if (depth === 0) return k;
@@ -1014,11 +1180,339 @@ function readExportedIdent(tok: Token): string {
   return tok.type === 'string' ? unquote(tok.value) : tok.value;
 }
 
+/** Whether a line break comes between the end of one token and the start of the next. */
+function breakBetween(code: string, from: number, to: number): boolean {
+  for (let p = from; p < to; p++) {
+    const c = code.charCodeAt(p);
+    if (c === 10 || c === 13 || c === 0x2028 || c === 0x2029) return true;
+  }
+  return false;
+}
+
+/** A token a line may end with and ask for more on the next (an operator, a comma, an open bracket). */
+function asksForMore(t: Token): boolean {
+  if (t.type === 'punct') return t.value !== ')' && t.value !== ']' && t.value !== '}' && t.value !== ';' && t.value !== '++' && t.value !== '--';
+  return t.type === 'keyword' && REGEX_PRECEDING_KEYWORDS.has(t.value);
+}
+
+/** A token a line may begin with and go on with the line before (no semicolon is put between them). */
+function goesOn(t: Token): boolean {
+  if (t.type === 'punct') return t.value !== '{' && t.value !== '}' && t.value !== ';' && t.value !== '!' && t.value !== '~' && t.value !== '++' && t.value !== '--' && t.value !== '#' && t.value !== '@';
+  return (t.type === 'keyword' && (t.value === 'in' || t.value === 'of' || t.value === 'instanceof' || t.value === 'as')) || (t.type === 'ident' && t.value === 'satisfies');
+}
+
+/**
+ * Where a `var`, `let` or `const` whose first binding is at `from` ends: a semicolon at its own
+ * level, the bracket around it, a line break where a semicolon goes, or (in a `for`'s head) its `in` or `of`.
+ */
+function declarationEnd(tokens: Token[], code: string, from: number, forHead = false): number {
+  let depth = 0;
+  for (let j = from; j < tokens.length; j++) {
+    const t = tokens[j];
+    if (depth === 0 && j > from) {
+      const before = tokens[j - 1];
+      if (!asksForMore(before) && !goesOn(t) && breakBetween(code, before.end, t.start)) return j;
+    }
+    if (t.type === 'punct') {
+      if (t.value === '(' || t.value === '[' || t.value === '{') depth++;
+      else if (t.value === ')' || t.value === ']' || t.value === '}') {
+        if (depth === 0) return j;
+        depth--;
+      } else if (t.value === ';' && depth === 0) return j;
+    } else if (forHead && depth === 0 && t.type === 'keyword' && (t.value === 'in' || t.value === 'of')) return j;
+  }
+  return tokens.length;
+}
+
+/** Whether tokens[k] and tokens[k + 1] are an arrow's `=>`. */
+function arrowAt(tokens: Token[], k: number): boolean {
+  const a = tokens[k];
+  const b = tokens[k + 1];
+  return a !== undefined && b !== undefined && a.type === 'punct' && a.value === '=' && b.value === '>' && a.end === b.start;
+}
+
+/**
+ * Where the `<` at k closes when it begins a TypeScript type's parameters or arguments
+ * (`Map<string, T>`, `<T,>(x: T) =>`): the `>` that closes it, followed by what follows a type;
+ * -1 where it is a comparison (`a < b`).
+ */
+function angleEnd(tokens: Token[], k: number): number {
+  let depth = 1;
+  let inner = 0;
+  for (let m = k + 1; m < tokens.length && m < k + 256; m++) {
+    const t = tokens[m];
+    if (t.type !== 'punct') continue;
+    const v = t.value;
+    if (v === '(' || v === '[' || v === '{') inner++;
+    else if (v === ')' || v === ']' || v === '}') {
+      if (inner === 0) return -1;
+      inner--;
+    } else if (inner > 0) continue;
+    else if (v === '<') depth++;
+    else if (v === '>' && !(tokens[m - 1].value === '=' && tokens[m - 1].end === t.start)) {
+      if (--depth > 0) continue;
+      const after = tokens[m + 1];
+      if (after === undefined || after.type === 'string' || (after.type === 'other' && after.value[0] === '`')) return m;
+      return after.type === 'punct' && '()]},;=>[{|&?:.!'.indexOf(after.value) >= 0 && after.value.length === 1 ? m : -1;
+    } else if (v === ';' || v === '+' || v === '*' || v === '/' || v === '%' || v === '^' || v === '~' || v === '!' || v === '++' || v === '--' || v === '@' || v === '#') return -1;
+  }
+  return -1;
+}
+
+/**
+ * Where the module declares one of `names` again in a place of its own (a parameter, a
+ * variable, a function or a class, a catch's binding, a TypeScript type's parameter): for each
+ * such name, the spans (from, to) of the statements those declarations are in, read generously,
+ * where the name is read through a binding of its own as before; null for a name the module
+ * declares again at its top, which it never reads from its import.
+ */
+function declaredAgain(tokens: Token[], code: string, names: Set<string>, counted: (t: Token) => boolean): Map<string, Array<[number, number]> | null> {
+  const found = new Map<string, Array<[number, number]> | null>();
+  const openers: number[] = [];
+  // The span of the statement a declaration at token k is in, from the outermost bracket it is
+  // in (or, at the top, from the start of what declares it), to where that statement ends.
+  const spans = new Map<number, [number, number]>();
+  const spanFrom = (from: number): [number, number] => {
+    let span = spans.get(from);
+    if (span === undefined) {
+      const end = declarationEnd(tokens, code, from);
+      span = [tokens[from].start, end < tokens.length ? tokens[end].start : code.length];
+      spans.set(from, span);
+    }
+    return span;
+  };
+  const add = (name: string, span: [number, number] | null): void => {
+    const had = found.get(name);
+    if (had === null) return;
+    if (span === null) found.set(name, null);
+    else if (had === undefined) found.set(name, [span]);
+    else if (had[had.length - 1] !== span) had.push(span);
+  };
+  // A declaration of a name at token k (`top`: one that declares it in the module's own scope where at its top).
+  const declare = (name: string, k: number, top: boolean): void => {
+    if (!names.has(name)) return;
+    if (openers.length > 0) add(name, spanFrom(openers[0]));
+    else add(name, top ? null : spanFrom(k));
+  };
+  const take = (list: string[], k: number, top: boolean): void => {
+    for (const n of list) declare(n, k, top);
+  };
+  for (let k = 0; k < tokens.length; k++) {
+    const t = tokens[k];
+    const prev = tokens[k - 1];
+    const dotted = prev !== undefined && prev.type === 'punct' && prev.value === '.';
+    if (t.type === 'punct') {
+      if (t.value === '(' || t.value === '[' || t.value === '{') {
+        openers.push(k);
+        continue;
+      }
+      if (t.value === ')' || t.value === ']' || t.value === '}') openers.pop();
+      if (t.value === ')' && t.open !== undefined && counted(t)) {
+        // A parameter list: after `function` (and a name), before a body, an arrow or a return
+        // type, or a member's in a class, an interface or a type (not an `if`'s or a loop's head).
+        const open = t.open;
+        const before = tokens[open - 1];
+        const twoBefore = tokens[open - 2];
+        if (before !== undefined && ((before.type === 'keyword' && CONTROL_HEAD_KEYWORDS.has(before.value)) || before.value === 'switch') && twoBefore?.value !== '.') continue;
+        const next = tokens[k + 1];
+        const around = openers.length > 0 ? tokens[openers[openers.length - 1]] : undefined;
+        const member =
+          around !== undefined &&
+          (around.brace === 'members' || around.brace === 'class' ||
+            (around.brace === 'object' && before !== undefined && (before.type === 'ident' || before.value === '?') &&
+              (twoBefore === undefined || twoBefore.value === '{' || twoBefore.value === ',' || twoBefore.value === ';')));
+        if (
+          before?.value === 'function' || twoBefore?.value === 'function' || member ||
+          (next !== undefined && (next.value === '{' || next.value === ':' || arrowAt(tokens, k + 1)))
+        ) {
+          take(extractDeclaredNames(tokens, open + 1, k), open, false);
+        }
+      } else if (t.value === '<' && counted(t)) {
+        // A TypeScript type's parameters: after `function`, a declared name, or before a
+        // parameter list (a generic method's or arrow's).
+        const end = angleEnd(tokens, k);
+        if (end < 0) continue;
+        const declares =
+          prev?.value === 'function' ||
+          (prev?.type === 'ident' && (tokens[k - 2]?.value === 'function' || tokens[k - 2]?.value === 'class' || tokens[k - 2]?.value === 'interface' || tokens[k - 2]?.value === 'type' || tokens[k - 2]?.value === '*')) ||
+          (tokens[end + 1]?.value === '(' && (() => {
+            const close = closingParen(tokens, end + 1);
+            const after = close >= 0 ? tokens[close + 1] : undefined;
+            return after !== undefined && (after.value === '{' || after.value === ':' || arrowAt(tokens, close + 1));
+          })());
+        if (!declares) continue;
+        let inner = 0;
+        for (let m = k + 1; m < end; m++) {
+          const tm = tokens[m];
+          if (tm.type === 'punct') {
+            if (tm.value === '(' || tm.value === '[' || tm.value === '{' || tm.value === '<') inner++;
+            else if (tm.value === ')' || tm.value === ']' || tm.value === '}' || tm.value === '>') inner--;
+            continue;
+          }
+          const before = tokens[m - 1];
+          if (inner === 0 && names.has(tm.value) && (before.value === '<' || before.value === ',' || before.value === 'const' || before.value === 'in' || before.value === 'out')) declare(tm.value, k, false);
+        }
+      }
+      continue;
+    }
+    if (!counted(t) || dotted) continue;
+    if (t.type === 'keyword') {
+      if (t.value === 'var' || t.value === 'let' || t.value === 'const') {
+        const around = openers.length > 0 ? openers[openers.length - 1] : -1;
+        const forHead = around >= 0 && tokens[around].value === '(' && tokens[around - 1]?.value === 'for';
+        take(extractDeclaredNames(tokens, k + 1, declarationEnd(tokens, code, k + 1, forHead)), k, true);
+      } else if (t.value === 'function' || t.value === 'class' || t.value === 'enum' || t.value === 'interface' || t.value === 'type') {
+        let at = k + 1;
+        if (tokens[at]?.value === '*') at++;
+        const n = tokens[at];
+        if (n !== undefined) declare(n.value, k, true);
+      }
+      continue;
+    }
+    if (t.type !== 'ident' || !names.has(t.value)) continue;
+    // `x => …`, `namespace x`, `infer x`, `{ [x in Keys]: … }`, `catch` handled with its parentheses.
+    if (arrowAt(tokens, k + 1)) declare(t.value, k, false);
+    else if (prev !== undefined && (prev.value === 'namespace' || prev.value === 'module')) declare(t.value, k, true);
+    else if (prev !== undefined && prev.value === 'infer') declare(t.value, k, false);
+    else if (prev?.value === '[' && tokens[k + 1]?.value === 'in') declare(t.value, k, false);
+  }
+  return found;
+}
+
+/** The `)` that closes the `(` at k, or -1. */
+function closingParen(tokens: Token[], k: number): number {
+  let depth = 0;
+  for (let m = k; m < tokens.length; m++) {
+    const v = tokens[m].type === 'punct' ? tokens[m].value : '';
+    if (v === '(' || v === '[' || v === '{') depth++;
+    else if (v === ')' || v === ']' || v === '}') {
+      if (--depth === 0) return v === ')' ? m : -1;
+    }
+  }
+  return -1;
+}
+
+/** Words that may come before a member's name in a class, an interface or a type. */
+const MEMBER_WORDS = new Set(['static', 'get', 'set', 'async', 'public', 'private', 'protected', 'readonly', 'abstract', 'override', 'declare', 'accessor']);
+
+/** A token after which, in a class's body, an expression goes on (its value, its type, a computed key), so a name there is read, not declared. */
+function readsOn(t: Token): boolean {
+  if (t.type === 'punct') return t.value !== '{' && t.value !== '}' && t.value !== ';' && t.value !== ')' && t.value !== ']' && t.value !== '*';
+  if (t.type === 'keyword') return REGEX_PRECEDING_KEYWORDS.has(t.value) || t.value === 'as';
+  return t.type === 'ident' && (t.value === 'keyof' || t.value === 'satisfies' || t.value === 'extends' || t.value === 'is');
+}
+
+/**
+ * How each name of an import is written where the module names it: read (`x`, `f(x)`), as an
+ * object's property of its own name (`{ x }`), or not it at all (`o.x`, `{ x: 1 }`, a member's
+ * name). A name written in a way not told for certain (a label, `delete x`, a pattern's
+ * default) is `unsure`, and is read through a binding of its own, as it was before.
+ */
+function importUses(tokens: Token[], names: Set<string>, counted: (t: Token) => boolean): { refs: Map<string, Array<{ k: number; shorthand: boolean }>>; unsure: Set<string> } {
+  const refs = new Map<string, Array<{ k: number; shorthand: boolean }>>();
+  const unsure = new Set<string>();
+  const openers: number[] = [];
+  // A TypeScript type's arguments the name is written in (`Map<string, x>`), where commas part types.
+  let typeArgsEnd = -1;
+  let typeArgsDepth = -1;
+  for (let k = 0; k < tokens.length; k++) {
+    const t = tokens[k];
+    if (t.type === 'punct') {
+      if (t.value === '(' || t.value === '[' || t.value === '{') openers.push(k);
+      else if (t.value === ')' || t.value === ']' || t.value === '}') openers.pop();
+      else if (t.value === '<' && k > typeArgsEnd) {
+        const end = angleEnd(tokens, k);
+        if (end > 0) {
+          typeArgsEnd = end;
+          typeArgsDepth = openers.length;
+        }
+      }
+      continue;
+    }
+    if (t.type !== 'ident' || !names.has(t.value) || !counted(t)) continue;
+    const prev = tokens[k - 1];
+    const next = tokens[k + 1];
+    const pv = prev !== undefined && prev.type === 'punct' ? prev.value : undefined;
+    // A member's or a private name: `o.x`, `o?.x`, `#x` (not a spread's `...x`).
+    if (pv === '#' || (pv === '.' && !(tokens[k - 2]?.value === '.' && tokens[k - 3]?.value === '.'))) continue;
+    let use: 'ref' | 'shorthand' | 'name' | null = 'ref';
+    const around = openers.length > 0 ? tokens[openers[openers.length - 1]] : undefined;
+    const kind = around === undefined ? 'block' : around.value !== '{' ? 'expression' : around.brace;
+    const atStart = prev === undefined || pv === '{' || pv === ',' || pv === ';';
+    if (prev !== undefined && prev.type !== 'punct' && (prev.value === 'delete' || prev.value === 'break' || prev.value === 'continue')) use = null;
+    else if (k < typeArgsEnd && openers.length === typeArgsDepth) use = 'ref';
+    else if (kind === 'object') {
+      const nv = next?.value;
+      const modified = prev !== undefined && prev.type !== 'punct' && MEMBER_WORDS.has(prev.value) && (tokens[k - 2] === undefined || ['{', ',', ';'].indexOf(tokens[k - 2].value) >= 0);
+      const starred = pv === '*' && (tokens[k - 2]?.value === '{' || tokens[k - 2]?.value === ',' || tokens[k - 2]?.value === 'async');
+      if (atStart || modified || starred) {
+        if (nv === ':' || nv === '(' || nv === '<' || (nv === '?' && tokens[k + 2]?.value === ':')) use = 'name';
+        else if (atStart && pv !== ';' && (nv === ',' || nv === '}')) use = 'shorthand';
+        else if (atStart && (nv === '=' || nv === '?')) use = null;
+        else if (modified || starred) use = 'name';
+      }
+    } else if (kind === 'class' || kind === 'members') {
+      // A member's name where one begins; its value, its type or an enum member's value is read.
+      if (prev === undefined || !readsOn(prev)) use = 'name';
+      else if (kind === 'members' && pv === ',') use = next !== undefined && (next.value === ':' || next.value === '?' || next.value === '(') ? 'name' : next !== undefined && next.type === 'punct' && '>|&[.'.indexOf(next.value) >= 0 ? 'ref' : null;
+      else if (pv === '*') use = 'name';
+    } else if (kind === 'clause') {
+      use = 'name';
+    } else if (kind === 'block' && next?.value === ':' && (prev === undefined || pv === ';' || pv === '{' || pv === '}')) {
+      // A label.
+      use = null;
+    }
+    if (use === null) {
+      unsure.add(t.value);
+      continue;
+    }
+    if (use === 'name') continue;
+    let list = refs.get(t.value);
+    if (!list) refs.set(t.value, (list = []));
+    list.push({ k, shorthand: use === 'shorthand' });
+  }
+  return { refs, unsure };
+}
+
+/** Whether a name is written `o.name` (an identifier, a reserved word among them). */
+function dotName(name: string): boolean {
+  if (!name || !isIdentStart(name.charCodeAt(0))) return false;
+  for (let p = 1; p < name.length; p++) if (!isIdentPart(name.charCodeAt(p))) return false;
+  return true;
+}
+
+/**
+ * Whether the module assigns to a name anywhere (`x = …`, `x += …`, `x++`), read generously: a
+ * function or a class it assigns to is not kept as a value once the module has run.
+ */
+function assignedTo(tokens: Token[], name: string): boolean {
+  for (let k = 0; k < tokens.length; k++) {
+    const t = tokens[k];
+    if (t.type !== 'ident' || t.value !== name || tokens[k - 1]?.value === '.') continue;
+    const prev = tokens[k - 1];
+    const next = tokens[k + 1];
+    if ((prev !== undefined && (prev.value === '++' || prev.value === '--')) || (next !== undefined && (next.value === '++' || next.value === '--'))) return true;
+    // `x = …`, `x += …`, `x >>>= …`, `x ??= …` (not `x == …`, `x => …`, `x <= …`, `x >= …`).
+    let m = k + 1;
+    while (tokens[m] !== undefined && tokens[m].type === 'punct' && tokens[m].value.length === 1 && '+-*/%&|^<>?'.indexOf(tokens[m].value) >= 0 && (m === k + 1 || tokens[m].start === tokens[m - 1].end)) m++;
+    const eq = tokens[m];
+    if (eq === undefined || eq.value !== '=' || (m > k + 1 && eq.start !== tokens[m - 1].end)) continue;
+    const after = tokens[m + 1];
+    if (after !== undefined && after.start === eq.end && (after.value === '=' || after.value === '>')) continue;
+    if (m === k + 2 && (tokens[k + 1].value === '<' || tokens[k + 1].value === '>')) continue;
+    return true;
+  }
+  return false;
+}
+
 /**
  * Transform an ES module's source into a `__softnModules.define(url, async (__exports, __import, __meta) => { ... })`
  * registration, preserving line structure where practical and supporting all ES2025 import/export forms.
  */
 export function transformEsModule(code: string, moduleUrl: string): TransformedModule {
+  // A first line `#!…` is a comment at a module's very start, and only there: in the
+  // registration it is not at the start, and the module did not compile.
+  if (code.charCodeAt(0) === 35 && code.charCodeAt(1) === 33) code = `//${code.slice(2)}`;
   // Bundlers often emit a self-contained script even when the HTML uses type="module".
   // Only a keyword can require a rewrite. A match in a string or comment falls back to the scanner.
   const tokens = /\b(?:import|export)\b/.test(code) ? tokenizeTopLevel(code) : [];
@@ -1026,6 +1520,16 @@ export function transformEsModule(code: string, moduleUrl: string): TransformedM
   const exportGetters = new Map<string, string>(); // exportedName -> localExpr
   const staticImports: string[] = [];
   const dynamicImports: string[] = [];
+  // The module's imports (and its exports of other modules'), in their order, done before
+  // anything of its own runs, as a browser does: each was done where it was written, so a
+  // module's code above its imports ran before what it imports, and read its names before they
+  // were there ("cannot access a lexical binding before initialization").
+  const hoisted: Array<string | { mod: string; spec: string; names: Array<{ local: string; imported: string }>; namespaces: string[] }> = [];
+  // What the statements taken out spanned (imports, `export { … }`), whose names are not the module's code.
+  const dropped: Array<[number, number]> = [];
+  // What each name the module exports is declared as: one that never changes once the module has
+  // run (a `const`, a function's or a class's own name, a default value) is read from it then as a value.
+  const kinds = new Map<string, 'const' | 'declared' | 'other'>();
 
   let modCounter = 0;
   let braceDepth = 0;
@@ -1083,6 +1587,7 @@ export function transformEsModule(code: string, moduleUrl: string): TransformedM
         endIdx = skipImportAttributes(tokens, endIdx);
         if (tokens[endIdx + 1]?.value === ';') endIdx++;
         edits.push({ start: tok.start, end: tokens[endIdx].end, replacement: '' });
+        dropped.push([tok.start, tokens[endIdx].end]);
         i = endIdx;
         continue;
       }
@@ -1094,11 +1599,8 @@ export function transformEsModule(code: string, moduleUrl: string): TransformedM
         let j = skipImportAttributes(tokens, i + 1);
         let endPos = tokens[j].end;
         if (tokens[j + 1]?.value === ';') { j++; endPos = tokens[j].end; }
-        edits.push({
-          start: tok.start,
-          end: endPos,
-          replacement: `await __import(${JSON.stringify(spec)}, __meta.url);`,
-        });
+        hoisted.push(`await __import(${JSON.stringify(spec)}, __meta.url);`);
+        edits.push({ start: tok.start, end: endPos, replacement: '' });
         i = j;
         continue;
       }
@@ -1124,19 +1626,17 @@ export function transformEsModule(code: string, moduleUrl: string): TransformedM
         if (tokens[endIdx + 1]?.value === ';') endIdx++;
 
         const modVar = `__softn_m${modCounter++}`;
-        const lines: string[] = [`const ${modVar} = await __import(${JSON.stringify(spec)}, __meta.url);`];
+        const entry = { mod: modVar, spec, names: [] as Array<{ local: string; imported: string }>, namespaces: [] as string[] };
 
         // Parse clauseTokens: defaultIdent, `* as ns`, `{ a, b as c, "str" as d, type T }`
         let k = 0;
         if (clauseTokens[k] && (clauseTokens[k].type === 'ident' || clauseTokens[k].type === 'keyword') && clauseTokens[k].value !== '*') {
-          const defName = clauseTokens[k].value;
-          lines.push(`const ${defName} = ${modVar}.default;`);
+          entry.names.push({ local: clauseTokens[k].value, imported: 'default' });
           k++;
           if (clauseTokens[k]?.value === ',') k++;
         }
         if (clauseTokens[k]?.value === '*' && clauseTokens[k + 1]?.value === 'as' && clauseTokens[k + 2]) {
-          const nsName = clauseTokens[k + 2].value;
-          lines.push(`const ${nsName} = ${modVar};`);
+          entry.namespaces.push(clauseTokens[k + 2].value);
         } else if (clauseTokens[k]?.value === '{') {
           k++;
           while (k < clauseTokens.length && clauseTokens[k].value !== '}') {
@@ -1154,11 +1654,13 @@ export function transformEsModule(code: string, moduleUrl: string): TransformedM
               local = clauseTokens[k + 1].value;
               k += 2;
             }
-            lines.push(`const ${local} = ${modVar}[${JSON.stringify(imported)}];`);
+            entry.names.push({ local, imported });
           }
         }
 
-        edits.push({ start: tok.start, end: tokens[endIdx].end, replacement: lines.join(' ') });
+        hoisted.push(entry);
+        edits.push({ start: tok.start, end: tokens[endIdx].end, replacement: '' });
+        dropped.push([tok.start, tokens[endIdx].end]);
         i = endIdx;
         continue;
       }
@@ -1170,7 +1672,9 @@ export function transformEsModule(code: string, moduleUrl: string): TransformedM
       if (!next) continue;
 
       // TypeScript `export type ...` or `export interface ...` -> drop `export` keyword (or whole re-export)
-      if (next.value === 'interface') {
+      // (`export declare …` too: what it declares is not there when the module runs, and with its
+      // `export` left in, the registration did not compile.)
+      if (next.value === 'interface' || next.value === 'declare') {
         edits.push({ start: tok.start, end: tok.end, replacement: '' });
         continue;
       }
@@ -1181,6 +1685,7 @@ export function transformEsModule(code: string, moduleUrl: string): TransformedM
         j = skipImportAttributes(tokens, Math.min(j, tokens.length - 1));
         if (tokens[j + 1]?.value === ';') j++;
         edits.push({ start: tok.start, end: tokens[Math.min(j, tokens.length - 1)].end, replacement: '' });
+        dropped.push([tok.start, tokens[Math.min(j, tokens.length - 1)].end]);
         i = j;
         continue;
       }
@@ -1191,7 +1696,15 @@ export function transformEsModule(code: string, moduleUrl: string): TransformedM
         j = skipImportAttributes(tokens, Math.min(j, tokens.length - 1));
         if (tokens[j + 1]?.value === ';') j++;
         edits.push({ start: tok.start, end: tokens[Math.min(j, tokens.length - 1)].end, replacement: '' });
+        dropped.push([tok.start, tokens[Math.min(j, tokens.length - 1)].end]);
         i = j;
+        continue;
+      }
+      // TypeScript `export namespace N { … }` (and `export module N`): a value of that name.
+      if ((next.value === 'namespace' || next.value === 'module') && tokens[i + 2]?.type === 'ident') {
+        exportGetters.set(tokens[i + 2].value, tokens[i + 2].value);
+        kinds.set(tokens[i + 2].value, 'other');
+        edits.push({ start: tok.start, end: tok.end, replacement: '' });
         continue;
       }
       if (next.value === 'type') {
@@ -1217,6 +1730,7 @@ export function transformEsModule(code: string, moduleUrl: string): TransformedM
           const declName = tokens[nameIdx].value;
           edits.push({ start: tok.start, end: next.end, replacement: '' });
           exportGetters.set('default', declName);
+          kinds.set(declName, 'declared');
           i = i + 1;
           continue;
         } else if (
@@ -1236,12 +1750,14 @@ export function transformEsModule(code: string, moduleUrl: string): TransformedM
           edits.push({ start: tok.start, end: next.end, replacement: '' });
           edits.push({ start: insertAt, end: insertAt, replacement: ` ${defVar}` });
           exportGetters.set('default', defVar);
+          kinds.set(defVar, 'const');
           i = i + 1;
           continue;
         } else {
           const defVar = `__softn_default`;
           edits.push({ start: tok.start, end: next.end, replacement: `const ${defVar} =` });
           exportGetters.set('default', defVar);
+          kinds.set(defVar, 'const');
           i = i + 1;
           continue;
         }
@@ -1264,7 +1780,9 @@ export function transformEsModule(code: string, moduleUrl: string): TransformedM
           const rep = asNs
             ? `const ${modVar} = await __import(${JSON.stringify(spec)}, __meta.url); Object.defineProperty(__exports, ${JSON.stringify(asNs)}, { enumerable: true, configurable: true, get: () => ${modVar} });`
             : `const ${modVar} = await __import(${JSON.stringify(spec)}, __meta.url); __reexport(__exports, ${modVar});`;
-          edits.push({ start: tok.start, end: tokens[endIdx].end, replacement: rep });
+          hoisted.push(rep);
+          edits.push({ start: tok.start, end: tokens[endIdx].end, replacement: '' });
+          dropped.push([tok.start, tokens[endIdx].end]);
           i = endIdx;
           continue;
         }
@@ -1303,17 +1821,16 @@ export function transformEsModule(code: string, moduleUrl: string): TransformedM
                 `Object.defineProperty(__exports, ${JSON.stringify(s.exported)}, { enumerable: true, configurable: true, get: () => ${modVar}[${JSON.stringify(s.local)}] });`
             )
             .join(' ');
-          edits.push({
-            start: tok.start,
-            end: tokens[endIdx].end,
-            replacement: `const ${modVar} = await __import(${JSON.stringify(spec)}, __meta.url); ${defs}`,
-          });
+          hoisted.push(`const ${modVar} = await __import(${JSON.stringify(spec)}, __meta.url); ${defs}`);
+          edits.push({ start: tok.start, end: tokens[endIdx].end, replacement: '' });
+          dropped.push([tok.start, tokens[endIdx].end]);
           i = endIdx;
           continue;
         } else {
           if (tokens[endIdx + 1]?.value === ';') endIdx++;
           for (const s of specs) exportGetters.set(s.exported, s.local);
           edits.push({ start: tok.start, end: tokens[endIdx].end, replacement: '' });
+          dropped.push([tok.start, tokens[endIdx].end]);
           i = endIdx;
           continue;
         }
@@ -1332,53 +1849,78 @@ export function transformEsModule(code: string, moduleUrl: string): TransformedM
         if (tokens[nameIdx]?.value === '*') nameIdx++;
         if (tokens[nameIdx]) {
           exportGetters.set(tokens[nameIdx].value, tokens[nameIdx].value);
+          kinds.set(tokens[nameIdx].value, next.value === 'enum' ? 'other' : 'declared');
         }
         edits.push({ start: tok.start, end: tok.end, replacement: '' });
         continue;
       }
 
-      // `export const / let / var ...`
+      // `export const / let / var ...` (to its end: a `;` at its level, or a line break where one goes)
       if (next.value === 'const' || next.value === 'let' || next.value === 'var') {
-        // Scan until statement end (`;` at depth 0, or newline before next statement keyword/ident when ASI applies)
-        let j = i + 2;
-        let pD = 0;
-        let bD = 0;
-        let kD = 0;
-        while (j < tokens.length) {
-          const tj = tokens[j];
-          if (tj.type === 'punct') {
-            if (tj.value === '(') pD++;
-            else if (tj.value === ')') pD = Math.max(0, pD - 1);
-            else if (tj.value === '{') bD++;
-            else if (tj.value === '}') bD = Math.max(0, bD - 1);
-            else if (tj.value === '[') kD++;
-            else if (tj.value === ']') kD = Math.max(0, kD - 1);
-            else if (tj.value === ';' && pD === 0 && bD === 0 && kD === 0) break;
-          }
-          // Check for ASI newline boundary when at depth 0
-          if (pD === 0 && bD === 0 && kD === 0 && j > i + 2) {
-            const prevTok = tokens[j - 1];
-            const between = code.slice(prevTok.end, tj.start);
-            if (
-              /[\r\n]/.test(between) &&
-              prevTok.value !== ',' &&
-              prevTok.value !== '=' &&
-              prevTok.value !== ':' &&
-              tj.value !== ',' &&
-              tj.value !== '=' &&
-              tj.value !== '.' &&
-              tj.value !== '(' &&
-              tj.value !== '['
-            ) {
-              break;
-            }
-          }
-          j++;
+        const names = extractDeclaredNames(tokens, i + 2, declarationEnd(tokens, code, i + 2));
+        for (const n of names) {
+          exportGetters.set(n, n);
+          kinds.set(n, next.value === 'const' && tokens[i + 2]?.value !== 'enum' ? 'const' : 'other');
         }
-        const names = extractDeclaredNames(tokens, i + 2, j);
-        for (const n of names) exportGetters.set(n, n);
         edits.push({ start: tok.start, end: tok.end, replacement: '' });
         continue;
+      }
+    }
+
+    // The module's own top-level declarations, for what `export { … }` names.
+    if (braceDepth === 0 && parenDepth === 0 && bracketDepth === 0 && prev?.value !== '.' && tok.type === 'keyword') {
+      if (tok.value === 'const' && tokens[i + 1]?.value !== 'enum') {
+        for (const n of extractDeclaredNames(tokens, i + 1, declarationEnd(tokens, code, i + 1))) if (!kinds.has(n)) kinds.set(n, 'const');
+      } else if (tok.value === 'let' || tok.value === 'var') {
+        for (const n of extractDeclaredNames(tokens, i + 1, declarationEnd(tokens, code, i + 1))) kinds.set(n, 'other');
+      } else if ((tok.value === 'function' || tok.value === 'class') && (prev === null || !readsOn(prev) || prev.value === 'async')) {
+        let at = i + 1;
+        if (tokens[at]?.value === '*') at++;
+        if (tokens[at]?.type === 'ident' && !kinds.has(tokens[at].value)) kinds.set(tokens[at].value, 'declared');
+      }
+    }
+  }
+
+  // Each name the module imports is read from its module where it is written (`count` becomes
+  // `__softn_m0.count`), as a browser reads an import: the binding of the module that exports
+  // it, as it is then. Each was a copy taken when the import ran: an `export let` the exporter
+  // changed later was never seen by the modules that imported it, and in a cycle (a imports b, b
+  // imports a) the copy was taken before the other module had made the value, and the app stopped
+  // ("cannot access a lexical binding before initialization"). A name the module declares again
+  // in a place of its own keeps a copy of its own as well, read in the statements that do so;
+  // one it writes in a way not told for certain (a label, `delete x`) is read from the copy alone.
+  const bindings = new Map<string, string>();
+  // The names read from a copy where they are declared again: the spans of those statements.
+  let again = new Map<string, Array<[number, number]> | null>();
+  for (const entry of hoisted) {
+    if (typeof entry === 'string') continue;
+    for (const { local, imported } of entry.names) {
+      if (!isKeywordWord(local) && dotName(local) && (imported === 'default' || dotName(imported))) bindings.set(local, `${entry.mod}.${imported}`);
+    }
+  }
+  if (bindings.size > 0) {
+    // Whether a token is the module's own code (not one of the statements taken out).
+    const counted = (): ((t: Token) => boolean) => {
+      let d = 0;
+      return (t: Token): boolean => {
+        while (d < dropped.length && dropped[d][1] <= t.start) d++;
+        return !(d < dropped.length && dropped[d][0] <= t.start);
+      };
+    };
+    // A direct `eval` reads the module's names by their names: it is handed the copies.
+    if (tokens.some((t, k) => t.value === 'eval' && tokens[k + 1]?.value === '(' && tokens[k - 1]?.value !== '.')) bindings.clear();
+    again = declaredAgain(tokens, code, new Set(bindings.keys()), counted());
+    for (const [n, spans] of again) if (spans === null) bindings.delete(n);
+    const { refs, unsure } = importUses(tokens, new Set(bindings.keys()), counted());
+    for (const n of unsure) bindings.delete(n);
+    for (const [n, list] of refs) {
+      const read = bindings.get(n);
+      if (read === undefined) continue;
+      const spans = again.get(n);
+      for (const { k, shorthand } of list) {
+        const at = tokens[k].start;
+        if (spans && spans.some(([from, to]) => from <= at && at < to)) continue;
+        edits.push({ start: at, end: tokens[k].end, replacement: shorthand ? `${n}: ${read}` : read });
       }
     }
   }
@@ -1387,19 +1929,43 @@ export function transformEsModule(code: string, moduleUrl: string): TransformedM
   const body = applyEditsLinear(code, edits, true);
 
   const getterLines: string[] = [];
+  // What it exports that does not change once it has run (a `const`, a default value, a
+  // function's or a class's own name it never assigns to): the registry keeps each as a value
+  // then, so that reading one costs what reading a property does, not a call.
+  const fixed: string[] = [];
   for (const [exported, local] of exportGetters) {
     getterLines.push(
-      `Object.defineProperty(__exports, ${JSON.stringify(exported)}, { enumerable: true, configurable: true, get: function () { return ${local}; } });`
+      `Object.defineProperty(__exports, ${JSON.stringify(exported)}, { enumerable: true, configurable: true, get: function () { return ${bindings.get(local) ?? local}; } });`
+    );
+    const kind = bindings.has(local) ? undefined : kinds.get(local);
+    if (kind === 'const' || (kind === 'declared' && !assignedTo(tokens, local))) fixed.push(exported);
+  }
+  const header = getterLines.slice();
+  if (fixed.length > 0) header.push(`__softnFixed(${JSON.stringify(fixed)});`);
+  if (hoisted.length > 0) {
+    header.push(
+      hoisted
+        .map((entry) => {
+          if (typeof entry === 'string') return entry;
+          const parts = [`const ${entry.mod} = await __import(${JSON.stringify(entry.spec)}, __meta.url);`];
+          for (const ns of entry.namespaces) parts.push(`const ${ns} = ${entry.mod};`);
+          for (const { local, imported } of entry.names) {
+            if (bindings.has(local) && !again.has(local)) continue;
+            parts.push(imported === 'default' ? `const ${local} = ${entry.mod}.default;` : `const ${local} = ${entry.mod}[${JSON.stringify(imported)}];`);
+          }
+          return parts.join(' ');
+        })
+        .join(' ')
     );
   }
 
   const factoryCode =
-    `__softnModules.define(${JSON.stringify(moduleUrl)}, async function (__exports, __import, __meta, __reexport) {\n` +
-    (getterLines.length > 0 ? getterLines.join('\n') + '\n' : '') +
+    `__softnModules.define(${JSON.stringify(moduleUrl)}, async function (__exports, __import, __meta, __reexport, __softnFixed) {\n` +
+    (header.length > 0 ? header.join('\n') + '\n' : '') +
     body +
     `\n});\n`;
 
-  return { factoryCode, staticImports, dynamicImports, headerLines: 1 + getterLines.length };
+  return { factoryCode, staticImports, dynamicImports, headerLines: 1 + header.length };
 }
 
 /**
@@ -1411,6 +1977,8 @@ var __softnModules = (function () {
   var evaluating = Object.create(null);
   var namespaces = Object.create(null);
   var evaluated = Object.create(null);
+  // What each module being run waits for: the modules it has asked for that are still running.
+  var waits = Object.create(null);
 
   function reexport(target, source) {
     if (!source || typeof source !== 'object') return;
@@ -1431,6 +1999,18 @@ var __softnModules = (function () {
     var ns = Object.create(null);
     Object.defineProperty(ns, Symbol.toStringTag, { value: 'Module' });
     return ns;
+  }
+
+  // What a module exports that does not change once it has run (its registration names them),
+  // kept as values then: an import read where it is written is a property's read, not a call.
+  function keep(ns, names) {
+    for (var i = 0; i < names.length; i++) {
+      var d = Object.getOwnPropertyDescriptor(ns, names[i]);
+      if (!d || !d.get) continue;
+      try {
+        Object.defineProperty(ns, names[i], { value: d.get.call(ns), enumerable: true, configurable: true, writable: false });
+      } catch (e) {}
+    }
   }
 
   // The engine's own eval, whatever the app makes of the global one later. Called this way
@@ -1473,20 +2053,51 @@ var __softnModules = (function () {
     });
   }
 
-  function resolveKnown(url, ancestors) {
+  // Whether the module 'from' waits, through the modules it waits for, for the module 'to'.
+  function waitsFor(from, to, seen) {
+    if (from === to) return true;
+    if (seen[from]) return false;
+    seen[from] = true;
+    var next = waits[from];
+    if (next) {
+      for (var k in next) {
+        if (waitsFor(k, to, seen)) return true;
+      }
+    }
+    return false;
+  }
+
+  // The module 'asker' waits for 'url' to have run (p), until it has.
+  function waitOn(asker, url, p) {
+    if (!asker) return p;
+    var list = waits[asker] || (waits[asker] = Object.create(null));
+    list[url] = (list[url] || 0) + 1;
+    var done = function () {
+      if (--list[url] <= 0) delete list[url];
+    };
+    p.then(done, done);
+    return p;
+  }
+
+  function resolveKnown(url, asker) {
     if (evaluated[url]) return Promise.resolve(evaluated[url]);
-    // True circular dependency: caller is already inside url's evaluation chain -> return live namespace.
-    if (ancestors && ancestors[url] && namespaces[url]) return Promise.resolve(namespaces[url]);
-    // Concurrent / diamond non-circular import: wait for the in-flight factory to finish!
-    if (evaluating[url]) return evaluating[url];
+    if (evaluating[url]) {
+      // A module that waits, through what it imports, for the one asking (a cycle; the one
+      // asking itself among them): its namespace as it is now, as a browser links a cycle. It
+      // was that only for a module asking from inside the other's own chain of imports: two
+      // modules of a cycle imported at once (Promise.all of two import()s) waited for each
+      // other for good. Otherwise, wait for it to have run.
+      if (asker && waitsFor(url, asker, Object.create(null))) return Promise.resolve(namespaces[url]);
+      return waitOn(asker, url, evaluating[url]);
+    }
     return null;
   }
 
-  function importModule(specifier, importerUrl, ancestors) {
+  function importModule(specifier, importerUrl, asker) {
     var specStr = String(specifier);
-    var known = resolveKnown(specStr, ancestors);
+    var known = resolveKnown(specStr, asker);
     if (known) return known;
-    if (factories[specStr]) return runFactory(specStr, ancestors);
+    if (factories[specStr]) return runFactory(specStr, asker);
 
     var resolvedUrl = null;
     try {
@@ -1494,38 +2105,35 @@ var __softnModules = (function () {
     } catch (e) {}
 
     if (resolvedUrl) {
-      var knownResolved = resolveKnown(resolvedUrl, ancestors);
+      var knownResolved = resolveKnown(resolvedUrl, asker);
       if (knownResolved) return knownResolved;
-      if (factories[resolvedUrl]) return runFactory(resolvedUrl, ancestors);
+      if (factories[resolvedUrl]) return runFactory(resolvedUrl, asker);
     }
     return loadFromHost(specifier, importerUrl).then(function (url) {
-      var knownLoaded = resolveKnown(url, ancestors);
+      var knownLoaded = resolveKnown(url, asker);
       if (knownLoaded) return knownLoaded;
       if (!factories[url]) throw new TypeError('Module did not register factory: ' + url);
-      return runFactory(url, ancestors);
+      return runFactory(url, asker);
     });
   }
 
-  function runFactory(url, ancestors) {
+  function runFactory(url, asker) {
     var ns = makeNamespace();
     namespaces[url] = ns;
-    var nextAncestors = Object.create(null);
-    if (ancestors) {
-      for (var k in ancestors) nextAncestors[k] = true;
-    }
-    nextAncestors[url] = true;
     var childImport = function (spec, impUrl) {
-      return importModule(spec, impUrl, nextAncestors);
+      return importModule(spec, impUrl, url);
     };
     var meta = {
       url: url,
       env: { MODE: 'production', PROD: true, DEV: false, BASE_URL: '/' },
     };
+    var fixed = null;
     var p = Promise.resolve()
       .then(function () {
-        return factories[url](ns, childImport, meta, reexport);
+        return factories[url](ns, childImport, meta, reexport, function (names) { fixed = names; });
       })
       .then(function () {
+        if (fixed) keep(ns, fixed);
         evaluated[url] = ns;
         delete evaluating[url];
         return ns;
@@ -1536,7 +2144,7 @@ var __softnModules = (function () {
         throw err;
       });
     evaluating[url] = p;
-    return p;
+    return waitOn(asker, url, p);
   }
 
   return {

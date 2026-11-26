@@ -143,7 +143,10 @@ function unpackedTooLarge(total: number): string {
 }
 
 function unwrapSingleContainerRoot(entries: Map<string, Uint8Array>): Map<string, Uint8Array> {
-  if (entries.has('manifest.json') || entries.has('index.html') || entries.has('app.html')) {
+  // A project's own `ui/` folder at the top is no folder the bundle was zipped in, as the
+  // runtime (runtime-shell containerBundle.ts) and the directory (bundle.php) read it: taken for
+  // one, a bundle they refuse for its missing manifest was said here to have nothing wrong.
+  if (entries.has('manifest.json') || entries.has('index.html') || entries.has('app.html') || entries.has('ui/main.ui')) {
     return entries;
   }
   const filePaths = [...entries.keys()].filter((k) => !k.endsWith('/'));
@@ -307,6 +310,7 @@ export function inspectEntries(entries: Map<string, Uint8Array> | null): BundleI
     description?: unknown;
     main?: unknown;
     icon?: unknown;
+    frontendRoot?: unknown;
     engine?: unknown;
     container?: unknown;
     backend?: unknown;
@@ -361,8 +365,12 @@ export function inspectEntries(entries: Map<string, Uint8Array> | null): BundleI
   if (!name) error('The manifest has no name.');
   else if (name.length > 64) error(`The name is ${name.length} characters; the directory keeps 64.`);
   if (!version) error('The manifest has no version.');
+  // The folder a v2 bundle's site is in: an entry or an icon written from it is found there,
+  // as the directory finds it (bundle.php tries `frontendRoot/main` and `frontendRoot/icon`).
+  const frontendRoot = typeof manifest.frontendRoot === 'string' ? manifest.frontendRoot.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '') : '';
+  const fromRoot = (path: string): string | null => (frontendRoot !== '' ? `${frontendRoot}/${path.replace(/^\/+/, '')}` : null);
   if (!main) error('The manifest names no entry file (main).');
-  else if (!resolved.has(main)) error(`The manifest's entry file is not in the bundle: ${main}`);
+  else if (!resolved.has(main) && !resolved.has(fromRoot(main) ?? '')) error(`The manifest's entry file is not in the bundle: ${main}`);
   if (!description) warn('No description: the card will say "No description yet".');
 
   // Files the manifest promises must be there; the runtime resolves them by
@@ -463,7 +471,7 @@ export function inspectEntries(entries: Map<string, Uint8Array> | null): BundleI
     return mime ? `data:${mime};base64,${toBase64(bytes)}` : null;
   };
   if (typeof manifest.icon === 'string' && manifest.icon) {
-    const icon = resolved.get(manifest.icon);
+    const icon = resolved.get(manifest.icon) ?? (fromRoot(manifest.icon) !== null ? resolved.get(fromRoot(manifest.icon)!) : undefined);
     if (!icon) warn(`The manifest names an icon the bundle does not have: ${manifest.icon}. The card will show an initial.`);
     else if (icon.length > MAX_ICON_BYTES) warn(`The icon is ${fmt(icon.length)}; the directory shows icons up to ${fmt(MAX_ICON_BYTES)}, so the card will show an initial.`);
     else {

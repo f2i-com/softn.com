@@ -31,7 +31,7 @@ import { placeSyntaxError } from './logic-syntax';
 import { endLine, logicOrigin } from './logic-origin';
 import { moduleSyntaxAsScript } from './module-syntax';
 import { inlineLogicImports } from './logic-imports';
-import { sanitizeArgs } from './vm-args';
+import { sanitizeArgs, stateForScript } from './vm-args';
 import { withOutcome, type CallOutcome } from './failed-calls';
 import type { DocumentShell, ShellOp } from '../document-shell/host';
 import {
@@ -714,8 +714,9 @@ export class SoftNScriptRuntime {
 
       // 4. Generate preamble for external functions (e.g. wallet bridge).
       // Wrappers read a mutable VM-side table so later host implementations can
-      // update without recompiling or re-running script initialization.
-      const external = collectExternalValues(this.externalFunctions);
+      // update without recompiling or re-running script initialization. Only
+      // the ones the logic names: reading one is calling it (external-values.ts).
+      const external = collectExternalValues(this.externalFunctions, resolvedCode);
       this.externalFunctionNames = external.names;
       this.externalFunctionValues = external.values;
       this.externalValuesGlobalIndex = -1;
@@ -1200,21 +1201,15 @@ export class SoftNScriptRuntime {
     if (this.timerEntryQueued || this.dueTimers.length === 0) return;
     this.timerEntryQueued = true;
     let entered = false;
-    void this.enterVM('timer callbacks', false, () => {
-      entered = true;
-      const due = this.dueTimers;
-      this.dueTimers = [];
-      for (const callId of due) {
-        try {
-          this.vmEngine!.resolveHostCallback(callId, null);
-        } catch (error) {
-          // One callback failing does not stop the others, and an interval
-          // has already asked for its next wait.
-          console.error('[SoftN] A timer callback in the logic failed:', error);
-          this.reportFailure('a timer', error);
-        }
-      }
-    }).finally(() => {
+    let over = false;
+    // The entry is over once the engine has been left, not once the host
+    // calls its callbacks made are answered: it was the latter, so a timer
+    // that asked for something slow (a fetch, the end of a track) held every
+    // other timer of the app until it came, and a clock stood still for as
+    // long as a request took.
+    const next = () => {
+      if (over) return;
+      over = true;
       this.timerEntryQueued = false;
       if (this.disposed || this.vmEngine?.terminated) {
         this.timers.dispose();
@@ -1225,7 +1220,28 @@ export class SoftNScriptRuntime {
       // Not let in because the call queue is full: try again shortly rather
       // than lose a callback, or an interval, for good.
       else setTimeout(() => this.answerDueTimers(), 16);
-    });
+    };
+    void this.enterVM(
+      'timer callbacks',
+      false,
+      () => {
+        entered = true;
+        const due = this.dueTimers;
+        this.dueTimers = [];
+        for (const callId of due) {
+          try {
+            this.vmEngine!.resolveHostCallback(callId, null);
+          } catch (error) {
+            // One callback failing does not stop the others, and an interval
+            // has already asked for its next wait.
+            console.error('[SoftN] A timer callback in the logic failed:', error);
+            this.reportFailure('a timer', error);
+          }
+        }
+      },
+      undefined,
+      next
+    ).finally(next);
   }
 
   /**
@@ -1302,7 +1318,9 @@ export class SoftNScriptRuntime {
     name: string,
     leftOut: boolean,
     run: () => unknown,
-    outcome?: CallOutcome
+    outcome?: CallOutcome,
+    /** Told once the engine has been left, before the host calls the entry queued are run. */
+    left?: () => void
   ): Promise<unknown> {
     const QUEUE_HARD_LIMIT = SoftNScriptRuntime.QUEUE_HARD_LIMIT;
     // A runtime that has been torn down answers nothing. Without this, a
@@ -1418,6 +1436,7 @@ export class SoftNScriptRuntime {
       this.asyncCallInProgress = false;
       this.vmCallQueueDepth--;
       release!();
+      left?.();
 
       // Process pending host calls OUTSIDE the lock so other VM calls
       // (e.g. movementTick) can execute while async host operations
@@ -1718,7 +1737,8 @@ export class SoftNScriptRuntime {
         // for it, and never the node: the engine's own is left alone.
         if (this.documentShellOn && holdsShellNode(value)) continue;
         indices.push(this.stateVarIndices[i]);
-        values.push(value);
+        // A Set the page holds as the list of its members (vm-args.ts).
+        values.push(stateForScript(value));
       }
       this.vmEngine.setGlobalsBatch(indices, values);
       // The cached digests describe what the host last READ. They are used to
@@ -1741,7 +1761,7 @@ export class SoftNScriptRuntime {
           const value = this.context.state[key];
           if (this.documentShellOn && holdsShellNode(value)) continue;
           indices.push(sym.index);
-          values.push(value);
+          values.push(stateForScript(value));
         }
       }
       if (indices.length > 0) {
@@ -2251,8 +2271,14 @@ export class SoftNScriptRuntime {
 
   // ── Host call processing (softn.* bridge) ───────────────────────────
 
-  /** Max total host calls resolved per processPendingHostCalls invocation.
-   *  Prevents runaway callback chains from consuming unbounded memory/CPU. */
+  /**
+   * Host calls answered one after another in a chain before the page is given
+   * its turn. A host call that answers at once resolves on a microtask, so a
+   * chain of them made from each other's callbacks would hold the page for as
+   * long as it went on. Past this many the chain waits a task and goes on; it
+   * used to stop there, and every call after it went unanswered for good (a
+   * long poll stopped at its 256th answer, a playlist at its 128th track).
+   */
   private static readonly MAX_HOST_CALL_ROUNDS = 256;
 
   /**
@@ -2271,11 +2297,10 @@ export class SoftNScriptRuntime {
     while (pending.length > 0) {
       for (const call of pending) {
         if (++totalResolved > SoftNScriptRuntime.MAX_HOST_CALL_ROUNDS) {
-          console.error(
-            `[SoftN] Host call limit exceeded (${SoftNScriptRuntime.MAX_HOST_CALL_ROUNDS}) — ` +
-              'aborting to prevent runaway callback chains'
-          );
-          return;
+          // The page's turn, and then the rest of the chain.
+          await new Promise<void>((resolve) => setTimeout(resolve, 0));
+          totalResolved = 1;
+          if (!this.vmEngine || this.frozen || this.disposed) return;
         }
         // Execute the async host call OUTSIDE the lock
         let result: unknown;

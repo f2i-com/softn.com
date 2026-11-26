@@ -199,6 +199,70 @@ function recordBytes(map: Record<string, string>): number {
 }
 
 /**
+ * What one event tells of the page for two merged into it: what each carried (where an element
+ * is scrolled to, a field's value, the focus), the later of each. A waiting event's changes
+ * went with it when a later one took its place, and the app went on reading where its list was
+ * before the person scrolled it.
+ */
+function mergeSyncChanges(older: unknown[], newer: unknown[]): unknown[] {
+  if (older.length === 0) return newer;
+  const keyed = new Map<string, unknown>();
+  const rest: unknown[] = [];
+  for (const change of older.concat(newer)) {
+    const key = Array.isArray(change) && typeof change[0] === 'string' && typeof change[1] === 'number'
+      ? change[0] === 'f' ? 'f' : `${change[0]}:${change[1]}`
+      : null;
+    if (key === null) {
+      rest.push(change);
+      continue;
+    }
+    keyed.delete(key);
+    keyed.set(key, change);
+  }
+  return rest.concat([...keyed.values()]);
+}
+
+/**
+ * The text of a page a backend rendered, read as a browser reads it: in the character set a
+ * byte order mark says, else the one its Content-Type names (`charset=`), else UTF-8. Read as
+ * UTF-8 whatever it said, a page sent as Latin-1 showed each é as �.
+ */
+function decodeDocument(body: Uint8Array, contentType: string): string {
+  const bom =
+    body[0] === 0xef && body[1] === 0xbb && body[2] === 0xbf
+      ? 'utf-8'
+      : body[0] === 0xfe && body[1] === 0xff
+        ? 'utf-16be'
+        : body[0] === 0xff && body[1] === 0xfe
+          ? 'utf-16le'
+          : null;
+  const named = bom ?? /;\s*charset\s*=\s*["']?([^"';\s]+)/i.exec(contentType)?.[1];
+  if (named) {
+    try {
+      return new TextDecoder(named).decode(body);
+    } catch {
+      // A name no browser knows: read as UTF-8, as a browser would.
+    }
+  }
+  return new TextDecoder().decode(body);
+}
+
+/**
+ * A move standing for the moves before it: where the pointer is now, and how far it went since
+ * the last one the script heard (`movementX`/`movementY`, what a mouse look reads), all of it.
+ */
+function withMovementOf(older: Record<string, unknown>, newer: Record<string, unknown>): Record<string, unknown> {
+  if (typeof older.movementX !== 'number' && typeof older.movementY !== 'number') return newer;
+  const merged = { ...newer };
+  for (const axis of ['movementX', 'movementY']) {
+    const before = older[axis];
+    const now = newer[axis];
+    if (typeof before === 'number' && typeof now === 'number') merged[axis] = before + now;
+  }
+  return merged;
+}
+
+/**
  * Which mount an element's shadow root belongs to: the latest. An element is mounted into
  * again whenever its host re-renders (a preview on every keystroke), and the mount before is
  * disposed afterwards, or is still starting. Only the owner writes to the root or empties it:
@@ -842,12 +906,20 @@ export async function mountSoftNContainer(
     }
   };
   const onStorage = (event: StorageEvent) => {
-    if (disposed || typeof event.key !== 'string' || !storage) return;
+    if (disposed || !storage) return;
     try {
       if (event.storageArea !== storage) return;
     } catch {
       return;
     }
+    if (event.key === null) {
+      // The whole of it cleared (another tab's localStorage.clear()): every key the app had is
+      // read again, and told as gone. Not heard, the app went on with what was there before,
+      // and wrote it back.
+      for (const key of Object.keys(liveSession.localStorage)) heard(`${storageBase}ls:${key}`);
+      return;
+    }
+    if (typeof event.key !== 'string') return;
     heard(event.key);
   };
   if (persistStorage && typeof window !== 'undefined') window.addEventListener('storage', onStorage);
@@ -990,7 +1062,20 @@ export async function mountSoftNContainer(
     if (idbBacking?.kind === 'localStorage') {
       return Promise.resolve(writeLocalStorageParts(changes));
     }
-    if (!idbBacking && !persistStorage) return Promise.resolve(true);
+    if (!persistStorage) {
+      // Kept here for as long as the mount, for the app's next page (loadInitialIdb), held to the
+      // same quota, whole or not at all. (Kept nowhere, each page of a preview or a nested app
+      // found its databases gone.)
+      let bytes = idbPartsBytes;
+      for (const [name, value] of changes) {
+        const prev = idbParts.get(name);
+        if (prev !== undefined) bytes -= partBytes(name, prev);
+        if (value !== null) bytes += partBytes(name, value);
+      }
+      if (bytes > limits.idbQuotaBytes) return Promise.resolve(false);
+      for (const [name, value] of changes) setIdbPart(name, value);
+      return Promise.resolve(true);
+    }
     // Held to the app's IndexedDB quota as a whole, and kept together (a transaction whole or
     // not at all), after what is being kept before it.
     const done = idbWriting.then(async () => {
@@ -1150,21 +1235,20 @@ export async function mountSoftNContainer(
   let rafHandle: number | ReturnType<typeof setTimeout> | null = null;
   let rafInFlight = false;
   let rafWantedWhileInFlight = false;
-  const COALESCE_MOVE_EVENTS = new Set([
-    'pointermove', 'mousemove', 'touchmove',
-    'pointerover', 'pointerout', 'mouseover', 'mouseout',
-    'pointerleave', 'pointerenter', 'mouseleave', 'mouseenter',
-  ]);
-  const DISCRETE_POINTER_EVENTS = new Set([
-    'pointerdown', 'pointerup', 'mousedown', 'mouseup', 'click', 'dblclick', 'contextmenu',
-  ]);
+  // The person's moves, merged while the script answers one: each pointer's latest waits. What
+  // a pointer does as it crosses an element (over, out, enter, leave) is that element's own, as
+  // a press is, and is told as it happens: merged by kind alone, one element's mouseleave took
+  // the place of another's, which then stayed hovered for good.
+  const COALESCE_MOVE_EVENTS = new Set(['pointermove', 'mousemove', 'touchmove']);
   interface PendingCoalescedEvent {
     nodeId: number;
     eventType: string;
     props: Record<string, unknown>;
     syncChanges: unknown[];
   }
+  /** By kind and pointer: one finger's moves never stand in for another's. */
   const inFlightCoalesced = new Map<string, number>();
+  /** In the order of their latest move: told in that order, before anything that came after them. */
   const pendingCoalesced = new Map<string, PendingCoalescedEvent>();
   let wheelInFlightTurnId: number | null = null;
   let pendingWheel: PendingCoalescedEvent | null = null;
@@ -1252,6 +1336,8 @@ export async function mountSoftNContainer(
   let viewportResizeObserver: ResizeObserver | null = null;
   let hostFontStyleEl: HTMLStyleElement | null = null;
   const dynamicFontSheets = new Map<Element, string>();
+  /** Reads the shown page's own stylesheets again once the network is allowed (loadPage). */
+  let restylePageForNet: (() => void) | null = null;
 
   const teardownPage = () => {
     clearRaf();
@@ -1286,6 +1372,7 @@ export async function mountSoftNContainer(
     hostFontStyleEl?.remove();
     hostFontStyleEl = null;
     dynamicFontSheets.clear();
+    restylePageForNet = null;
   };
 
   const useWorkerIsolation =
@@ -1420,6 +1507,14 @@ export async function mountSoftNContainer(
     ownedRemoteTransport?.dispose();
     ownedRemoteTransport = null;
     archive.dispose();
+    // What the next page would have started from: the app's files, its databases and the
+    // engine. The host may hold the handle long after (its state still names it), and through
+    // the handle's methods all of this was held with it.
+    cachedWorkerVfs = null;
+    sharedLocalBackendEngine = null;
+    idbParts.clear();
+    idbPartTurns.clear();
+    idbPartsBytes = 0;
     pageRoot.replaceChildren();
     if (owns()) shadowRoot.replaceChildren();
   };
@@ -1560,6 +1655,20 @@ export async function mountSoftNContainer(
   };
   let liveSessionStorageBytes = recordBytes(liveSession.sessionStorage);
   let liveLocalStorageBytes = recordBytes(liveSession.localStorage);
+  /**
+   * The app's records (`softn:db`) where the mount keeps nothing between visits: kept here for
+   * as long as the mount, for its next page, within what its localStorage leaves of the quota.
+   */
+  const mountRecords: Record<string, unknown[]> = Object.create(null) as Record<string, unknown[]>;
+  const keepRecordsForMount = (collection: unknown, records: unknown): void => {
+    if (typeof collection !== 'string' || !collection || BLOCKED_SESSION_KEYS.has(collection) || !Array.isArray(records)) return;
+    try {
+      if (JSON.stringify({ ...mountRecords, [collection]: records }).length * 2 > limits.storageQuotaBytes - liveLocalStorageBytes) return;
+    } catch {
+      return;
+    }
+    mountRecords[collection] = records;
+  };
   let sessionSaveTimer: ReturnType<typeof setTimeout> | null = null;
   let sessionDirty = false;
   const flushSessionNow = () => {
@@ -1571,7 +1680,10 @@ export async function mountSoftNContainer(
     if (!sessionDirty) return;
     sessionDirty = false;
     liveSession.updatedAt = Date.now();
-    void saveContainerSession(storageBase, liveSession);
+    // With the page's storage, that is where the app's localStorage is kept and read from (the
+    // session's copy is read only without it): the copy is not written again. It was, all of
+    // it, a few milliseconds after every key the app kept, to be read by nothing.
+    void saveContainerSession(storageBase, storage ? { ...liveSession, localStorage: Object.create(null) as Record<string, string> } : liveSession);
   };
   const persistSessionSoon = () => {
     if (!persistStorage || disposed) return;
@@ -1592,7 +1704,9 @@ export async function mountSoftNContainer(
       localBackendTransport?.flush();
     }
   };
-  if (persistStorage && typeof window !== 'undefined') {
+  // Not for a mount already ended (another took its element while its backend started): it
+  // ends once, and listeners added after that were the page's for good.
+  if (persistStorage && typeof window !== 'undefined' && !disposed) {
     window.addEventListener('pagehide', onPageHideFlush);
     if (typeof document !== 'undefined') {
       document.addEventListener('visibilitychange', onVisibilityFlush);
@@ -1700,7 +1814,7 @@ export async function mountSoftNContainer(
 
       const ctPair = resp.headers.find(([k]) => k.toLowerCase() === 'content-type');
       const ct = (ctPair?.[1] ?? 'text/html').toLowerCase();
-      const decoded = new TextDecoder().decode(resp.body);
+      const decoded = decodeDocument(resp.body, ct);
       const escapeHtmlText = (s: string) =>
         s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
       const html = ct.includes('html')
@@ -1813,14 +1927,18 @@ export async function mountSoftNContainer(
     const base = `${VIRTUAL_ORIGIN}${currentUrlPath.startsWith('/') ? currentUrlPath : `/${currentUrlPath}`}`;
     const actionUrl = new URL(req.action || currentUrlPath, base);
     if (actionUrl.origin !== VIRTUAL_ORIGIN) return;
-    if (req.method === 'GET') {
-      if (req.encoded) {
-        actionUrl.search = actionUrl.search ? `${actionUrl.search}&${req.encoded}` : `?${req.encoded}`;
-      }
-      await navigateTo(`${actionUrl.pathname}${actionUrl.search}`, true);
+    // A form's method as a browser reads it: post, dialog (which closes its dialog and sends
+    // nothing), and get for any other word. A form with method="put" was sent as a PUT.
+    const method = req.method.toUpperCase() === 'POST' ? 'POST' : req.method.toUpperCase() === 'DIALOG' ? null : 'GET';
+    if (method === null) return;
+    if (method === 'GET') {
+      // The form's fields are the query, in place of any the action had, as a browser sends it
+      // (`action="/search?page=2"` asks for `/search?q=…`). Added to it, the old query went too.
+      actionUrl.search = req.encoded ? `?${req.encoded}` : '';
+      await navigateTo(`${actionUrl.pathname}${actionUrl.search}${actionUrl.hash}`, true);
       return;
     }
-    const { finalUrlPath, html } = await fetchSsrDocument(req.method, `${actionUrl.pathname}${actionUrl.search}`, req.encoded);
+    const { finalUrlPath, html } = await fetchSsrDocument(method, `${actionUrl.pathname}${actionUrl.search}`, req.encoded);
     if (disposed || !owns() || seq !== navSeq) return;
     recordHistory(finalUrlPath, true);
     const basePathForAssets = finalUrlPath.split(/[?#]/)[0].replace(/^\/+/, '') || 'index.html';
@@ -1955,6 +2073,7 @@ export async function mountSoftNContainer(
           });
           // The apps nested in this one are allowed what it now is (each of what it asks for itself).
           for (const child of nestedControls) child.setGrantedCapabilities([...grantedCaps]);
+          restylePageForNet?.();
         } else {
           consentDenied = true;
         }
@@ -2009,7 +2128,7 @@ export async function mountSoftNContainer(
       if (boxEl.clientHeight > 0) prepared.seed.v[1] = boxEl.clientHeight;
     }
 
-    const staticFontFaces = prepared.styles.map((s) => extractSanitizedFontFaces(s, fontScope.prefix)).filter(Boolean).join('\n');
+    let staticFontFaces = prepared.styles.map((s) => extractSanitizedFontFaces(s, fontScope.prefix)).filter(Boolean).join('\n');
     const syncHostFonts = () => {
       if (disposed || typeof document === 'undefined' || !document.head) return;
       const parts: string[] = [];
@@ -2178,22 +2297,22 @@ export async function mountSoftNContainer(
         onStyleFonts: (sheet, fontFacesCss) => {
           const MAX_DYNAMIC_FONT_BYTES = 512 * 1024;
           if (fontFacesCss && fontFacesCss.length <= MAX_DYNAMIC_FONT_BYTES) {
+            // Its rules now, in place of the ones it had, and the newest: room is made by letting
+            // go of the oldest of the others. (A sheet rewritten while it was the oldest stopped
+            // the letting go at itself, and kept its old rules in place of its new ones.)
+            dynamicFontSheets.delete(sheet);
             let totalFontBytes = 0;
-            for (const [k, css] of dynamicFontSheets) {
-              if (k !== sheet) totalFontBytes += css.length;
-            }
+            for (const css of dynamicFontSheets.values()) totalFontBytes += css.length;
             while (
-              (dynamicFontSheets.size >= 64 && !dynamicFontSheets.has(sheet)) ||
-              (dynamicFontSheets.size > 0 && totalFontBytes + fontFacesCss.length > MAX_DYNAMIC_FONT_BYTES)
+              dynamicFontSheets.size > 0 &&
+              (dynamicFontSheets.size >= 64 || totalFontBytes + fontFacesCss.length > MAX_DYNAMIC_FONT_BYTES)
             ) {
               const oldest = dynamicFontSheets.keys().next().value;
-              if (oldest === undefined || oldest === sheet) break;
+              if (oldest === undefined) break;
               totalFontBytes -= dynamicFontSheets.get(oldest)?.length ?? 0;
               dynamicFontSheets.delete(oldest);
             }
-            if (totalFontBytes + fontFacesCss.length <= MAX_DYNAMIC_FONT_BYTES) {
-              dynamicFontSheets.set(sheet, fontFacesCss);
-            }
+            dynamicFontSheets.set(sheet, fontFacesCss);
           } else {
             dynamicFontSheets.delete(sheet);
           }
@@ -2280,7 +2399,7 @@ export async function mountSoftNContainer(
               if (wheelInFlightTurnId !== null) {
                 if (pendingWheel) {
                   pendingWheel.nodeId = nodeId;
-                  pendingWheel.syncChanges = syncChanges;
+                  pendingWheel.syncChanges = mergeSyncChanges(pendingWheel.syncChanges, syncChanges);
                   const nextProps = { ...props };
                   nextProps.deltaX = (Number(pendingWheel.props.deltaX) || 0) + (Number(props.deltaX) || 0);
                   nextProps.deltaY = (Number(pendingWheel.props.deltaY) || 0) + (Number(props.deltaY) || 0);
@@ -2294,25 +2413,36 @@ export async function mountSoftNContainer(
               wheelInFlightTurnId = dispatchEventNow(nodeId, eventType, props, syncChanges);
               return;
             }
-            if (COALESCE_MOVE_EVENTS.has(eventType)) {
-              if (inFlightCoalesced.has(eventType)) {
-                pendingCoalesced.set(eventType, { nodeId, eventType, props, syncChanges });
-                return;
-              }
-              const tid = dispatchEventNow(nodeId, eventType, props, syncChanges);
-              inFlightCoalesced.set(eventType, tid);
-              return;
-            }
-            if (DISCRETE_POINTER_EVENTS.has(eventType)) {
-              const pm = pendingCoalesced.get('pointermove');
-              if (pm) {
-                pendingCoalesced.delete('pointermove');
-                const pmTid = dispatchEventNow(pm.nodeId, pm.eventType, pm.props, pm.syncChanges);
-                inFlightCoalesced.set('pointermove', pmTid);
-              }
+          }
+          const moveKey =
+            useWorkerIsolation && !answered && COALESCE_MOVE_EVENTS.has(eventType)
+              ? typeof props.pointerId === 'number'
+                ? `${eventType}:${props.pointerId}`
+                : eventType
+              : null;
+          if (moveKey !== null && inFlightCoalesced.has(moveKey)) {
+            // The latest waits, with what the moves it stands for told of the page.
+            const waiting = pendingCoalesced.get(moveKey);
+            pendingCoalesced.delete(moveKey);
+            pendingCoalesced.set(moveKey, {
+              nodeId,
+              eventType,
+              props: waiting ? withMovementOf(waiting.props, props) : props,
+              syncChanges: waiting ? mergeSyncChanges(waiting.syncChanges, syncChanges) : syncChanges,
+            });
+            return;
+          }
+          if (useWorkerIsolation && pendingCoalesced.size > 0) {
+            // What the person does now came after the moves still waiting: they are told first.
+            // (Only a pointermove was, and only before a press: a mouseup was told before the
+            // mousemove that came before it, and a touchend before its last touchmove.)
+            for (const [key, waiting] of [...pendingCoalesced]) {
+              pendingCoalesced.delete(key);
+              inFlightCoalesced.set(key, dispatchEventNow(waiting.nodeId, waiting.eventType, waiting.props, waiting.syncChanges));
             }
           }
-          dispatchEventNow(nodeId, eventType, props, syncChanges, answered);
+          const tid = dispatchEventNow(nodeId, eventType, props, syncChanges, answered);
+          if (moveKey !== null) inFlightCoalesced.set(moveKey, tid);
         },
         onSync: (changes) => {
           currentTransport?.post({ type: 'sync', changes });
@@ -2342,6 +2472,19 @@ export async function mountSoftNContainer(
       },
     });
     currentPatcher = patcher;
+
+    // The page's own stylesheets were read before the person allowed the network, without the
+    // pictures and fonts of the sites the app declared: read again once they have (the patcher
+    // does the same for what the app's script set). They stayed without them until the next page.
+    let styledWithNet = grantedCaps.has('net');
+    restylePageForNet = () => {
+      if (styledWithNet || disposed || !owns() || currentPatcher !== patcher || !grantedCaps.has('net')) return;
+      styledWithNet = true;
+      const again = prepareHtmlDocument(html, pagePath, archive, permissions, true, fontScope, embeds);
+      styleEl.textContent = [PAGE_BASE_CSS, ...again.styles].join('\n');
+      staticFontFaces = again.styles.map((s) => extractSanitizedFontFaces(s, fontScope.prefix)).filter(Boolean).join('\n');
+      syncHostFonts();
+    };
 
     const initialTags = prepared.mountInitialDom(viewportEl, patcher.nodes, docRootEl);
     patcher.adoptReadableImages(viewportEl);
@@ -2535,7 +2678,8 @@ export async function mountSoftNContainer(
             break;
 
           case 'session-storage-write':
-            if (!persistStorage) break;
+            // Kept for the app's next page however the mount keeps it: saved only with
+            // persistStorage (persistSessionSoon), and for as long as the mount without it.
             if (msg.op === 'set' && typeof msg.key === 'string' && typeof msg.value === 'string' && !BLOCKED_SESSION_KEYS.has(msg.key)) {
               const oldVal = Object.prototype.hasOwnProperty.call(liveSession.sessionStorage, msg.key)
                 ? liveSession.sessionStorage[msg.key]
@@ -2574,7 +2718,9 @@ export async function mountSoftNContainer(
             break;
 
           case 'storage-write':
-            if (!persistStorage || !owns() || currentPatcher !== patcher) break;
+            // Without persistStorage there is no page storage (`storage`): what the app keeps
+            // lasts as long as the mount, in liveSession, for its next page.
+            if (!owns() || currentPatcher !== patcher) break;
             // A value that would take what the app keeps past its quota is not kept: the
             // Worker refuses it first, and this holds whatever the Worker sends.
             {
@@ -2603,8 +2749,8 @@ export async function mountSoftNContainer(
                 }
               }
               const changed = msg.op === 'clear' ? persistedStorageKeys(storageBase, storage) : typeof msg.key === 'string' ? [`${storageBase}ls:${msg.key}`] : [];
-              const kept = applyPersistedStorageOp(storageBase, msg.op, msg.key, msg.value, storage);
-              storageKept(kept);
+              const kept = persistStorage && applyPersistedStorageOp(storageBase, msg.op, msg.key, msg.value, storage);
+              if (persistStorage) storageKept(kept);
               if (kept && storage) {
                 if (msg.op === 'set' && typeof msg.key === 'string' && typeof msg.value === 'string' && cachedPersistedBytes !== null) {
                   cachedPersistedBytes = Math.max(0, cachedPersistedBytes - oldStorageBytes + (msg.key.length + msg.value.length) * 2);
@@ -2617,6 +2763,8 @@ export async function mountSoftNContainer(
                 cachedPersistedBytes = null;
               }
               if (kept || !storage) {
+                // The session keeps a copy of the app's localStorage only where the page has no
+                // storage to keep it in (flushSessionNow): a key kept there is not a session to save.
                 if (msg.op === 'set' && typeof msg.key === 'string' && typeof msg.value === 'string') {
                   const oldVal = Object.prototype.hasOwnProperty.call(liveSession.localStorage, msg.key)
                     ? liveSession.localStorage[msg.key]
@@ -2627,7 +2775,7 @@ export async function mountSoftNContainer(
                   // liveSession.localStorage uses Object.create(null), so keys like '__proto__' are safe data properties.
                   liveSession.localStorage[msg.key] = msg.value;
                   liveLocalStorageBytes = nextLiveBytes;
-                  persistSessionSoon();
+                  if (!storage) persistSessionSoon();
                 } else if (msg.op === 'remove' && typeof msg.key === 'string') {
                   const oldVal = Object.prototype.hasOwnProperty.call(liveSession.localStorage, msg.key)
                     ? liveSession.localStorage[msg.key]
@@ -2636,11 +2784,11 @@ export async function mountSoftNContainer(
                     liveLocalStorageBytes = Math.max(0, liveLocalStorageBytes - (msg.key.length + oldVal.length) * 2);
                   }
                   delete liveSession.localStorage[msg.key];
-                  persistSessionSoon();
+                  if (!storage) persistSessionSoon();
                 } else if (msg.op === 'clear') {
                   liveSession.localStorage = Object.create(null) as Record<string, string>;
                   liveLocalStorageBytes = 0;
-                  persistSessionSoon();
+                  if (!storage) persistSessionSoon();
                 }
               }
               if (kept) tellNeighbours(storageBase, heard, changed);
@@ -2652,6 +2800,8 @@ export async function mountSoftNContainer(
             if (persistStorage && owns() && currentPatcher === patcher) {
               cachedPersistedBytes = null;
               storageKept(savePersistedDbCollection(storageBase, msg.collection, msg.records, limits.storageQuotaBytes - persistedStorageBytes(storageBase, storage) - persistedIdbBytes(storageBase, storage), storage));
+            } else if (!persistStorage && owns() && currentPatcher === patcher) {
+              keepRecordsForMount(msg.collection, msg.records);
             }
             break;
 
@@ -2659,7 +2809,7 @@ export async function mountSoftNContainer(
             // Answered to the session that sent them: a transaction is complete once they are kept.
             const sender = currentTransport;
             const batch = msg.id;
-            void (persistStorage ? keepIdbParts(msg.parts) : Promise.resolve(true)).then((ok) => {
+            void keepIdbParts(msg.parts).then((ok) => {
               if (!disposed && sender && currentTransport === sender) sender.post({ type: 'idb-kept', id: batch, ok });
             });
             break;
@@ -2721,7 +2871,9 @@ export async function mountSoftNContainer(
                 })
                 .then(
                   (resp) => {
-                    const hdrObj: Record<string, string> = {};
+                    // No prototype: a header named `constructor` or `toString` is a header, not the
+                    // object's own (it read as "function Object() { [native code] }, …").
+                    const hdrObj: Record<string, string> = Object.create(null) as Record<string, string>;
                     for (const [k, v] of resp.headers) {
                       const lower = k.toLowerCase();
                       // Fetch spec hides Set-Cookie from JS-visible Response.headers;
@@ -3027,7 +3179,9 @@ export async function mountSoftNContainer(
         };
 
         const loadInitialIdb = async (): Promise<Record<string, string>> => {
-          if (!persistStorage || !bundleMayUseIdb()) return {};
+          // Without persistStorage: what its pages kept in this mount (keepIdbParts).
+          if (!persistStorage) return Object.fromEntries(idbParts);
+          if (!bundleMayUseIdb()) return {};
           const backing = await ensureIdbBacking();
           if (!backing || disposed) return {};
           return Object.fromEntries(idbParts);
@@ -3050,13 +3204,13 @@ export async function mountSoftNContainer(
           resolveReady();
           return;
         }
-        const initialLs = persistStorage
-          ? storage
+        // Without the page's storage (none, or persistStorage off): what the app kept in this mount.
+        const initialLs =
+          persistStorage && storage
             ? !initialPersistedLsConsumed && initialPersistedLs
               ? ((initialPersistedLsConsumed = true), initialPersistedLs)
               : loadPersistedStorage(storageBase, storage)
-            : Object.assign(Object.create(null) as Record<string, string>, liveSession.localStorage)
-          : {};
+            : Object.assign(Object.create(null) as Record<string, string>, liveSession.localStorage);
         const initMsg: HostToWorkerMsg = {
           type: 'init',
           appId,
@@ -3076,8 +3230,8 @@ export async function mountSoftNContainer(
           grantedCapabilities: [...grantedCaps],
           permissions,
           initialStorage: initialLs,
-          initialSessionStorage: persistStorage ? { ...liveSession.sessionStorage } : {},
-          initialDbRecords: persistStorage ? loadPersistedDb(storageBase, storage) : {},
+          initialSessionStorage: { ...liveSession.sessionStorage },
+          initialDbRecords: persistStorage ? loadPersistedDb(storageBase, storage) : { ...mountRecords },
           initialIdb,
           idbApart: idbBacking?.kind === 'indexeddb',
           ...(backendRouting ? { backendRouting } : {}),
@@ -3175,6 +3329,7 @@ export async function mountSoftNContainer(
       grantedCapabilities: [...grantedCaps],
     });
     for (const child of nestedControls) child.setGrantedCapabilities([...grantedCaps]);
+    restylePageForNet?.();
   };
   const setActiveNow = (active: boolean): void => {
     if (disposed || paused === !active) return;

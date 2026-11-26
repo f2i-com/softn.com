@@ -66,9 +66,10 @@ const GUEST_HEAD_ID = -3;
 
 /**
  * Properties whose effect depends on the element's place in the page or on its children:
- * applied after the tree a turn built (see applyOps).
+ * applied after the tree a turn built (see applyOps). A blur with the focus it undoes, in the
+ * order the app asked for them: applied at once, `focus(); blur()` in one turn ended focused.
  */
-const TREE_PROPERTIES = new Set(['selectedIndex', 'chosen', 'focus', 'scrollIntoView', 'scrollTop', 'scrollLeft']);
+const TREE_PROPERTIES = new Set(['selectedIndex', 'chosen', 'focus', 'blur', 'scrollIntoView', 'scrollTop', 'scrollLeft']);
 
 /** The most images an app has the page load for it that are not on the page (`new Image()`). */
 const MAX_PRELOADED_IMAGES = 2048;
@@ -171,6 +172,9 @@ const CAPTURE_ONLY_EVENTS = new Set([
 ]);
 
 const PASSIVE_EVENTS = new Set(['scroll', 'wheel', 'touchstart', 'touchmove']);
+
+/** Events that change no field, and come many a second: a field's state is not read for them (see the event handler). */
+const FIELDLESS_EVENTS = new Set(['mousemove', 'pointermove', 'pointerrawupdate', 'touchmove', 'wheel', 'scroll']);
 
 export interface DomPatcherCallbacks {
   /**
@@ -281,7 +285,9 @@ export class HostDomPatcher {
   private scrollSettle: ReturnType<typeof setTimeout> | null = null;
   private resizeObserver: ResizeObserver | null = null;
   private measureScheduled = false;
+  /** Images on no page, by the name a canvas draws each by, the least lately asked for first; and the name last asked for. */
   private readonly imageCache = new Map<string, HTMLImageElement>();
+  private lastImageName = '';
   /** The blob each image fetched for the app to read back is shown from (loadReadable), and what each holds. */
   /** CSS custom properties (`--*`) set by guest script on `document.documentElement.style`. */
   private readonly guestRootCustomProps = new Set<string>();
@@ -306,14 +312,18 @@ export class HostDomPatcher {
   private readonly shadowRoots = new Set<ShadowRoot>();
   /** What listens for the app's events: on its page, and on every shadow root attached in it. */
   private readonly listening: Array<{ type: string; fn: (e: Event) => void; capture: boolean }> = [];
-  /** Stylesheets written in the batch being applied, read again at its end by where each then is. */
-  private readonly writtenSheets = new Set<Element>();
+  /**
+   * Stylesheets written in the batch being applied, read again at its end by where each then is;
+   * each with how many font families the app had declared once it was written (-1: emptied).
+   */
+  private readonly writtenSheets = new Map<Element, number>();
   /** Stylesheets last written as a shadow tree's own: read again as the page's if one is ever found outside a tree. */
   private readonly shadowSheets = new Set<Element>();
   /** Each attached root's id, as the app's document knows it. */
   private readonly rootIds = new Map<ShadowRoot, number>();
-  /** How many roots there were when those of elements no longer on the page were last let go. */
+  /** How many roots there were when those of elements no longer on the page were last let go, and the ones found off it then. */
   private rootsAtSweep = 0;
+  private rootsOffPage = new Set<ShadowRoot>();
   /** How many nodes were known when those no longer on the page were last looked for, and the ones found off it then. */
   private nodesAtSweep = 0;
   private offPage = new Set<number>();
@@ -332,6 +342,8 @@ export class HostDomPatcher {
   private quietUntil = 0;
   /** Browser actions deferred until the guest has had a chance to cancel their event. */
   private readonly heldDefaults = new WeakMap<Event, () => void>();
+  /** Attribute values of the app's refused for want of the network, by element and name, as the app wrote them (applyRefusedForNet). */
+  private readonly refusedForNet = new WeakMap<Element, Map<string, string>>();
   /** What of another document this mount lets the page hold (host-policy.ts). */
   private readonly embeds: EmbedAllowance;
   /** What this page and the others of its tree hold between them (host-policy.ts). */
@@ -349,6 +361,13 @@ export class HostDomPatcher {
   private liveApps = 0;
   private nestedRetry: ReturnType<typeof setTimeout> | null = null;
   private warnedEmbedLimit = false;
+  /**
+   * The element that had the focus when the app's document told it again (it moved, and is
+   * made again here): its id, the element it was, and where its caret was. The page takes the
+   * focus off an element taken off it, and the app's document, which keeps it there, never
+   * hears of that: the focus is put on the element made for it once that is on the page.
+   */
+  private movedFocus: MovedFocus | null = null;
   private disposed = false;
 
   constructor(params: {
@@ -397,6 +416,7 @@ export class HostDomPatcher {
   }
 
   updatePermissions(permissions: ContainerPermissions, netGranted: boolean, filesGranted = this.filesGranted): void {
+    const netAllowedNow = netGranted && !this.netGranted;
     this.permissions = permissions;
     this.netGranted = netGranted;
     this.filesGranted = filesGranted;
@@ -404,6 +424,31 @@ export class HostDomPatcher {
     // A frame shows a site only while the app is allowed it: one whose site is no longer
     // allowed is emptied, and one asked for before the person said yes is shown now.
     for (const [frame, wanted] of this.frames) this.showFrame(frame, wanted);
+    if (netAllowedNow) this.applyRefusedForNet();
+  }
+
+  /**
+   * What the app's script set before the person allowed it the network, read again by the
+   * same rule now that it is: an address on a site the app declared (a picture, a background,
+   * a stylesheet's) is set, and one on any other is refused still. The app runs while the
+   * consent bar asks, so its first screen is drawn before the yes, and nothing set those again.
+   */
+  private applyRefusedForNet(): void {
+    for (const node of this.nodes.values()) {
+      if (!(node instanceof Element)) continue;
+      const refused = this.refusedForNet.get(node);
+      if (!refused) continue;
+      this.refusedForNet.delete(node);
+      const tag = node.localName.toLowerCase();
+      for (const [name, value] of refused) this.applySafeAttribute(node, tag, name, value);
+    }
+    for (const sheet of this.styleSheets.keys()) this.writeStyleSheet(sheet);
+    for (const [el, link] of this.links) {
+      const told = this.linkNews.has(el);
+      this.writeLinkedSheet(el, link);
+      // Read again here, not loaded again: the app's script has heard of it already.
+      if (!told) this.linkNews.delete(el);
+    }
   }
 
   /**
@@ -612,6 +657,12 @@ export class HostDomPatcher {
     const afterTree: Array<[number, string, unknown]> = [];
     let treeChanged = false;
     let layoutAffected = false;
+    /** The element of the app's that had the focus as the batch began: read when an element is first told again. */
+    let focused: Element | null | undefined;
+    const toldAgain = (id: number, before: Node): void => {
+      if (focused === undefined) focused = this.focusedInApp();
+      if (focused !== null && before === focused) this.rememberMovedFocus(id, focused);
+    };
     const started: Array<[string, number, unknown, unknown]> = [];
     const controlled: Array<[string, string]> = [];
 
@@ -770,6 +821,8 @@ export class HostDomPatcher {
             // what is drawn on it, as a canvas that moves does: made again, it was blank.
             const told = this.nodes.get(id);
             if (!ns && lower === 'canvas' && told instanceof HTMLCanvasElement) {
+              // Moved, it loses the focus as any element taken off the page does.
+              toldAgain(id, told);
               this.offPage2d.delete(id);
               const given = attrs && typeof attrs === 'object' ? (attrs as Record<string, unknown>) : {};
               for (const attr of Array.from(told.attributes)) {
@@ -810,10 +863,17 @@ export class HostDomPatcher {
                 this.applySafeAttribute(el, lower, k, typeof v === 'string' ? v : null);
               }
             }
+            // A video or audio element made with `muted` is muted, as one the page's parser makes
+            // is. Set on an element made by script the attribute sets only `defaultMuted`: a
+            // `<video autoplay muted loop>` was not muted, and a browser does not start one with sound.
+            if (el instanceof HTMLMediaElement && el.hasAttribute('muted')) el.muted = true;
             el.setAttribute(NODE_ID_ATTR, String(id));
             // An element told again (it was moved) is made again: release resources of the prior node.
             const before = this.nodes.get(id);
-            if (before) this.releaseNodeResources(before, id);
+            if (before) {
+              toldAgain(id, before);
+              this.releaseNodeResources(before, id);
+            }
             this.nodes.set(id, el);
             // Measured before: the element it is now is observed and measured (the one before was).
             if (
@@ -1016,8 +1076,12 @@ export class HostDomPatcher {
       if (this.writtenSheets.size > 0) {
         const written = [...this.writtenSheets];
         this.writtenSheets.clear();
-        for (const sheet of written) {
+        const families = this.fontScope?.families.size ?? 0;
+        for (const [sheet, familiesThen] of written) {
           if (this.cssScope(sheet) !== 'shadow') continue;
+          // Written in a shadow tree already, with the fonts there are now: written again, it
+          // reads the same (each such sheet was read twice in every batch it changed in).
+          if (this.shadowSheets.has(sheet) && familiesThen === families) continue;
           const link = this.links.get(sheet);
           if (link) this.writeLinkedSheet(sheet, link);
           else if (this.styleSheets.has(sheet)) this.writeStyleSheet(sheet);
@@ -1044,6 +1108,8 @@ export class HostDomPatcher {
     this.turnFrames.clear();
     this.syncNestedApps();
 
+    // Before what the turn itself asked of the focus, which comes after.
+    this.restoreMovedFocus();
     for (const [id, prop, val] of afterTree) this.applyProperty(id, prop, val);
     for (const [key, id, frames, timing] of started) this.startAnimation(key, id, frames, timing);
     for (const [key, action] of controlled) this.controlAnimation(key, action);
@@ -1108,6 +1174,7 @@ export class HostDomPatcher {
     }
 
     if (val === null) {
+      this.refusedForNet.get(el)?.delete(name);
       if (lowerName === 'xlink:href' && el.namespaceURI === SVG_NS) {
         el.removeAttributeNS('http://www.w3.org/1999/xlink', 'href');
       }
@@ -1138,6 +1205,15 @@ export class HostDomPatcher {
             ns: el.namespaceURI === MATH_NS ? 'math' : el.namespaceURI === SVG_NS ? 'svg' : undefined,
             fontScope: this.fontScope,
           });
+    // An address of another site's refused (or a part of the value taken out) before the app
+    // was allowed the network: kept, to be read again when it is (applyRefusedForNet).
+    if (!this.netGranted && clean !== val && /(?:https?:)?\/\//i.test(val)) {
+      let refused = this.refusedForNet.get(el);
+      if (!refused) this.refusedForNet.set(el, (refused = new Map()));
+      refused.set(name, val);
+    } else {
+      this.refusedForNet.get(el)?.delete(name);
+    }
     // An image on the page asked for with CORS: fetched by the page and shown from a blob of
     // what came (loadReadable), so that a canvas it is drawn into is read back, toBlob too.
     // Shown from its own address, where a redirect took it was not the page's to know.
@@ -1309,7 +1385,7 @@ export class HostDomPatcher {
     }
     sheet.textContent = sanitized;
     this.callbacks.onStyleFonts?.(sheet, extractSanitizedFontFaces(sanitized, this.fontScope?.prefix));
-    this.writtenSheets.add(sheet);
+    this.writtenSheets.set(sheet, this.fontScope?.families.size ?? 0);
     if (scope === 'shadow') this.shadowSheets.add(sheet);
     else this.shadowSheets.delete(sheet);
   }
@@ -1317,6 +1393,7 @@ export class HostDomPatcher {
   /** Let go of a shadow tree: emptied, listeners detached, stylesheets released, and no longer one of the app's. */
   private dropShadowRoot(root: ShadowRoot): void {
     this.shadowRoots.delete(root);
+    this.rootsOffPage.delete(root);
     this.rootIds.delete(root);
     for (const { type, fn, capture } of this.listening) {
       root.removeEventListener(type, fn, capture);
@@ -1336,18 +1413,40 @@ export class HostDomPatcher {
    * Let go of the shadow trees of elements that are no longer on the app's page. Asked at
    * the end of a batch, when every element the app's document has on its page is on this
    * one. Each is emptied, and forgotten under the ids it and its element went by, so
-   * nothing can put it back as it was, unlistened to.
+   * nothing can put it back as it was, unlistened to; its element is let go of as the
+   * nodes' sweep lets one go (forgetSwept). The second time it is found off the page, as
+   * that sweep has it: a batch can end between an element's being told and its being placed
+   * (a turn of more operations than one message carries comes in several), and one let go
+   * of the first time was never placed.
    */
   private sweepShadowRoots(): void {
+    const found = new Set<ShadowRoot>();
     for (const root of [...this.shadowRoots]) {
       if (this.owns(root.host)) continue;
-      const hostId = Number(root.host.getAttribute(NODE_ID_ATTR));
-      if (this.nodes.get(hostId) === root.host) this.nodes.delete(hostId);
+      if (!this.rootsOffPage.has(root)) {
+        found.add(root);
+        continue;
+      }
+      const host = root.host;
+      const hostId = Number(host.getAttribute(NODE_ID_ATTR));
+      if (this.nodes.get(hostId) === host) this.forgetSwept(hostId, host);
       const rootId = this.rootIds.get(root);
       if (rootId !== undefined && this.nodes.get(rootId) === root) this.nodes.delete(rootId);
-      this.dropShadowRoot(root);
+      if (this.shadowRoots.has(root)) this.dropShadowRoot(root);
     }
+    this.rootsOffPage = found;
     this.rootsAtSweep = this.shadowRoots.size;
+  }
+
+  /** A node a sweep found off the page: out of the table, measured again if it is told again, and what the page holds for it given back. */
+  private forgetSwept(id: number, node: Node): void {
+    this.nodes.delete(id);
+    if (this.measuredIds.delete(id)) {
+      this.sweptMeasured.add(id);
+      if (this.sweptMeasured.size > MAX_SWEPT_MEASURED) this.sweptMeasured.delete(this.sweptMeasured.values().next().value as number);
+    }
+    // The browser's observer holds what it observes: let go of here, let go of there too.
+    this.releaseNodeResources(node, id);
   }
 
   /**
@@ -1465,13 +1564,7 @@ export class HostDomPatcher {
         found.add(id);
         continue;
       }
-      this.nodes.delete(id);
-      if (this.measuredIds.delete(id)) {
-        this.sweptMeasured.add(id);
-        if (this.sweptMeasured.size > MAX_SWEPT_MEASURED) this.sweptMeasured.delete(this.sweptMeasured.values().next().value as number);
-      }
-      // The browser's observer holds what it observes: let go of here, let go of there too.
-      this.releaseNodeResources(node, id);
+      this.forgetSwept(id, node);
     }
     this.offPage = found;
     this.nodesAtSweep = this.nodes.size;
@@ -1658,7 +1751,7 @@ export class HostDomPatcher {
       if ((this.fontScope?.families.size ?? 0) !== familiesBefore) {
         this.inlineStyleCache.clear();
       }
-      this.writtenSheets.add(el);
+      this.writtenSheets.set(el, this.fontScope?.families.size ?? 0);
       if (scope === 'shadow') this.shadowSheets.add(el);
       else this.shadowSheets.delete(el);
       // Only a stylesheet of the app's own is ever read: any other is said to have failed.
@@ -1718,7 +1811,7 @@ export class HostDomPatcher {
         if (!parentInShadow && target instanceof Element && this.shadowSheets.has(target)) {
           target.textContent = '';
           this.shadowSheets.delete(target);
-          this.writtenSheets.add(target);
+          this.writtenSheets.set(target, -1);
         }
         try {
           parent.insertBefore(target, cursor);
@@ -1901,6 +1994,65 @@ export class HostDomPatcher {
     return !active || active === root.body || active === root.documentElement;
   }
 
+  /** The element of the app's that holds the focus, inside whatever shadow tree of the app's: null when none does. */
+  private focusedInApp(): Element | null {
+    const root = this.viewportEl.getRootNode() as ShadowRoot | Document;
+    let active = root.activeElement;
+    while (active?.shadowRoot && this.shadowRoots.has(active.shadowRoot) && active.shadowRoot.activeElement) active = active.shadowRoot.activeElement;
+    return active instanceof Element && this.owns(active) ? active : null;
+  }
+
+  /** The focused element `from`, told again as `id`: what of it the one made for it is to have. */
+  private rememberMovedFocus(id: number, from: Element): void {
+    const moved: MovedFocus = { id, from, start: null, end: null, direction: null, value: null, scrollTop: from.scrollTop, scrollLeft: from.scrollLeft };
+    if (from instanceof HTMLInputElement || from instanceof HTMLTextAreaElement) {
+      moved.value = from.value;
+      try {
+        moved.start = from.selectionStart;
+        moved.end = from.selectionEnd;
+        moved.direction = from.selectionDirection;
+      } catch {
+        // A field with no caret (a number, a box).
+      }
+    }
+    this.movedFocus = moved;
+  }
+
+  /**
+   * The focus put back on the element a focused one was made again as, once that is on the
+   * page: where the caret was, if what it holds is the same, and how far it was scrolled. Not
+   * when the focus is on another of the app's elements by then, nor where the app may not take
+   * the focus (mayTakeFocus).
+   */
+  private restoreMovedFocus(): void {
+    const moved = this.movedFocus;
+    if (!moved) return;
+    const el = this.nodes.get(moved.id);
+    const focused = this.focusedInApp();
+    if (!(el instanceof Element) || !el.isConnected) {
+      // Placed in a batch to come (a turn's operations can come in more than one): kept for
+      // then, while the element it was still has the focus.
+      if (moved.from !== focused) this.movedFocus = null;
+      return;
+    }
+    this.movedFocus = null;
+    if (focused !== null || typeof (el as HTMLElement).focus !== 'function' || !this.mayTakeFocus()) return;
+    try {
+      (el as HTMLElement).focus({ preventScroll: true });
+    } catch {
+      return;
+    }
+    if ((el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) && moved.start !== null && moved.end !== null && el.value === moved.value) {
+      try {
+        el.setSelectionRange(moved.start, moved.end, moved.direction === 'forward' || moved.direction === 'backward' ? moved.direction : 'none');
+      } catch {
+        // A field with no caret.
+      }
+    }
+    if (moved.scrollTop) el.scrollTop = moved.scrollTop;
+    if (moved.scrollLeft) el.scrollLeft = moved.scrollLeft;
+  }
+
   /** The element holding the focus around the app: the first a root out from the app's page has, or null. */
   private focusAround(): Element | null {
     let root = this.docRootEl.getRootNode() as ShadowRoot | Document;
@@ -2020,13 +2172,50 @@ export class HostDomPatcher {
     try { bitmap.close(); } catch { /* ignore */ }
   }
 
+  /** An image on no page the page keeps, by the name a canvas draws it by: the latest asked for of them now. */
+  private cachedImage(name: string): HTMLImageElement | undefined {
+    const img = this.imageCache.get(name);
+    // The last asked for is the last in the map already (keepImage): a sprite drawn many times a frame moves nothing.
+    if (img && name !== this.lastImageName) this.keepImage(name, img);
+    return img;
+  }
+
+  /** Keep `img` as the image on no page named `name`, as the latest asked for. */
+  private keepImage(name: string, img: HTMLImageElement): void {
+    this.imageCache.delete(name);
+    this.imageCache.set(name, img);
+    this.lastImageName = name;
+  }
+
+  /** Let go of the image on no page named `name`. */
+  private dropImage(name: string): void {
+    this.imageCache.delete(name);
+    if (name === this.lastImageName) this.lastImageName = '';
+  }
+
+  /**
+   * Whether the page has room for one more image on no page: when it holds as many as it
+   * keeps, the one least lately asked for that is done loading is let go of (and the blob it
+   * was shown from). Every one was kept, and past them the page loaded no picture at all.
+   */
+  private roomForImage(): boolean {
+    if (this.imageCache.size < MAX_PRELOADED_IMAGES) return true;
+    for (const [name, img] of this.imageCache) {
+      if (!img.complete) continue;
+      this.dropImage(name);
+      this.letGoOfReadable(img);
+      return true;
+    }
+    return false;
+  }
+
   private preloadImage(token: string, src: string, cors = false): void {
     const answer = (ok: boolean, width = 0, height = 0) => {
       if (!this.disposed) this.callbacks.onEvent(-1, 'softn:image', { token, src, ok, width, height }, []);
     };
     // Kept by the name a canvas draws it by: one asked for with CORS apart from one without.
     const name = cors ? `cors:${src}` : src;
-    const kept = this.imageCache.get(name);
+    const kept = this.cachedImage(name);
     if (kept) {
       if (kept.complete) answer(kept.naturalWidth > 0, kept.naturalWidth, kept.naturalHeight);
       else {
@@ -2035,10 +2224,10 @@ export class HostDomPatcher {
       }
       return;
     }
-    const address = typeof Image === 'function' && this.imageCache.size < MAX_PRELOADED_IMAGES
+    const address = typeof Image === 'function'
       ? sanitizeHostAssetUrl('src', src, 'img', this.entryPath, this.archive, this.permissions, this.netGranted, cors)
       : null;
-    if (!address) {
+    if (!address || !this.roomForImage()) {
       answer(false);
       return;
     }
@@ -2048,12 +2237,12 @@ export class HostDomPatcher {
       'error',
       () => {
         // Evict failed loads so a transient network failure can be retried.
-        if (this.imageCache.get(name) === img) this.imageCache.delete(name);
+        if (this.imageCache.get(name) === img) this.dropImage(name);
         answer(false);
       },
       { once: true }
     );
-    this.imageCache.set(name, img);
+    this.keepImage(name, img);
     // From another site, fetched to be read back; the app's own file, a blob or data: address
     // is loaded as it is (and read back as it is: isOwnPicture). Every crossOrigin image was
     // fetched here, which takes only http(s): three.js sets it on every texture, and one from
@@ -2206,20 +2395,20 @@ export class HostDomPatcher {
       if (n instanceof HTMLImageElement) return n.complete && n.naturalWidth > 0 ? n : null;
       return null;
     }
-    const cached = this.imageCache.get(ref);
+    const cached = this.cachedImage(ref);
     if (cached && cached.complete) return cached.naturalWidth > 0 ? cached : null;
-    if (!cached && typeof Image === 'function' && this.imageCache.size < MAX_PRELOADED_IMAGES) {
+    if (!cached && typeof Image === 'function') {
       // Loaded by the rule an image on no page is (a file of the app's, a blob it made, data
       // in the address, a site it was granted), and drawn from the next time it is asked for.
       // Only a file of the app's was: a picture by any other address was never drawn. One
       // the app asked for with CORS ('cors:' and its address) is loaded with CORS.
       const cors = ref.startsWith('cors:');
       const address = sanitizeHostAssetUrl('src', cors ? ref.slice(5) : ref, 'img', this.entryPath, this.archive, this.permissions, this.netGranted, cors);
-      if (address) {
+      if (address && this.roomForImage()) {
         const img = new Image();
         if (cors && /^https?:/i.test(address)) this.loadReadable(img, address);
         else img.src = address;
-        this.imageCache.set(ref, img);
+        this.keepImage(ref, img);
       }
     }
     return null;
@@ -2336,15 +2525,20 @@ export class HostDomPatcher {
       const href = linkHrefOf(anchor);
       if (!href) return;
       if (href.startsWith('#')) {
-        // A place in the tree the link is in: the app's page, or the shadow tree it is in.
-        const root = anchor.getRootNode() as ShadowRoot | Document;
-        let to: Element | null = null;
-        try {
-          to = href.length > 1 ? root.getElementById?.(decodeURIComponent(href.slice(1))) ?? null : this.viewportEl;
-        } catch {
-          to = null;
-        }
-        if (to && this.owns(to)) this.scrollIntoBox(to as HTMLElement);
+        // A place in the tree the link is in: the app's page, or the shadow tree it is in. Once
+        // the app's script has not cancelled the click, as the link's other ways are: scrolled
+        // at once, `<a href="#">` with a click handler (a button, to much code) took the page
+        // to its top on every click.
+        this.afterGuestEvent(e, () => {
+          const root = anchor.getRootNode() as ShadowRoot | Document;
+          let to: Element | null = null;
+          try {
+            to = href.length > 1 ? root.getElementById?.(decodeURIComponent(href.slice(1))) ?? null : this.viewportEl;
+          } catch {
+            to = null;
+          }
+          if (to && this.owns(to)) this.scrollIntoBox(to as HTMLElement);
+        });
         return;
       }
       if (isExternalHref(href) && !this.callbacks.onExternalLink) {
@@ -2374,8 +2568,9 @@ export class HostDomPatcher {
       this.afterGuestEvent(e, () => this.followClickedLink(href));
     };
     const onInputOrChange = (e: Event) => {
-      const changes = this.extractInputSync(this.originOf(e));
+      // Heard by the app's script, the field's state goes with the event (the listener below).
       if (this.listenedEvents.has(e.type)) return;
+      const changes = this.extractInputSync(this.originOf(e));
       const field = fileField(this.originOf(e));
       if (field) {
         // The files picked go with the field's change: read first, then told together.
@@ -2402,6 +2597,25 @@ export class HostDomPatcher {
     this.listen('keydown', oncePerEvent(e => this.submitOnEnter(e)), false);
     this.listen('input', oncePerEvent(onInputOrChange), true);
     this.listen('change', oncePerEvent(onInputOrChange), true);
+    // A <details> the page opened or closed by itself.
+    this.listen('toggle', oncePerEvent(onInputOrChange), true);
+    // A form's reset puts its fields back as its markup has them, and says nothing of them: the
+    // app's document is told how they are once it is done (the reset happens after its event).
+    // It kept what the person had typed and ticked.
+    this.listen(
+      'reset',
+      oncePerEvent((e: Event) => {
+        const form = this.originOf(e);
+        if (!(form instanceof HTMLFormElement) || !this.owns(form)) return;
+        setTimeout(() => {
+          if (this.disposed || e.defaultPrevented) return;
+          const changes: unknown[] = [];
+          for (const field of Array.from(form.elements)) changes.push(...this.extractInputSync(field));
+          if (changes.length > 0) this.callbacks.onSync(changes);
+        }, 0);
+      }),
+      true
+    );
     for (const type of ACTIVATIONS) this.listen(type, onActivation, true);
     // Where the person has scrolled the app's page and its elements to: told with the next
     // event the app hears, and once the scrolling stops, so that scrollTop reads it.
@@ -2504,7 +2718,11 @@ export class HostDomPatcher {
         return;
       }
 
-      const syncChanges = [...this.scrollChanges(), ...this.extractInputSync(targetEl, eventType === 'click')];
+      // A field's state goes with what can change it: not with a move, a wheel or a scroll, which
+      // change none and come many a second (a large textarea's text under the pointer was read
+      // and sent with each). What the person types is told with its own input.
+      const fieldSync = FIELDLESS_EVENTS.has(eventType) ? [] : this.extractInputSync(targetEl, eventType === 'click');
+      const syncChanges = [...this.scrollChanges(), ...fieldSync];
       // The focused element inside the app's own root. (The document's is the embedding
       // page's `<softn-app>` element, which is none of the app's, so the app's script never
       // learned where the focus was.) Inside a shadow tree of the app's, the one in there.
@@ -2587,8 +2805,14 @@ export class HostDomPatcher {
 
     if (target instanceof HTMLInputElement) {
       if (target.type === 'checkbox' || target.type === 'radio') {
-        if (!clicked) changes.push(['k', id, target.checked]);
-        else if (target.type === 'checkbox') changes.push(['k', id, !target.checked]);
+        if (!clicked) {
+          changes.push(['k', id, target.checked]);
+          // A radio picked unticks the one of its group that was ticked: the page does that
+          // itself, and the app's document is told so here. Told only of the one picked, it
+          // had two of the group ticked (`:checked`, the group's value and a FormData of the
+          // form read both). (A click is heard with the document ticking it, which unticks the rest.)
+          if (target.type === 'radio' && target.checked) this.radioGroupSync(target, changes);
+        } else if (target.type === 'checkbox') changes.push(['k', id, !target.checked]);
       } else if (target.type === 'file') {
         // What a file field says of itself is the name of what was picked: the app's to
         // know when it was allowed files, as the file is.
@@ -2609,8 +2833,25 @@ export class HostDomPatcher {
         changes.push(['s', id, target.selectedIndex]);
       }
       changes.push(['v', id, target.value]);
+    } else if (target instanceof HTMLDetailsElement) {
+      // Opened or closed by the page itself (its summary clicked): its `open` as the page has it.
+      changes.push(['A', id, 'open', target.open ? '' : null]);
     }
     return changes;
+  }
+
+  /** The other radios of a picked radio's group (its name, its form, its tree), each as unticked, for the app's document. */
+  private radioGroupSync(radio: HTMLInputElement, changes: unknown[]): void {
+    const name = radio.name;
+    if (!name) return;
+    const root = radio.getRootNode();
+    const scope = root === this.docRootEl.getRootNode() ? this.docRootEl : root instanceof ShadowRoot && this.shadowRoots.has(root) ? root : null;
+    if (!scope) return;
+    for (const other of Array.from(scope.querySelectorAll('input'))) {
+      if (other === radio || other.type !== 'radio' || other.checked || other.name !== name || other.form !== radio.form) continue;
+      const otherId = Number(other.getAttribute(NODE_ID_ATTR));
+      if (Number.isInteger(otherId) && otherId > 1 && this.nodes.get(otherId) === other) changes.push(['k', otherId, false]);
+    }
   }
 
   /**
@@ -2780,6 +3021,7 @@ export class HostDomPatcher {
     this.shadowSheets.clear();
     this.rootIds.clear();
     this.imageCache.clear();
+    this.lastImageName = '';
     for (const kept of this.animations.values()) {
       try { kept.animation.cancel(); } catch { /* ignore */ }
     }
@@ -2800,6 +3042,7 @@ export class HostDomPatcher {
     this.offPage2d.clear();
     this.drawnLately.clear();
     this.shadowRoots.clear();
+    this.rootsOffPage.clear();
     this.guestRootCustomProps.clear();
     this.styleSheets.clear();
     this.dirtyStyleSheets.clear();
@@ -2817,7 +3060,20 @@ export class HostDomPatcher {
     this.offPage.clear();
     this.clickFocus = null;
     this.clickFocusDeep = null;
+    this.movedFocus = null;
   }
+}
+
+/** A focused element the app's document told again: see HostDomPatcher.movedFocus. */
+interface MovedFocus {
+  id: number;
+  from: Element;
+  start: number | null;
+  end: number | null;
+  direction: string | null;
+  value: string | null;
+  scrollTop: number;
+  scrollLeft: number;
 }
 
 /** The element holding the focus inside `el`, through its open shadow trees: `el` itself when none does. */
@@ -2901,6 +3157,39 @@ interface AppOrigin {
   scrollTop: number;
 }
 
+/** A key's older names, each a number. */
+const KEY_NUMBERS = ['keyCode', 'which', 'charCode', 'location'] as const;
+
+/** The most points of one touch list told: more fingers than a screen takes. */
+const MAX_TOUCH_POINTS = 32;
+
+/** A list of touch points as data, from the corner of the app's box (see origin()). */
+function touchPoints(list: TouchList | null | undefined, origin: AppOrigin): Array<Record<string, number>> {
+  const points: Array<Record<string, number>> = [];
+  const count = list && typeof list.length === 'number' ? Math.min(list.length, MAX_TOUCH_POINTS) : 0;
+  for (let i = 0; i < count; i++) {
+    const t = typeof list!.item === 'function' ? list!.item(i) : (list as unknown as ArrayLike<Touch>)[i];
+    if (!t) continue;
+    const clientX = t.clientX - origin.left;
+    const clientY = t.clientY - origin.top;
+    points.push({
+      identifier: t.identifier,
+      clientX,
+      clientY,
+      pageX: clientX + origin.scrollLeft,
+      pageY: clientY + origin.scrollTop,
+      // From the box's corner too, as a mouse's are: a swipe is read from how far screenX went.
+      screenX: clientX,
+      screenY: clientY,
+      radiusX: Number(t.radiusX) || 0,
+      radiusY: Number(t.radiusY) || 0,
+      rotationAngle: Number(t.rotationAngle) || 0,
+      force: Number(t.force) || 0,
+    });
+  }
+  return points;
+}
+
 function serializeDomEvent(
   e: Event,
   targetEl: Element | null,
@@ -2918,6 +3207,11 @@ function serializeDomEvent(
     out.metaKey = ke.metaKey;
     out.repeat = ke.repeat;
     out.isComposing = ke.isComposing;
+    // The older names of a key, which much code still reads (`e.keyCode === 13`): undefined, before.
+    for (const name of KEY_NUMBERS) {
+      const v = (ke as unknown as Record<string, unknown>)[name];
+      if (typeof v === 'number') out[name] = v;
+    }
   }
   if ('clientX' in e) {
     const me = e as MouseEvent;
@@ -2926,6 +3220,13 @@ function serializeDomEvent(
     out.clientY = me.clientY - origin.top;
     out.pageX = me.clientX - origin.left + origin.scrollLeft;
     out.pageY = me.clientY - origin.top + origin.scrollTop;
+    // The box is the app's screen: where the page is on the person's is not the app's to know,
+    // and a drag reads only how far the pointer went.
+    out.screenX = out.clientX;
+    out.screenY = out.clientY;
+    // How far it moved since the last, which a drag and a pointer-locked look read.
+    if (typeof me.movementX === 'number') out.movementX = me.movementX;
+    if (typeof me.movementY === 'number') out.movementY = me.movementY;
     out.button = me.button;
     out.buttons = me.buttons;
     out.ctrlKey = me.ctrlKey;
@@ -2933,16 +3234,32 @@ function serializeDomEvent(
     out.altKey = me.altKey;
     out.metaKey = me.metaKey;
     if (targetEl) {
-      const isHighFreqMove = e.type === 'mousemove' || e.type === 'pointermove';
-      if (isHighFreqMove && targetEl === e.target && typeof me.offsetX === 'number' && typeof me.offsetY === 'number') {
-        out.offsetX = me.offsetX + targetEl.clientLeft;
-        out.offsetY = me.offsetY + targetEl.clientTop;
+      // From the target's padding edge, inside its border, as a browser has it: the browser's
+      // own where the event is on the element the app knows it by (and a move asks for no
+      // layout). Told from the border's outer edge, a drawing on a canvas with a border was
+      // the border's width off the pointer.
+      if (targetEl === e.target && typeof me.offsetX === 'number' && typeof me.offsetY === 'number') {
+        out.offsetX = me.offsetX;
+        out.offsetY = me.offsetY;
       } else {
         const rect = targetEl.getBoundingClientRect();
-        out.offsetX = me.clientX - rect.left;
-        out.offsetY = me.clientY - rect.top;
+        out.offsetX = me.clientX - rect.left - (targetEl.clientLeft || 0);
+        out.offsetY = me.clientY - rect.top - (targetEl.clientTop || 0);
       }
     }
+  }
+  // A touch's points, each from the corner of the app's box as a mouse's place is. A touch event
+  // has none of a mouse event's fields: told none of these, `e.touches[0]` threw in every touch
+  // handler. Data only: a point's element is the page's, and is not told.
+  if ('changedTouches' in e) {
+    const te = e as TouchEvent;
+    out.touches = touchPoints(te.touches, origin);
+    out.targetTouches = touchPoints(te.targetTouches, origin);
+    out.changedTouches = touchPoints(te.changedTouches, origin);
+    out.ctrlKey = te.ctrlKey;
+    out.shiftKey = te.shiftKey;
+    out.altKey = te.altKey;
+    out.metaKey = te.metaKey;
   }
   // An image that loaded says how large its picture is.
   if (e.type === 'load' && targetEl instanceof HTMLImageElement) {
@@ -2966,6 +3283,12 @@ function serializeDomEvent(
   if ('data' in e && typeof (e as InputEvent).data === 'string') {
     out.data = (e as InputEvent).data;
     out.inputType = (e as InputEvent).inputType;
+  }
+  // A <details> or a popover opened or closed: which it is now, and was.
+  const toggled = e as Event & { newState?: unknown; oldState?: unknown };
+  if (typeof toggled.newState === 'string' && typeof toggled.oldState === 'string') {
+    out.newState = toggled.newState;
+    out.oldState = toggled.oldState;
   }
   if ('submitter' in e) {
     const sub = (e as SubmitEvent).submitter;

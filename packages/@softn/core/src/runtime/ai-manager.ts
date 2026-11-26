@@ -38,13 +38,41 @@ export interface AIPermissionConfig {
   allowedSources?: Array<'bundle' | 'huggingface' | 'url'>;
 }
 
+/** Whether this page can draw with WebGL, once asked: it does not change while the page lives. */
+let webglAvailable: boolean | undefined;
+
+/**
+ * Whether WebGL is there, asked of one canvas once a page and its context let
+ * go at once. A context was made at every `softn.ai.getCapabilities` and kept:
+ * a browser keeps some sixteen live at once and, past that, takes the oldest
+ * from the page that made it, which can be a scene the app is drawing.
+ */
+function hasWebGL(): boolean {
+  if (webglAvailable !== undefined) return webglAvailable;
+  if (typeof document === 'undefined') return false;
+  let found = false;
+  try {
+    const canvas = document.createElement('canvas');
+    const gl = (canvas.getContext('webgl2') || canvas.getContext('webgl')) as WebGLRenderingContext | null;
+    found = !!gl;
+    try {
+      gl?.getExtension('WEBGL_lose_context')?.loseContext();
+    } catch {
+      /* Let go with the canvas, then. */
+    }
+  } catch {
+    /* WebGL not available */
+  }
+  webglAvailable = found;
+  return found;
+}
+
 /**
  * Detect AI runtime capabilities.
  * Checks for WebGPU, WebGL, and WASM availability.
  */
 export async function detectCapabilities(): Promise<AICapabilities> {
   let webgpu = false;
-  let webgl = false;
   const wasm = typeof WebAssembly !== 'undefined';
 
   // Check WebGPU
@@ -56,12 +84,7 @@ export async function detectCapabilities(): Promise<AICapabilities> {
   }
 
   // Check WebGL
-  if (typeof document !== 'undefined') {
-    try {
-      const canvas = document.createElement('canvas');
-      webgl = !!(canvas.getContext('webgl2') || canvas.getContext('webgl'));
-    } catch { /* WebGL not available */ }
-  }
+  const webgl = hasWebGL();
 
   // Estimate max model size based on device memory
   let maxModelSizeMB = 256; // conservative default

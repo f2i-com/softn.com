@@ -191,6 +191,8 @@ const MAX_OPS_PER_TURN = 65_536;
 const MAX_INIT_RETRIES = 16;
 const MAX_MODULE_SOURCES = 2048;
 const MAX_BODY_PARTS = 4096;
+/** The most of what the page tells while the app's program is still being made, kept for it. */
+const MAX_SYNC_WAITING = 256;
 const UTF8_ENCODER = new TextEncoder();
 
 const FORBIDDEN_EXTERNAL_HEADERS = new Set([
@@ -739,7 +741,13 @@ export class ContainerWorkerSession {
   private idbStaged: Map<string, string | null> | null = null;
   private idbStagedChars = 0;
 
+  /** The app's program is in its engine: what the page sends is the app's to hear from now on. */
+  private programReady = false;
+  /** What the page told of itself before then (its size, a box measured, a field's value). */
+  private readonly syncWaiting: unknown[][] = [];
   private readonly definedModules = new Set<string>();
+  /** The last load of modules asked for while the app runs, for each engine's modules (moduleTurn). */
+  private readonly moduleTurns = new WeakMap<Set<string>, Promise<void>>();
   /** The engine's bindings, for an app Worker's engine; the app's Workers by the id its side knows each by; and their calls the runtime is answering. */
   private bindings: LoadedZippBindings | null = null;
   private readonly appWorkers = new Map<string, AppWorker>();
@@ -1001,6 +1009,8 @@ export class ContainerWorkerSession {
         } else {
           engine.initSource(entry.code, 'python');
         }
+        this.programReady = true;
+        this.syncWaiting.length = 0;
         this.drainConsole();
         this.postToHost({ type: 'ready' });
         return;
@@ -1311,6 +1321,10 @@ export class ContainerWorkerSession {
         GUEST_WEB_APIS_SOURCE,
         // IndexedDB, loaded dynamically ONLY when the app references IndexedDB APIs.
         ...(indexedDbSource ? [indexedDbSource] : []),
+        // What the page told while the program was being made (its size, the boxes it measured,
+        // what was typed into a field): the document has it before any of the app's scripts
+        // run, which they do as the program is compiled.
+        ...(this.syncWaiting.length > 0 ? [`globalThis.__softnDocSync(${this.syncWaitingSource()});`] : []),
         ...modules,
         // What a classic script declares, made the page's (both kinds use it); and the scripts
         // too long for eval, each a function run in its turn below.
@@ -1484,6 +1498,9 @@ export class ContainerWorkerSession {
         }
       }
 
+      // The program is there, and has what the page told before it was (written into it).
+      this.programReady = true;
+      this.syncWaiting.length = 0;
       this.drainTurn();
       this.postToHost({ type: 'ready' });
     } catch (err) {
@@ -1576,8 +1593,31 @@ export class ContainerWorkerSession {
   ): Promise<void> {
     if (defined.has(moduleUrl)) return;
     defined.add(moduleUrl);
+    try {
+      await this.collectModuleAndImports(code, filePath, moduleUrl, outBlocks, collected, named, defined, displayFile, startLine);
+    } catch (err) {
+      // Not taken after all: asked for again, it is collected again (it stayed taken, and a later
+      // import found no module where it was).
+      defined.delete(moduleUrl);
+      throw err;
+    }
+    // Told in the order the registrations are in (dependencies first): the app's side names the
+    // module whose registration did not compile by its place (taken in the other order, it
+    // named the module that imported it, or a sibling).
     collected?.push(moduleUrl);
+  }
 
+  private async collectModuleAndImports(
+    code: string,
+    filePath: string,
+    moduleUrl: string,
+    outBlocks: string[],
+    collected: string[] | undefined,
+    named: Array<{ spec: string; from: string }> | undefined,
+    defined: Set<string>,
+    displayFile?: string,
+    startLine?: number
+  ): Promise<void> {
     if (/\.(?:tsx|jsx)$/i.test(filePath) && !this.transformJsxFn) {
       await this.ensureJsxTransform();
     }
@@ -1677,6 +1717,32 @@ export class ContainerWorkerSession {
     return { url, blocks, urls: collected };
   }
 
+  /**
+   * A load of modules asked for while the app runs waits for the loads asked for before it by
+   * the same engine, and answers after them: a module one of them took is handed over by it.
+   * (Answered as each was ready, a load that found a module another had taken, and not yet
+   * handed over, answered first without it: Promise.all([import('./a.js'), import('./b.js')]),
+   * both importing one module, failed with "Module did not register factory".) Resolves with
+   * what lets the next one go.
+   */
+  private moduleTurn(defined: Set<string>): Promise<() => void> {
+    const before = this.moduleTurns.get(defined) ?? Promise.resolve();
+    let release: () => void = () => undefined;
+    const mine = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.moduleTurns.set(defined, before.then(() => mine));
+    return before.then(() => release);
+  }
+
+  /** The modules a load took and did not hand over, let go of: asked for again, each is sent again. */
+  private forgetCollected(collected: readonly string[], defined: Set<string>): void {
+    for (const url of collected) {
+      defined.delete(url);
+      if (defined === this.definedModules) this.moduleSources.delete(url);
+    }
+  }
+
   private async fetchExternalVendorModuleSource(name: string): Promise<string | null> {
     if (Object.prototype.hasOwnProperty.call(this.vendorModules, name)) {
       const given = this.vendorModules[name];
@@ -1718,7 +1784,9 @@ export class ContainerWorkerSession {
     props: Record<string, unknown>,
     syncChanges?: unknown[]
   ): void {
-    if (!this.engine || this.language === 'python') {
+    if (!this.engine || this.language === 'python' || !this.programReady) {
+      // What the page told with it is kept for the program all the same.
+      if (!this.programReady && syncChanges && syncChanges.length > 0) this.handleSync(syncChanges);
       if (!this.disposed) this.postToHost({ type: 'ops', ops: [], turnId, eventBits: 0 });
       return;
     }
@@ -1814,7 +1882,8 @@ export class ContainerWorkerSession {
       else this.idbStore.set(name, value);
       names.push(name);
     }
-    if (names.length === 0 || !this.engine || this.disposed || this.language === 'python') return;
+    // Before the program is there, nothing of the app's has read the database yet: kept, and told nothing.
+    if (names.length === 0 || !this.engine || this.disposed || this.language === 'python' || !this.programReady) return;
     try {
       this.engine.renewInstructionBudget();
       for (const name of names) this.callGuest('__softnContainerIdbChanged', [name]);
@@ -1834,7 +1903,8 @@ export class ContainerWorkerSession {
     else kept.set(key, value);
     if (area === 'ls') this.localStoreBytes += delta;
     else this.idbBytes += delta;
-    if (!this.engine || this.disposed || this.language === 'python') return;
+    // Kept; before the program is there, the app has nothing listening to be told.
+    if (!this.engine || this.disposed || this.language === 'python' || !this.programReady) return;
     // localStorage changed elsewhere is heard as a browser hears it: a storage event at the
     // window (an app signs out in every tab, or follows a setting changed in another).
     if (area === 'ls' && (before ?? null) === value) return;
@@ -1849,7 +1919,16 @@ export class ContainerWorkerSession {
   }
 
   private handleSync(changes: unknown[]): void {
-    if (!this.engine || this.language === 'python' || changes.length === 0) return;
+    if (!Array.isArray(changes) || changes.length === 0 || this.disposed) return;
+    // Told before the app's program is there (its engine loading, its modules being read): kept,
+    // and told once it is. Handed to an engine with no program, it was reported as an error of
+    // the app's, and what it said (the page's size, a box measured) was lost for good.
+    if (!this.programReady) {
+      if (this.syncWaiting.length >= MAX_SYNC_WAITING) this.syncWaiting.shift();
+      this.syncWaiting.push(changes);
+      return;
+    }
+    if (!this.engine || this.language === 'python') return;
     try {
       this.engine.renewInstructionBudget();
       this.callGuest('__softnContainerSync', [changes]);
@@ -1857,6 +1936,13 @@ export class ContainerWorkerSession {
     } catch (err) {
       this.reportGuestError('sync', err);
     }
+  }
+
+  /** What the page told before the program was there, as text written into it: every change, in order. */
+  private syncWaitingSource(): string {
+    const all: unknown[] = [];
+    for (const changes of this.syncWaiting) for (const change of changes) all.push(change);
+    return JSON.stringify(all).replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
   }
 
   /** Close all open external sockets/streams and cancel in-flight external fetches when `net` is revoked. */
@@ -1948,7 +2034,7 @@ export class ContainerWorkerSession {
   }
 
   private handleRaf(timestamp: number): void {
-    if (!this.engine || this.language === 'python') {
+    if (!this.engine || this.language === 'python' || !this.programReady) {
       if (!this.disposed) this.postToHost({ type: 'ops', ops: [], rafReply: true });
       return;
     }
@@ -2002,16 +2088,25 @@ export class ContainerWorkerSession {
       this.postTask(() => this.drainTurn());
     }
 
-    // Drain paged ShellOp batches with strict page and total op bounds
+    // Drain paged ShellOp batches with strict page and total op bounds. A page is taken whole:
+    // the app's side counts a page taken as handed over, so the part of one past the bound was
+    // never sent (a long table's last rows, and the changes that put the table on the page).
+    // Past the bound, what is left waits for a drain of its own, in a task after this one.
     const allOps: ShellOp[] = [];
-    for (let pages = 0; pages < MAX_OP_PAGES && allOps.length < MAX_OPS_PER_TURN; pages++) {
+    let opsLeft = false;
+    for (let pages = 0; pages < MAX_OP_PAGES; pages++) {
+      if (allOps.length >= MAX_OPS_PER_TURN) {
+        opsLeft = true;
+        break;
+      }
       const page = this.callGuest('__softnContainerTake', [false]);
       if (!Array.isArray(page) || page.length === 0) break;
-      const take = Math.min(page.length, MAX_OPS_PER_TURN - allOps.length);
-      for (let i = 0; i < take; i++) {
+      for (let i = 0; i < page.length; i++) {
         allOps.push(page[i] as ShellOp);
       }
+      if (pages === MAX_OP_PAGES - 1) opsLeft = true;
     }
+    if (opsLeft) this.postTask(() => this.drainTurn());
 
     if (this.mirrorCanvases) this.mirrorOps(allOps);
 
@@ -2142,17 +2237,19 @@ export class ContainerWorkerSession {
           (p) => p in this.textFiles
         );
 
+        if (resolved.kind === 'builtin' && defined.has(resolved.url)) {
+          this.resolveCallbackAndFlush(callId, { url: resolved.url });
+          return;
+        }
+        const release = await this.moduleTurn(defined);
+        // The modules taken for it, let go of again if it fails before they are handed over.
+        const collected: string[] = [];
         try {
-          if (resolved.kind === 'builtin' && defined.has(resolved.url)) {
-            this.resolveCallbackAndFlush(callId, { url: resolved.url });
-            return;
-          }
           // The registrations go to the app's side, which compiles each with its own eval:
           // compiled here (evalInContext) they were one compilation of 64 KB at most for a
           // whole graph, out of 256 calls and 1 MB the engine allows that path in an app's life.
           if (resolved.kind === 'vfs') {
             const blocks: string[] = [];
-            const collected: string[] = [];
             const src = readRunnableModule(resolved.path, (path) => this.textFiles[path]);
             if (src === null) throw new Error(`Module not found in container: ${resolved.path}`);
             await this.collectModuleGraph(src, resolved.path, resolved.url, blocks, collected, undefined, defined);
@@ -2161,7 +2258,6 @@ export class ContainerWorkerSession {
           }
           if (resolved.kind === 'vendor') {
             const blocks: string[] = [];
-            const collected: string[] = [];
             if (!defined.has(resolved.url)) {
               if (REACT_VENDOR_MODULE_SET.has(resolved.url)) {
                 const reactSrc = await this.ensureReactVendorSource();
@@ -2193,7 +2289,6 @@ export class ContainerWorkerSession {
               throw new Error(`Remote module import denied by net permission: ${resolved.url}`);
             }
             const blocks: string[] = [];
-            const collected: string[] = [];
             if (!defined.has(resolved.url)) {
               // No redirects, as for the app's own fetches: a host the app was granted could
               // answer with a redirect to one it was not, whose script would then be run.
@@ -2215,9 +2310,12 @@ export class ContainerWorkerSession {
           // in words, where the import waited for good.
           throw new Error(`There is no module ${specifier} here`);
         } catch (err) {
+          this.forgetCollected(collected, defined);
           this.resolveCallbackAndFlush(callId, {
             error: err instanceof Error ? err.message : String(err),
           });
+        } finally {
+          release();
         }
         return;
       }
@@ -2238,13 +2336,17 @@ export class ContainerWorkerSession {
         const page = args[1] ?? '';
         const pagePath = (page.startsWith(VIRTUAL_ORIGIN + '/') ? page.slice(VIRTUAL_ORIGIN.length + 1).split(/[?#]/)[0] : '') || 'index.html';
         const url = `${VIRTUAL_ORIGIN}/${pagePath}.added-${++this.addedModules}.js`;
+        const release = await this.moduleTurn(this.definedModules);
+        const collected: string[] = [];
         try {
           const blocks: string[] = [];
-          const collected: string[] = [];
           await this.collectModuleGraph(args[0] ?? '', pagePath, url, blocks, collected);
           this.resolveCallbackAndFlush(callId, this.moduleReply(url, blocks, collected, 'vfs'));
         } catch (err) {
+          this.forgetCollected(collected, this.definedModules);
           this.resolveCallbackAndFlush(callId, { error: err instanceof Error ? err.message : String(err) });
+        } finally {
+          release();
         }
         return;
       }
@@ -3559,6 +3661,10 @@ export class ContainerWorkerSession {
           if (sub === 'init') {
             return Object.fromEntries(this.sessionStore);
           }
+          // The keys of the app's localStorage, in the order they were first set: the engine's
+          // localStorage has no key() or length, which the app's side makes from these. (Asked
+          // here: the engine takes no more kinds of synchronous call than the app has now.)
+          if (sub === 'lskeys') return [...this.localStore.keys()];
           if (sub === 'route') {
             const urlPath = String(args[1] ?? '');
             if (isSafeVirtualRoute(urlPath) && urlPath.length <= MAX_SESSION_URL_LENGTH) {
@@ -3834,8 +3940,15 @@ export class ContainerWorkerSession {
         return engine;
       };
       const definedBefore = new Set(worker.defined);
+      // Ended while it was being made (terminate() just after new Worker()): its start is
+      // answered all the same, with nothing to say (an error of a Worker the app ended is never
+      // told), and not left waiting for good in the app's engine.
+      const ended = () => this.resolveCallbackAndFlush(callId, { ok: false });
       let program = await this.appWorkerProgram(worker, code, path, spec.type === 'module', workerName, workerHref);
-      if (worker.over || this.disposed) return;
+      if (worker.over || this.disposed) {
+        ended();
+        return;
+      }
       let engine = made();
       worker.engine = engine;
       try {
@@ -3849,7 +3962,10 @@ export class ContainerWorkerSession {
         worker.defined.clear();
         for (const url of definedBefore) worker.defined.add(url);
         program = await this.appWorkerProgram(worker, code, path, spec.type === 'module', workerName, workerHref, false);
-        if (worker.over || this.disposed) return;
+        if (worker.over || this.disposed) {
+          ended();
+          return;
+        }
         engine = made();
         worker.engine = engine;
         engine.initSource(program.source, this.language);
@@ -5209,6 +5325,7 @@ export class ContainerWorkerSession {
     this.mirrorBlobs.clear();
     this.mirrorBlobBytes = 0;
     this.turnsWaiting.length = 0;
+    this.syncWaiting.length = 0;
     this.moduleSources.clear();
     this.scriptSources.clear();
     this.sourceMap.clear();

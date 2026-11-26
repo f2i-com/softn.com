@@ -115,8 +115,18 @@ const NAMESPACE_CAPABILITY: Readonly<Record<string, Capability | null>> = {
   notifications: 'notifications',
 };
 
+/**
+ * A Bluetooth UUID as one name for it: a short one (`180d`, `0x2A37`, or 32 bits) made the full
+ * UUID on the Bluetooth base, as Android reads it (DeviceBridge.kt parseBleUuid); a full one
+ * or an alias (`heart_rate`) in lower case. The device and the browser name a service in full:
+ * matched as written, `services: ["180d"]` allowed none of the services a device listed, and
+ * Web Bluetooth refused "180d" when asked to look for it.
+ */
 function normalizeUuid(uuid: string): string {
-  return uuid.trim().toLowerCase();
+  const name = uuid.trim().toLowerCase();
+  const short = /^(?:0x)?([0-9a-f]{4}|[0-9a-f]{8})$/.exec(name)?.[1];
+  if (!short) return name;
+  return `${short.padStart(8, '0')}-0000-1000-8000-00805f9b34fb`;
 }
 
 const MAX_CLIPBOARD_CHARS = 256 * 1024;
@@ -297,20 +307,15 @@ export function createWebDeviceBridge(): ContainerDeviceBridge {
               ? { filters: [{ namePrefix: options.namePrefix }] }
               : { acceptAllDevices: true };
         const dev = await nav.bluetooth.requestDevice(reqOpts);
+        // Kept after a disconnect, as the browser keeps it: the person chose it, and the app
+        // connects to it again by its id (as it does on Android). Forgotten when the link
+        // dropped, a reconnect was "not found", and each choice of the same device added a
+        // listener to it. At most 64 are kept, the oldest let go of first.
         if (bleDevices.size >= 64 && !bleDevices.has(dev.id)) {
           const oldest = bleDevices.keys().next().value;
           if (oldest !== undefined) bleDevices.delete(oldest);
         }
         bleDevices.set(dev.id, dev);
-        if (typeof (dev as unknown as EventTarget).addEventListener === 'function') {
-          (dev as unknown as EventTarget).addEventListener(
-            'gattserverdisconnected',
-            () => {
-              if (bleDevices.get(dev.id) === dev) bleDevices.delete(dev.id);
-            },
-            { once: true }
-          );
-        }
         return {
           devices: [
             {
@@ -561,7 +566,7 @@ export async function dispatchDeviceBridgeCall(
       if (!bridge.bluetooth) throw new Error('Bluetooth bridge is unavailable on this host');
       if (method === 'scan') {
         const requestedServices = Array.isArray(params.services)
-          ? params.services.filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
+          ? params.services.filter((s): s is string => typeof s === 'string' && s.trim().length > 0).map(normalizeUuid)
           : undefined;
         if (allowedBleServices) {
           if (requestedServices && requestedServices.some((s) => !allowedBleServices.has(normalizeUuid(s)))) {
@@ -596,15 +601,15 @@ export async function dispatchDeviceBridgeCall(
         return await bridge.bluetooth.disconnect(String(params.deviceId ?? ''));
       }
       if (method === 'read') {
-        const svc = String(params.serviceUuid ?? '');
-        if (allowedBleServices && !allowedBleServices.has(normalizeUuid(svc))) {
+        const svc = normalizeUuid(String(params.serviceUuid ?? ''));
+        if (allowedBleServices && !allowedBleServices.has(svc)) {
           throw new Error(`Bluetooth service ${svc} is not allowed by permission.json`);
         }
-        return await bridge.bluetooth.read(String(params.deviceId ?? ''), svc, String(params.characteristicUuid ?? ''));
+        return await bridge.bluetooth.read(String(params.deviceId ?? ''), svc, normalizeUuid(String(params.characteristicUuid ?? '')));
       }
       if (method === 'write') {
-        const svc = String(params.serviceUuid ?? '');
-        if (allowedBleServices && !allowedBleServices.has(normalizeUuid(svc))) {
+        const svc = normalizeUuid(String(params.serviceUuid ?? ''));
+        if (allowedBleServices && !allowedBleServices.has(svc)) {
           throw new Error(`Bluetooth service ${svc} is not allowed by permission.json`);
         }
         const b64 = String(params.base64 ?? '');
@@ -614,7 +619,7 @@ export async function dispatchDeviceBridgeCall(
         return await bridge.bluetooth.write(
           String(params.deviceId ?? ''),
           svc,
-          String(params.characteristicUuid ?? ''),
+          normalizeUuid(String(params.characteristicUuid ?? '')),
           b64,
           Boolean(params.withoutResponse)
         );

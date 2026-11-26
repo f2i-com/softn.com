@@ -112,6 +112,7 @@ fn with_app_a_data(name: &str) -> Page {
             softn_loader_lib::scoped_xdb::create_record,
             softn_loader_lib::scoped_xdb::update_record,
             softn_loader_lib::scoped_xdb::delete_record,
+            softn_loader_lib::scoped_xdb::remove_records,
             softn_loader_lib::scoped_xdb::upsert_record,
             softn_loader_lib::scoped_xdb::upsert_records,
             softn_loader_lib::scoped_xdb::import_records,
@@ -205,6 +206,38 @@ fn a_delete_naming_a_collection_does_not_reach_another() {
         .unwrap();
     assert_eq!(page.call("delete_record", serde_json::json!({ "appId": b, "id": other["id"] })), Ok(serde_json::json!(true)));
     assert_eq!(private(&page), 0);
+}
+
+/// What the page removes for good (`hardDelete`, `db.prune`, `db.clearCollection`) leaves no
+/// row of the record, live or deleted, in the data of the app open now, and reaches no other.
+/// The page could only ask for a tombstone, which kept the record's data: loaded again at the
+/// next start, and put back in a sync room by the page's peer sync.
+#[test]
+fn a_record_removed_for_good_leaves_nothing_and_only_in_the_app_open_now() {
+    let page = with_app_a_data("remove-records");
+    let b = page.open_own("b.softn", b"app B");
+    let made = |collection: &str| {
+        let record = page
+            .call("create_record", serde_json::json!({ "appId": b, "payload": { "collection": collection, "data": { "text": "secret" } } }))
+            .unwrap();
+        record["id"].as_str().unwrap().to_string()
+    };
+    let (gone, kept, private) = (made("notes"), made("notes"), made("private"));
+    let refused = page
+        .call("remove_records", serde_json::json!({ "appId": b, "collection": "notes", "ids": [gone, private] }))
+        .unwrap();
+    assert_eq!(refused, serde_json::json!([private]), "a record of another collection is left alone");
+    let all = page
+        .call("get_collection", serde_json::json!({ "appId": b, "collection": "notes", "includeDeleted": true }))
+        .unwrap();
+    let ids: Vec<&str> = all.as_array().unwrap().iter().map(|record| record["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, vec![kept.as_str()], "no tombstone is left of the removed one");
+    assert!(page.manager.get_db(&b).unwrap().lock().unwrap().get_record(&private).is_ok());
+
+    let a_note = page.manager.get_db(APP_A).unwrap().lock().unwrap().get_collection("notes").unwrap()[0].id.clone();
+    let outcome = page.call("remove_records", serde_json::json!({ "appId": APP_A, "collection": "notes", "ids": [a_note] }));
+    assert!(outcome.as_ref().err().and_then(|error| error.as_str()).is_some_and(|error| error.starts_with("Refused")), "{:?}", outcome);
+    assert_eq!(page.notes_of(APP_A), 1);
 }
 
 /// What sync writes for one collection does not replace a record of another under the same

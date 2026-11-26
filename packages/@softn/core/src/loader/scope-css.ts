@@ -389,7 +389,7 @@ function familyAt(value: string, from: number, longest: number): { key: string; 
   } else {
     let space = false;
     end = from;
-    for (let k = from; k < value.length && value[k] !== ',' && value[k] !== '!'; k++) {
+    for (let k = from; k < value.length && value[k] !== ',' && value[k] !== '!' && value[k] !== ')'; k++) {
       if (/\s/.test(value[k])) {
         space = true;
         continue;
@@ -401,14 +401,58 @@ function familyAt(value: string, from: number, longest: number): { key: string; 
       if (key.length > longest) return null;
     }
   }
-  // Nothing but white space between it and its `,`, `!` or the end.
+  // Nothing but white space between it and its `,`, `!` or the end, or the `)` of the
+  // `var(--font, "Brand")` it is the fallback of.
   let next = end;
   while (next < value.length && /\s/.test(value[next])) next++;
-  if (next < value.length && value[next] !== ',' && value[next] !== '!') return null;
+  if (next < value.length && value[next] !== ',' && value[next] !== '!' && value[next] !== ')') return null;
   return key.length > 0 && key.length <= longest ? { key, end } : null;
 }
 
 const NAMED = /([{;]\s*)(font-family|font|animation-name|animation)(\s*:)([^;{}]*)/gi;
+
+/** A custom property's declaration, `--name: value`. */
+const CUSTOM_PROPERTY = /([{;]\s*)(--[^\s:;{}()]+)(\s*:)([^;{}]*)/g;
+/** The custom properties a value reads, `var(--name`. */
+const READS_CUSTOM_PROPERTY = /var\(\s*(--[^\s,()]+)/gi;
+
+/**
+ * The custom properties of `css` a font or an animation declaration takes its value from,
+ * and the ones those take theirs from in turn: `--font: "Brand"`, read by `font-family:
+ * var(--font)`, names the app's face as surely as `font-family: "Brand"` does. Left as
+ * written, it asked for a face no longer called that, and the app's font silently did not
+ * apply. Only these are renamed: text in a custom property nothing reads as a font or an
+ * animation (`content: var(--label)`) keeps what it says.
+ */
+function namingProperties(css: string): { fonts: Set<string>; animations: Set<string> } {
+  const fonts = new Set<string>();
+  const animations = new Set<string>();
+  const declared = new Map<string, string[]>();
+  for (const [, , name, , value] of css.matchAll(CUSTOM_PROPERTY)) {
+    const values = declared.get(name);
+    if (values) values.push(value);
+    else declared.set(name, [value]);
+  }
+  if (declared.size === 0) return { fonts, animations };
+  for (const [into, start] of [
+    [fonts, /^font/i],
+    [animations, /^animation/i],
+  ] as const) {
+    const queue: string[] = [];
+    const reach = (value: string) => {
+      for (const [, name] of value.matchAll(READS_CUSTOM_PROPERTY)) {
+        if (!into.has(name)) {
+          into.add(name);
+          queue.push(name);
+        }
+      }
+    };
+    for (const [, , property, , value] of css.matchAll(NAMED)) if (start.test(property)) reach(value);
+    // Each name once, so a chain of any length (or a loop) is read in one pass.
+    while (queue.length > 0) for (const value of declared.get(queue.pop()!) ?? []) reach(value);
+  }
+  return { fonts, animations };
+}
 
 /**
  * An `appearance` that opens a select's picker in the top layer, which no
@@ -582,11 +626,25 @@ export function scopeAppCss(css: string, app: string): ScopedCss {
     .rules(0, css.length)
     .replace(TOP_LAYER_APPEARANCE_DECLARATION, '$1')
     .replace(TOP_LAYER_TRANSITION_DECLARATION, '$1');
+  let naming: { fonts: Set<string>; animations: Set<string> } | null = null;
+  /** A custom property's value, with the app's names put to the ones given here (namingProperties). */
+  const renameProperty = (name: string, value: string): string => {
+    let renamed = value;
+    if (naming?.fonts.has(name)) renamed = scoper.rename('font-family', renamed);
+    if (naming?.animations.has(name)) renamed = scoper.rename('animation', renamed);
+    return renamed;
+  };
   if (scoper.fonts.size > 0 || scoper.animations.size > 0) {
     scoped = scoped.replace(NAMED, (_m, before: string, property: string, colon: string, value: string) =>
       // The `font-family` of an `@font-face` is the new name already.
       `${before}${property}${colon}${scoper.rename(property, value)}`
     );
+    naming = namingProperties(scoped);
+    if (naming.fonts.size > 0 || naming.animations.size > 0) {
+      scoped = scoped.replace(CUSTOM_PROPERTY, (_m, before: string, name: string, colon: string, value: string) =>
+        `${before}${name}${colon}${renameProperty(name, value)}`
+      );
+    }
   }
   const read = asTheBrowserReadsIt(scoped, app);
   const result: ScopedCss = { css: read ?? scoped };
@@ -600,6 +658,18 @@ export function scopeAppCss(css: string, app: string): ScopedCss {
         if (renamed === value) continue;
         copy ??= { ...style };
         copy[key] = renamed;
+      }
+      // A custom property an inline style sets, which the stylesheet reads as a font or an
+      // animation.
+      if (naming && (naming.fonts.size > 0 || naming.animations.size > 0)) {
+        for (const key of Object.keys(style)) {
+          const value = style[key];
+          if (!key.startsWith('--') || typeof value !== 'string') continue;
+          const renamed = renameProperty(key, value);
+          if (renamed === value) continue;
+          copy ??= { ...style };
+          copy[key] = renamed;
+        }
       }
       return copy ?? style;
     };

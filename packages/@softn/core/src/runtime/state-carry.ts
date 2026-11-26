@@ -242,7 +242,9 @@ const IN = `function (text, held, assign) {
     var obj = into || {};
     made.set(n[1], obj);
     if (into) { var old = Object.keys(obj); for (i = 0; i < old.length; i++) delete obj[old[i]]; }
-    for (i = 0; i < n[2].length; i++) obj[n[2][i]] = build(n[3][i], null);
+    // Defined, not assigned: assigned, a key named __proto__ set the object's
+    // prototype instead, and the key was gone.
+    for (i = 0; i < n[2].length; i++) Object.defineProperty(obj, n[2][i], { value: build(n[3][i], null), writable: true, enumerable: true, configurable: true });
     return obj;
   }
   function fits(n, v) {

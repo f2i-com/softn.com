@@ -114,6 +114,10 @@ describe('a peer\'s removals in a desktop collection that did not load', () => {
         case 'upsert_records':
           for (const record of args.records as Row[]) rows.set(record.id, record);
           return [];
+        case 'remove_records':
+          // For good, with no tombstone (db.rs remove_records).
+          for (const id of args.ids as string[]) if (rows.get(id)?.collection === args.collection) rows.delete(id);
+          return [];
         default:
           throw new Error(`Unexpected command: ${cmd}`);
       }
@@ -127,8 +131,10 @@ describe('a peer\'s removals in a desktop collection that did not load', () => {
       expect(xdb.isHydrated('notes')).toBe(false);
       xdb.removeRecords('notes', ['n1', 'n2'], { fromPeer: true });
       for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
-      expect(rows.get('n1')?.deleted).toBe(true);
-      expect(rows.get('n2')?.deleted).toBe(true);
+      // Removed for good (round 4), in one call: a tombstone kept each record's data.
+      expect(invoke.mock.calls.filter(([cmd]) => cmd === 'remove_records')).toHaveLength(1);
+      expect(rows.has('n1')).toBe(false);
+      expect(rows.has('n2')).toBe(false);
       // The app's own removal still waits for the load.
       expect(() => xdb.removeRecords('notes', ['n3', 'n1'])).toThrow(/has not been loaded/);
       expect(rows.get('n3')?.deleted).toBe(false);

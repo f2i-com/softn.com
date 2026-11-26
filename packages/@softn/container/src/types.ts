@@ -533,7 +533,12 @@ export interface SoftNContainerOptions {
   theme?: 'light' | 'dark' | 'auto';
   /** Execution mode: `'worker'` (default in browser) or `'inline'` (used in Node/JSDOM tests where Web Workers are unavailable). */
   isolation?: 'worker' | 'inline';
-  /** Whether guest `localStorage` and `softn:db` writes persist to host `localStorage` (default `true`; set `false` for ephemeral editor previews). */
+  /**
+   * Whether guest `localStorage` and `softn:db` writes persist to host `localStorage` (default
+   * `true`; set `false` for ephemeral editor previews). Without it, what the app keeps
+   * (localStorage, sessionStorage, IndexedDB, records) lasts as long as the mount, across the
+   * app's pages, and nothing of it is written to the page's storage.
+   */
   persistStorage?: boolean;
   /** Resource limits. */
   limits?: ContainerLimits;

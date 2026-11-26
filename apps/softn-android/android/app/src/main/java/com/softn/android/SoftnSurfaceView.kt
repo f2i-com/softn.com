@@ -96,6 +96,20 @@ class SoftnSurfaceView(
     }
 
     /**
+     * Drop the last frame, so the status message shows instead of a picture of an app whose
+     * engine is gone (onDraw draws the status only when there is no frame).
+     */
+    fun clearFrame() {
+        synchronized(presentLock) {
+            synchronized(bitmapLock) {
+                frontBitmap = null
+                backBitmap = null
+            }
+        }
+        postInvalidate()
+    }
+
+    /**
      * Copy pixels into the off-screen `backBitmap` outside `bitmapLock`, then swap
      * `frontBitmap` <-> `backBitmap` under a sub-microsecond lock so UI `onDraw()` never
      * waits for a 10+ MB framebuffer copy.

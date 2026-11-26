@@ -184,7 +184,9 @@ export async function loadPageApplication(
     // (an app host's fallback: Netlify's, Vercel's, many nginx sites') says
     // so in the page's type. A manifest, a seed or a script answered with a
     // page is a file the site does not have.
-    if (!/\.html?$/i.test(path) && /text\/html/i.test(response.headers.get('content-type') ?? '')) return null;
+    // Not the page itself (`from`): a page served at a clean address (`/notes/about`, as hosts
+    // serve `about.html`) is an HTML answer for a path with no `.html`, and was taken for none.
+    if (!from && !/\.html?$/i.test(path) && /text\/html/i.test(response.headers.get('content-type') ?? '')) return null;
     const rawBytes = await readBoundedBody(response, MAX_FILE_BYTES, { onChunk: () => progress?.() });
     if (rawBytes === null) throw Error(`${path} is larger than this page may load`);
     const text = new TextDecoder().decode(rawBytes);
@@ -215,6 +217,23 @@ export async function loadPageApplication(
       return null;
     }
   };
+  /**
+   * The file a `<script src>` or `<link href>` names, as the composer reads one (core's
+   * `pageFilePath`): the `?v=3` a site adds to outrun a cache says nothing about which file it
+   * is, and `/main.js` is from the site's root, which is this page's folder for a page at the
+   * root (one outside the folder is not loaded). Fetched as written, both were refused or left
+   * out, and the composer then said the file was not in the bundle.
+   */
+  const resolveFile = (from: string, written: string): string | null => {
+    const file = written.trim().split(/[?#]/)[0];
+    if (/^[a-z][a-z0-9+.-]*:|^\/\//i.test(file)) return null; // another site's; not loaded
+    if (!file.startsWith('/')) return resolveFrom(from, file);
+    try {
+      return pathIn(base, new URL(file, page));
+    } catch {
+      return null;
+    }
+  };
   const followLogic = async (path: string | null): Promise<void> => {
     if (path === null || logic.includes(path)) return;
     const text = await fetchText(path);
@@ -225,9 +244,9 @@ export async function loadPageApplication(
   for (let i = 0; i < pages.length; i++) {
     const from = pages[i];
     const text = textFiles.get(from)!;
-    for (const src of pageLogicSources(text)) await followLogic(resolveFrom(from, src));
+    for (const src of pageLogicSources(text)) await followLogic(resolveFile(from, src));
     for (const href of pageStylesheetHrefs(text)) {
-      const path = resolveFrom(from, href);
+      const path = resolveFile(from, href);
       if (path !== null) await fetchText(path);
     }
     for (const match of text.matchAll(new RegExp(UI_IMPORT_DECLARATION_PATTERN.source, 'g'))) {

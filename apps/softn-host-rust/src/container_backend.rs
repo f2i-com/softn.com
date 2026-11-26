@@ -509,8 +509,12 @@ pub fn mime_type_for(path: &str) -> &'static str {
         "csv" => "text/csv; charset=utf-8",
         "mp3" => "audio/mpeg",
         "wav" => "audio/wav",
+        // As the browser's container types them (@softn/container archive.ts).
+        "ogg" => "audio/ogg",
         "mp4" => "video/mp4",
         "webm" => "video/webm",
+        "glb" => "model/gltf-binary",
+        "gltf" => "model/gltf+json",
         _ => "application/octet-stream",
     }
 }
@@ -1743,6 +1747,15 @@ impl SqlStorageConfig {
                 }
             }
             let (mut conn, in_host_savepoint) = Self::open_configured_connection(Some(&path))?;
+            // A database that was here already and holds the app's tables is not seeded again,
+            // as on the PHP host: it lost its mark (restored from a backup without it, or the
+            // process stopped between seeding and marking it), and the seeds ran over its records
+            // again, twice the seed rows, or a start that failed on a key they insert.
+            if db_existed_before && holds_app_tables(&conn) {
+                drop(conn);
+                let _ = fs::write(&marker, b"1");
+                continue;
+            }
             let seed_deadline = Instant::now() + Duration::from_secs(30);
             let mut seed_steps = 0u64;
             let _ = conn.progress_handler(
@@ -1840,13 +1853,34 @@ impl SqlStorageConfig {
                     other => other.to_string(),
                 };
                 if !payload.trim().is_empty() {
-                    let _ = apply_seed_json(&conn, &payload, None)?;
+                    // One that fails on a database it made leaves none behind, as a failed
+                    // seedSql does: left with the seed SQL's rows and no mark, it would be taken
+                    // for one restored from a backup and never get the rest of its seed.
+                    if let Err(e) = apply_seed_json(&conn, &payload, None) {
+                        drop(conn);
+                        if !db_existed_before {
+                            let _ = fs::remove_file(&path);
+                        }
+                        return Err(e);
+                    }
                 }
             }
             let _ = fs::write(&marker, b"1");
         }
         Ok(())
     }
+}
+
+/// Whether a database holds a table of the app's own: one whose name begins neither with
+/// `sqlite_` nor with `_`, the host's. Compared by the names' first characters, as the PHP host
+/// compares them: in a LIKE, `_` is the wildcard for one character.
+fn holds_app_tables(conn: &Connection) -> bool {
+    conn.query_row(
+        "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND substr(name, 1, 7) <> 'sqlite_' AND substr(name, 1, 1) <> '_'",
+        [],
+        |row| row.get::<_, i64>(0),
+    )
+    .is_ok_and(|tables| tables > 0)
 }
 
 struct SavepointFlagReset<'a>(&'a AtomicBool);
@@ -3039,6 +3073,34 @@ fn harden_script_state(st: &mut ScriptState, steps: u64, abort: Arc<AtomicBool>)
     st.disable_vm_jit();
 }
 
+/// `bytes` as ZIPP's PHP takes a string: each character it is handed is one byte of the PHP
+/// string (Latin-1), as the browser's container hands it one (`latin1Packed` in
+/// @softn/container's backend-runtime.ts). Handed as text, a character past ASCII lost its high
+/// bits: "é" became the byte 0xE9, which is no UTF-8, and U+672C a comma.
+fn php_bytes(bytes: &[u8]) -> String {
+    bytes.iter().map(|&b| char::from(b)).collect()
+}
+
+/// Text for ZIPP's PHP as its UTF-8 bytes (`php_bytes`); ASCII is the same either way.
+fn php_text(text: &str) -> String {
+    if text.is_ascii() {
+        text.to_owned()
+    } else {
+        php_bytes(text.as_bytes())
+    }
+}
+
+/// A string ZIPP's PHP hands back (a header it set) as the text of its bytes: the reverse of
+/// [`php_text`]. Sent as the characters it came as, `Zoë` went out as `ZoÃ«`. One whose bytes
+/// are not UTF-8, or that holds a character no byte is, is left as it came.
+fn php_string_text(text: &str) -> String {
+    if text.is_ascii() || text.chars().any(|c| u32::from(c) > 0xFF) {
+        return text.to_owned();
+    }
+    let bytes: Vec<u8> = text.chars().map(|c| u32::from(c) as u8).collect();
+    String::from_utf8(bytes).unwrap_or_else(|_| text.to_owned())
+}
+
 fn parse_cookie_header(raw: &str) -> HashMap<String, String> {
     let mut out = HashMap::new();
     for part in raw.split(';') {
@@ -3050,44 +3112,6 @@ fn parse_cookie_header(raw: &str) -> HashMap<String, String> {
         }
     }
     out
-}
-
-fn parse_url_encoded(raw: &str) -> HashMap<String, String> {
-    let mut out = HashMap::new();
-    for part in raw.split('&') {
-        if part.is_empty() {
-            continue;
-        }
-        let (k, v) = part.split_once('=').unwrap_or((part, ""));
-        out.insert(percent_decode(k), percent_decode(v));
-    }
-    out
-}
-
-fn percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'+' {
-            out.push(b' ');
-            i += 1;
-        } else if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(hex) = std::str::from_utf8(&bytes[i + 1..i + 3]) {
-                if let Ok(byte) = u8::from_str_radix(hex, 16) {
-                    out.push(byte);
-                    i += 3;
-                    continue;
-                }
-            }
-            out.push(bytes[i]);
-            i += 1;
-        } else {
-            out.push(bytes[i]);
-            i += 1;
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn parse_headers_json(val: &Value) -> Vec<(String, String)> {
@@ -3130,6 +3154,45 @@ fn parse_headers_json(val: &Value) -> Vec<(String, String)> {
         }
     }
     out
+}
+
+/// The status a backend answered, as the PHP host reads it (`clampContainerStatus` in
+/// container-backend.mjs): a whole number from 200 to 599 is sent as it is, and anything else it
+/// answered (`999`, `150`, `null`, text) is a 500. An answer that names no status is a 200. A
+/// status that was no HTTP status used to be sent as 200, so the page read a failure as success.
+fn backend_status(answer: &Value) -> u16 {
+    match answer.get("status") {
+        None => 200,
+        Some(status) => status
+            .as_u64()
+            .filter(|n| (200..=599).contains(n))
+            .and_then(|n| u16::try_from(n).ok())
+            .unwrap_or(500),
+    }
+}
+
+/// `SERVER_NAME` as the PHP host gives it (`parseServerHostName`), and Apache before it: the
+/// host a request named, without its port (an IPv6 address keeps its brackets). It was the
+/// whole `Host`, so a script that wrote `SERVER_NAME . ':' . SERVER_PORT` wrote two ports.
+fn server_host_name(host: &str) -> String {
+    let host = host.trim();
+    let name = match host.strip_prefix('[') {
+        Some(rest) => rest.find(']').map(|end| &host[..end + 2]).unwrap_or(""),
+        None => host.split(':').next().unwrap_or(""),
+    };
+    if name.is_empty() { "localhost".to_owned() } else { name.to_owned() }
+}
+
+/// Whether a request header reaches a backend, as on the PHP host: a name of lower-case
+/// letters, digits and `-` alone (PHP spells `-` and `_` alike in `$_SERVER`, so a client's
+/// `X_Forwarded_For` stood in for the `X-Forwarded-For` a proxy wrote, whichever came last), and
+/// none of the `x-formlogic-*` names FormLogic's runner keeps for what it has verified of the
+/// person, which no client may say for itself.
+fn backend_request_header(lower_name: &str) -> bool {
+    !lower_name.is_empty()
+        && lower_name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        && lower_name != "x-formlogic"
+        && !lower_name.starts_with("x-formlogic-")
 }
 
 fn clamp_response_body(body: Vec<u8>) -> Result<Vec<u8>, ContainerHttpResponse> {
@@ -3289,36 +3352,37 @@ fn execute_php_request(
         .get("content-type")
         .cloned()
         .unwrap_or_default();
-    let body_text = String::from_utf8_lossy(&req.body).into_owned();
-    let cookies = lower_headers
+    // Every string a PHP script is handed goes as its bytes (`php_bytes`): the body as the bytes
+    // it is, and text as its UTF-8. A form body is read by the engine itself, as PHP reads one
+    // (`a[]=1&a[]=2` an array); the map of it the host also sent (with `a[]` as a key, and the
+    // values as text the engine cut down to a byte a character) took the place of the engine's.
+    let body_text = php_bytes(&req.body);
+    let cookies: HashMap<String, String> = lower_headers
         .get("cookie")
         .map(|s| parse_cookie_header(s))
-        .unwrap_or_default();
-    let post = if content_type
-        .to_ascii_lowercase()
-        .contains("application/x-www-form-urlencoded")
-    {
-        Some(parse_url_encoded(&body_text))
-    } else {
-        None
-    };
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(k, v)| (php_text(&k), php_text(&v)))
+        .collect();
 
     let mut server = serde_json::Map::new();
     server.insert("REQUEST_METHOD".into(), json!(req.method.to_ascii_uppercase()));
-    server.insert("REQUEST_URI".into(), json!(original_uri));
-    server.insert("QUERY_STRING".into(), json!(target_query));
-    server.insert("SCRIPT_NAME".into(), json!(format!("/{script_key}")));
-    server.insert("PHP_SELF".into(), json!(format!("/{script_key}")));
-    server.insert("SCRIPT_FILENAME".into(), json!(format!("/{script_key}")));
+    server.insert("REQUEST_URI".into(), json!(php_text(&original_uri)));
+    server.insert("QUERY_STRING".into(), json!(php_text(&target_query)));
+    server.insert("SCRIPT_NAME".into(), json!(php_text(&format!("/{script_key}"))));
+    server.insert("PHP_SELF".into(), json!(php_text(&format!("/{script_key}"))));
+    server.insert("SCRIPT_FILENAME".into(), json!(php_text(&format!("/{script_key}"))));
     server.insert("DOCUMENT_ROOT".into(), json!("/"));
     server.insert("SERVER_PROTOCOL".into(), json!("HTTP/1.1"));
-    server.insert("SERVER_NAME".into(), json!(req.host));
-    server.insert("HTTP_HOST".into(), json!(req.host));
+    server.insert("SERVER_NAME".into(), json!(php_text(&server_host_name(&req.host))));
+    server.insert("HTTP_HOST".into(), json!(php_text(&req.host)));
     server.insert("SERVER_PORT".into(), json!(if req.https { "443" } else { "80" }));
-    server.insert("HTTPS".into(), json!(if req.https { "on" } else { "off" }));
+    // Empty over plain HTTP, as on the PHP host and Apache: "off" is not empty, and a script
+    // asking `!empty($_SERVER['HTTPS'])` took every plain request for HTTPS.
+    server.insert("HTTPS".into(), json!(if req.https { "on" } else { "" }));
     server.insert("REQUEST_SCHEME".into(), json!(if req.https { "https" } else { "http" }));
-    server.insert("REMOTE_ADDR".into(), json!(req.client_ip));
-    server.insert("CONTENT_TYPE".into(), json!(content_type));
+    server.insert("REMOTE_ADDR".into(), json!(php_text(&req.client_ip)));
+    server.insert("CONTENT_TYPE".into(), json!(php_text(&content_type)));
     server.insert("CONTENT_LENGTH".into(), json!(req.body.len().to_string()));
     for (k, v) in &lower_headers {
         if k == "host" {
@@ -3326,20 +3390,17 @@ fn execute_php_request(
             continue;
         }
         let php_key = format!("HTTP_{}", k.to_ascii_uppercase().replace('-', "_"));
-        server.insert(php_key, json!(v));
+        server.insert(php_key, json!(php_text(v)));
     }
 
-    let mut sapi_obj = json!({
+    let sapi_obj = json!({
         "sapi": "zipp-server",
         "server": server,
-        "query": target_query,
+        "query": php_text(&target_query),
         "cookies": cookies,
-        "contentType": content_type,
+        "contentType": php_text(&content_type),
         "body": body_text,
     });
-    if let Some(p) = post {
-        sapi_obj["post"] = json!(p);
-    }
 
     let req_base_dir = match script_key.rsplit_once('/') {
         Some((parent, _)) if !parent.is_empty() => format!("/{parent}"),
@@ -3428,16 +3489,14 @@ fn execute_php_request(
     }
 
     let meta: Value = serde_json::from_str(&meta_json).unwrap_or_else(|_| json!({ "status": 200 }));
-    let status = meta
-        .get("status")
-        .and_then(|v| v.as_u64())
-        .and_then(|n| u16::try_from(n).ok())
-        .filter(|c| (200..600).contains(c))
-        .unwrap_or(200);
-    let mut headers = meta
+    let status = backend_status(&meta);
+    let mut headers: Vec<(String, String)> = meta
         .get("headers")
         .map(parse_headers_json)
-        .unwrap_or_default();
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(k, v)| (php_string_text(&k), php_string_text(&v)))
+        .collect();
     if !headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("content-type")) {
         headers.push(("Content-Type".into(), "text/html; charset=UTF-8".into()));
     }
@@ -3652,12 +3711,7 @@ fn execute_script_backend_request(
     };
 
     let parsed: Value = serde_json::from_str(&raw_resp).unwrap_or_else(|_| json!({ "status": 500, "body": raw_resp }));
-    let status = parsed
-        .get("status")
-        .and_then(|v| v.as_u64())
-        .and_then(|n| u16::try_from(n).ok())
-        .filter(|c| (200..600).contains(c))
-        .unwrap_or(200);
+    let status = backend_status(&parsed);
     let headers = parsed
         .get("headers")
         .map(parse_headers_json)
@@ -3885,12 +3939,7 @@ impl WarmRustWorker {
             }
         };
         let parsed: Value = serde_json::from_str(&raw).unwrap_or_else(|_| json!({ "status": 500, "body": raw }));
-        let status = parsed
-            .get("status")
-            .and_then(|v| v.as_u64())
-            .and_then(|n| u16::try_from(n).ok())
-            .filter(|c| (200..600).contains(c))
-            .unwrap_or(200);
+        let status = backend_status(&parsed);
         let headers = parsed
             .get("headers")
             .map(parse_headers_json)
@@ -3924,6 +3973,21 @@ pub struct CachedStaticAsset {
     pub bytes: Bytes,
     pub etag: String,
     pub immutable: bool,
+}
+
+/// One file of the bundle's VFS as the owner of a `Bytes`: a static asset is served from the
+/// bytes the backend reads too. The VFS is never changed once loaded, and each such `Bytes`
+/// keeps it alive. Every public file used to be copied into a buffer of its own beside the VFS,
+/// so a container app held its frontend twice.
+struct VfsFile {
+    vfs: Arc<HashMap<String, Vec<u8>>>,
+    key: String,
+}
+
+impl AsRef<[u8]> for VfsFile {
+    fn as_ref(&self) -> &[u8] {
+        self.vfs.get(&self.key).map(Vec::as_slice).unwrap_or(&[])
+    }
 }
 
 fn compute_etag(bytes: &[u8]) -> String {
@@ -4379,7 +4443,7 @@ impl ContainerBackendRuntime {
                     path.clone(),
                     CachedStaticAsset {
                         mime: mime_type_for(path),
-                        bytes: Bytes::from(bytes.clone()),
+                        bytes: Bytes::from_owner(VfsFile { vfs: Arc::clone(&vfs), key: path.clone() }),
                         etag: compute_etag(bytes),
                         immutable: is_fingerprinted_asset_path(path),
                     },
@@ -4675,7 +4739,8 @@ impl ContainerBackendRuntime {
     }
 
     /// Execute one HTTP request through the multi-user ZIPP `safe-sandbox` worker pool.
-    pub async fn dispatch(&self, req: ContainerHttpRequest) -> ContainerHttpResponse {
+    pub async fn dispatch(&self, mut req: ContainerHttpRequest) -> ContainerHttpResponse {
+        req.headers.retain(|(name, _)| backend_request_header(&name.to_ascii_lowercase()));
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         let job = WorkerJob {
             req,
@@ -5935,5 +6000,335 @@ def handle_request(req):
 
         // Not read in a section that is not evaluated, and so not held to the limit.
         assert_eq!(get(&format!("<If \"true\">\n{}</If>\n", files_match(&"a".repeat(2000))), "/index.php"), 0);
+    }
+
+    /// A container app of `runtime` whose entry is `source`, loaded with one worker.
+    fn one_file_backend(label: &str, runtime: &str, entry: &str, source: &str) -> (PathBuf, Arc<ContainerBackendRuntime>) {
+        let root = crate::test_dirs::temp_path(label, "");
+        let bundle = root.join("bundle");
+        let data = root.join("data");
+        fs::create_dir_all(&data).unwrap();
+        write_file(
+            &bundle,
+            "manifest.json",
+            &format!(
+                r#"{{"id":"com.test.{label}","name":"Probe","version":"1.0.0","engine":2,"main":"index.html",
+                   "backend":{{"runtime":"{runtime}","entry":"{entry}","mode":"api","routes":["/api/"]}}}}"#
+            ),
+        );
+        write_file(&bundle, "index.html", "<!doctype html><p>probe</p>");
+        write_file(&bundle, entry, source);
+        let manifest = crate::bundle::load_manifest(&bundle).unwrap();
+        let rt = ContainerBackendRuntime::load(&manifest, &bundle, &data, Some(1)).unwrap().unwrap();
+        (root, rt)
+    }
+
+    fn get_request(path: &str, host: &str, https: bool, headers: &[(&str, &str)]) -> ContainerHttpRequest {
+        ContainerHttpRequest {
+            method: "GET".into(),
+            path: path.into(),
+            query: String::new(),
+            headers: headers.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            body: Vec::new(),
+            client_ip: "127.0.0.1".into(),
+            host: host.into(),
+            https,
+            htaccess_evaluated: true,
+        }
+    }
+
+    /// What a PHP script reads of where it was asked, as the PHP host (`container-backend.mjs`,
+    /// and Apache before it) gives it: `SERVER_NAME` is the host without its port, `HTTPS` is
+    /// empty over plain HTTP, and a request header whose name is not a token of letters, digits
+    /// and `-` (`X_Forwarded_For`) is not handed over, since PHP spells `-` and `_` alike and it
+    /// would stand in for the header of that name a proxy wrote.
+    #[tokio::test]
+    async fn a_php_script_reads_its_host_scheme_and_headers_as_the_php_host_gives_them() {
+        let (root, rt) = one_file_backend(
+            "php-server-vars",
+            "php",
+            "backend/index.php",
+            r#"<?php
+header('Content-Type: application/json');
+echo json_encode([
+  'name' => $_SERVER['SERVER_NAME'] ?? null,
+  'host' => $_SERVER['HTTP_HOST'] ?? null,
+  'port' => $_SERVER['SERVER_PORT'] ?? null,
+  'https' => $_SERVER['HTTPS'] ?? null,
+  'secure' => !empty($_SERVER['HTTPS']),
+  'forwarded' => $_SERVER['HTTP_X_FORWARDED_FOR'] ?? null,
+  'agent' => $_SERVER['HTTP_USER_AGENT'] ?? null,
+  'person' => $_SERVER['HTTP_X_FORMLOGIC_USER_ID'] ?? null,
+]);
+"#,
+        );
+        let headers = [
+            ("x-forwarded-for", "198.51.100.7"),
+            ("X_Forwarded_For", "6.6.6.6"),
+            ("user-agent", "probe/1"),
+            ("x-formlogic-user-id", "1"),
+        ];
+        for (host, https, name, port) in [
+            ("127.0.0.1:3000", false, "127.0.0.1", "80"),
+            ("app.example:8443", true, "app.example", "443"),
+            ("[::1]:3000", false, "[::1]", "80"),
+            ("localhost", false, "localhost", "80"),
+        ] {
+            // Several times over: which of two names spelt alike won used to be the order a
+            // hash map happened to list them in.
+            for _ in 0..8 {
+                let resp = rt.dispatch(get_request("/api/probe", host, https, &headers)).await;
+                assert_eq!(resp.status, 200, "{}", String::from_utf8_lossy(&resp.body));
+                let seen: Value = serde_json::from_slice(&resp.body).unwrap();
+                assert_eq!(
+                    seen,
+                    json!({
+                        "name": name, "host": host, "port": port,
+                        "https": if https { "on" } else { "" }, "secure": https,
+                        "forwarded": "198.51.100.7", "agent": "probe/1", "person": null,
+                    }),
+                    "{host}"
+                );
+            }
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A PHP script reads what was sent as it was sent: ZIPP's PHP takes each character it is
+    /// handed as one byte, so text goes to it as its UTF-8 bytes and a body as its bytes, as the
+    /// browser's container hands them (`latin1Packed`). Handed as it was, every character past
+    /// ASCII lost its high bits: a JSON body with "José" did not decode, U+672C became a comma,
+    /// a binary upload was mangled, and a cookie or a path with an accent was not what was sent.
+    /// A form body is read by the engine, as PHP reads it (`tags[]` an array): the map of it the
+    /// host also sent added a key `tags[]` and put its own broken text in place of the engine's.
+    #[tokio::test]
+    async fn a_php_script_reads_text_and_bytes_as_they_were_sent() {
+        let (root, rt) = one_file_backend(
+            "php-bytes",
+            "php",
+            "backend/index.php",
+            r#"<?php
+header('Content-Type: application/json');
+$raw = file_get_contents('php://input');
+$type = $_SERVER['CONTENT_TYPE'] ?? '';
+echo json_encode([
+  'raw' => bin2hex($raw),
+  'json' => str_starts_with($type, 'application/json') ? json_decode($raw, true) : null,
+  'post' => $_POST,
+  'get' => $_GET,
+  'cookie' => $_COOKIE['c'] ?? null,
+  'uri' => $_SERVER['REQUEST_URI'],
+  'named' => $_SERVER['HTTP_X_NAME'] ?? null,
+]);
+"#,
+        );
+        let ask = |path: &str, query: &str, headers: &[(&str, &str)], body: &[u8]| {
+            let mut req = get_request(path, "localhost", false, headers);
+            req.method = "POST".into();
+            req.query = query.into();
+            req.body = body.to_vec();
+            req
+        };
+        let text = r#"{"name":"José — 日本"}"#;
+        let resp = rt
+            .dispatch(ask("/api/café", "q=Jos%C3%A9", &[("content-type", "application/json"), ("cookie", "c=José"), ("x-name", "Zoë")], text.as_bytes()))
+            .await;
+        assert_eq!(resp.status, 200, "{}", String::from_utf8_lossy(&resp.body));
+        let seen: Value = serde_json::from_slice(&resp.body).unwrap();
+        let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        assert_eq!(seen["raw"], hex(text.as_bytes()));
+        assert_eq!(seen["json"], json!({"name": "José — 日本"}));
+        assert_eq!(seen["get"], json!({"q": "José"}));
+        assert_eq!(seen["cookie"], "José");
+        assert_eq!(seen["uri"], "/api/café?q=Jos%C3%A9");
+        assert_eq!(seen["named"], "Zoë");
+
+        // Bytes that are no text arrive as they are.
+        let binary: Vec<u8> = (0..=255u8).collect();
+        let resp = rt.dispatch(ask("/api/upload", "", &[("content-type", "application/octet-stream")], &binary)).await;
+        let seen: Value = serde_json::from_slice(&resp.body).unwrap();
+        assert_eq!(seen["raw"], hex(&binary));
+
+        // A form, as PHP reads one.
+        let form = b"name=Jos%C3%A9&tags%5B%5D=a&tags%5B%5D=b&plain=x+y";
+        let resp = rt.dispatch(ask("/api/form", "", &[("content-type", "application/x-www-form-urlencoded")], form)).await;
+        let seen: Value = serde_json::from_slice(&resp.body).unwrap();
+        assert_eq!(seen["post"], json!({"name": "José", "tags": ["a", "b"], "plain": "x y"}));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A PHP script's headers are sent as it wrote them. The engine hands them back a byte a
+    /// character (`php_bytes`), and each was sent as the UTF-8 of those characters: a download
+    /// named `café.txt` was saved as `cafÃ©.txt`, a redirect to `/café` went to `/cafÃ©`.
+    #[tokio::test]
+    async fn a_php_scripts_headers_are_sent_as_it_wrote_them() {
+        let (root, rt) = one_file_backend(
+            "php-header-bytes",
+            "php",
+            "backend/index.php",
+            "<?php\nheader('X-Name: Zo\u{eb}');\nheader('Content-Disposition: attachment; filename=\"caf\u{e9}.txt\"');\nheader('Location: /caf\u{e9}');\necho 'ok';\n",
+        );
+        let resp = rt.dispatch(get_request("/api/h", "localhost", false, &[])).await;
+        let header = |name: &str| resp.headers.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.clone());
+        assert_eq!(header("x-name").as_deref(), Some("Zo\u{eb}"));
+        assert_eq!(header("content-disposition").as_deref(), Some("attachment; filename=\"caf\u{e9}.txt\""));
+        assert_eq!(header("location").as_deref(), Some("/caf\u{e9}"));
+        assert_eq!((resp.status, resp.body.as_slice()), (302, b"ok".as_slice()));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A container app whose one database is seeded by SQL and by JSON: its bundle and data
+    /// directories, and the database's path.
+    fn seeded_app(label: &str, seed_json: &str) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
+        let root = crate::test_dirs::temp_path(label, "");
+        let bundle = root.join("bundle");
+        let data = root.join("data");
+        fs::create_dir_all(&data).unwrap();
+        write_file(
+            &bundle,
+            "manifest.json",
+            r#"{"id":"com.test.seeded","name":"Seeded","version":"1.0.0","engine":2,"main":"index.html",
+               "backend":{"runtime":"javascript","entry":"backend/server.js","mode":"api","routes":["/api/"]},
+               "databases":[{"name":"app","engine":"sqlite","file":"app.db","seedSql":"seed.sql","seedJson":"seed.json"}]}"#,
+        );
+        write_file(&bundle, "index.html", "<!doctype html><p>seeded</p>");
+        write_file(&bundle, "backend/server.js", "function handleRequest(req) { return { status: 200, json: {} }; }");
+        write_file(&bundle, "seed.sql", "CREATE TABLE IF NOT EXISTS items (name TEXT NOT NULL); INSERT INTO items (name) VALUES ('from-seed');");
+        write_file(&bundle, "seed.json", seed_json);
+        let database = data.join("databases").join("app.db");
+        (root, bundle, data, database)
+    }
+
+    fn column(database: &Path, sql: &str) -> Vec<String> {
+        let conn = Connection::open(database).unwrap();
+        let mut stmt = conn.prepare(sql).unwrap();
+        let values = stmt.query_map([], |row| row.get::<_, String>(0)).unwrap().collect::<Result<Vec<_>, _>>().unwrap();
+        values
+    }
+
+    /// A database is seeded once: one that has the app's tables and has lost its mark (restored
+    /// from a backup without it, or the process stopped between seeding and writing it) is not
+    /// seeded again, as on the PHP host. Its seed SQL ran over the records again (twice the seed
+    /// rows, or a failed start where it inserts a key), and its seed JSON too.
+    #[test]
+    fn a_database_that_lost_its_seed_mark_is_not_seeded_again() {
+        let (root, bundle, data, database) = seeded_app("seed-mark", r#"{"tags":[{"label":"seeded"}]}"#);
+        let manifest = crate::bundle::load_manifest(&bundle).unwrap();
+        drop(ContainerBackendRuntime::load(&manifest, &bundle, &data, Some(1)).unwrap().unwrap());
+        assert_eq!(column(&database, "SELECT name FROM items ORDER BY rowid"), ["from-seed"]);
+        Connection::open(&database).unwrap().execute("INSERT INTO items (name) VALUES ('mine')", []).unwrap();
+        let marker = PathBuf::from(format!("{}.softn_seeded", database.display()));
+        fs::remove_file(&marker).unwrap();
+        drop(ContainerBackendRuntime::load(&manifest, &bundle, &data, Some(1)).unwrap().unwrap());
+        assert_eq!(column(&database, "SELECT name FROM items ORDER BY rowid"), ["from-seed", "mine"]);
+        assert_eq!(column(&database, "SELECT label FROM tags ORDER BY rowid"), ["seeded"]);
+        assert!(marker.exists(), "the mark is written again");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A seed that fails on a new database leaves no database behind, for seedJson as for
+    /// seedSql: the next start begins from nothing and seeds it whole. One a failed seedJson
+    /// left with the seed SQL's rows was seeded by that SQL again at the next start.
+    #[test]
+    fn a_seed_that_fails_on_a_new_database_leaves_no_database_behind() {
+        let (root, bundle, data, database) = seeded_app("seed-failed", r#"{"tags":[{"label":"seeded"}]"#);
+        let manifest = crate::bundle::load_manifest(&bundle).unwrap();
+        let failed = ContainerBackendRuntime::load(&manifest, &bundle, &data, Some(1)).err().unwrap_or_default();
+        assert!(failed.contains("seedJson"), "{failed}");
+        assert!(!database.exists(), "the database the failed seed made is gone");
+        write_file(&bundle, "seed.json", r#"{"tags":[{"label":"seeded"}]}"#);
+        drop(ContainerBackendRuntime::load(&manifest, &bundle, &data, Some(1)).unwrap().unwrap());
+        assert_eq!(column(&database, "SELECT name FROM items ORDER BY rowid"), ["from-seed"]);
+        assert_eq!(column(&database, "SELECT label FROM tags ORDER BY rowid"), ["seeded"]);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A file is served with the type the browser's container gives it
+    /// (`packages/@softn/container/src/archive.ts` `MIME_TYPES`): an Ogg sound and a glTF model
+    /// were `application/octet-stream` here, so an `<audio>` of one was the browser's guess.
+    #[test]
+    fn a_file_is_served_with_the_type_the_browsers_container_gives_it() {
+        for (path, mime) in [
+            ("sounds/theme.ogg", "audio/ogg"),
+            ("models/ship.glb", "model/gltf-binary"),
+            ("models/ship.gltf", "model/gltf+json"),
+            ("clip.mp4", "video/mp4"),
+            ("app.js", "text/javascript; charset=utf-8"),
+            ("notes.unknown", "application/octet-stream"),
+        ] {
+            assert_eq!(mime_type_for(path), mime, "{path}");
+        }
+    }
+
+    /// A container app's frontend is held in memory once: the files it serves are the bundle's
+    /// own bytes, which its backend reads too. Each public file was copied into a buffer of its
+    /// own beside them, so an app held its frontend twice (a bundle may hold 128 MiB).
+    ///
+    /// The figure is the process's, so it is measured in a process of its own, this test binary
+    /// started again to run this test alone.
+    #[test]
+    fn a_container_apps_frontend_is_held_once() {
+        const ALONE: &str = "SOFTN_TEST_ALLOCATION_ALONE";
+        if std::env::var_os(ALONE).is_none() {
+            let run = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "container_backend::tests::a_container_apps_frontend_is_held_once", "--test-threads=1", "--nocapture"])
+                .env(ALONE, "1")
+                .output()
+                .unwrap();
+            let said = format!("{}{}", String::from_utf8_lossy(&run.stdout), String::from_utf8_lossy(&run.stderr));
+            assert!(run.status.success() && said.contains("1 passed"), "the measurement, run alone:\n{said}");
+            return;
+        }
+        const FILE: usize = 4 << 20;
+        const FILES: usize = 6;
+        let root = crate::test_dirs::temp_path("container-held-once", "");
+        let bundle = root.join("bundle");
+        let data = root.join("data");
+        fs::create_dir_all(&data).unwrap();
+        write_file(
+            &bundle,
+            "manifest.json",
+            r#"{"id":"com.test.held-once","name":"Held once","version":"1.0.0","engine":2,"main":"public/index.html",
+               "frontendRoot":"public","backend":{"runtime":"javascript","entry":"backend/server.js","mode":"api","routes":["/api/"]}}"#,
+        );
+        write_file(&bundle, "public/index.html", "<!doctype html><p>held once</p>");
+        write_file(&bundle, "backend/server.js", "function handleRequest(req) { return { status: 200, json: {} }; }");
+        for i in 0..FILES {
+            fs::write(bundle.join(format!("public/media-{i}.bin")), vec![i as u8; FILE]).unwrap();
+        }
+        let manifest = crate::bundle::load_manifest(&bundle).unwrap();
+        let (rt, grew) = crate::alloc::peak::growth(|| ContainerBackendRuntime::load(&manifest, &bundle, &data, Some(1)).unwrap().unwrap());
+        let frontend = FILE * FILES;
+        println!("a frontend of {} MiB: {} MiB held at the peak of loading", frontend >> 20, grew >> 20);
+        assert!(grew < frontend + frontend / 4, "a frontend of {} MiB took {} MiB to load", frontend >> 20, grew >> 20);
+        // And each file is served as it is.
+        let (_, served) = rt.resolve_static_asset("/media-3.bin").unwrap().unwrap();
+        assert!(served.len() == FILE && served.iter().all(|b| *b == 3));
+        drop(rt);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A script backend's status is the one it answered when that is an HTTP status, and a
+    /// 500 when it is not one, as on the PHP host (`clampContainerStatus`). This host answered
+    /// 200 for a status it could not send, so a handler's `{ status: 999 }` (or a Python
+    /// handler's 1200) read to its page as success.
+    #[tokio::test]
+    async fn a_script_backend_status_that_is_no_http_status_is_a_500() {
+        let (root, rt) = one_file_backend(
+            "js-bad-status",
+            "javascript",
+            "backend/server.js",
+            r#"
+function handleRequest(req) {
+  var asked = Number(req.path.split("/").pop());
+  return { status: asked, json: { asked: asked } };
+}
+"#,
+        );
+        for (asked, expected) in [(201, 201), (404, 404), (599, 599), (999, 500), (199, 500), (100, 500), (600, 500), (0, 500)] {
+            let resp = rt.dispatch(get_request(&format!("/api/status/{asked}"), "localhost", false, &[])).await;
+            assert_eq!(resp.status, expected, "a handler that answered {asked}");
+        }
+        let _ = fs::remove_dir_all(&root);
     }
 }

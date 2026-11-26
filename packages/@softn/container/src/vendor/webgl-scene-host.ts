@@ -75,7 +75,11 @@ export class SplitRealmSceneHost {
     if (this.disposed || this.unavailable) return;
     let q = this.pendingQueues.get(canvasId);
     if (!q) {
-      if (!this.scenes.has(canvasId) && this.scenes.size + this.pendingQueues.size >= MAX_SCENES) return;
+      // Each canvas counted once: one with a scene and a frame waiting was counted twice, and
+      // while four scenes drew, a fifth's first frame (the one that makes it) was dropped.
+      let waitingNew = 0;
+      for (const id of this.pendingQueues.keys()) if (!this.scenes.has(id)) waitingNew++;
+      if (!this.scenes.has(canvasId) && this.scenes.size + waitingNew >= MAX_SCENES) return;
       q = { canvas, ops: [] };
       this.pendingQueues.set(canvasId, q);
     }

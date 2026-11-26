@@ -75,6 +75,16 @@ beforeEach(() => {
         }
         return refused;
       }
+      case 'remove_records': {
+        // For good, with no tombstone (db.rs remove_records); another collection's id is left.
+        const refused: string[] = [];
+        for (const id of args.ids as string[]) {
+          const held = rows.get(id);
+          if (held && held.collection !== args.collection) refused.push(id);
+          else rows.delete(id);
+        }
+        return refused;
+      }
       default:
         throw new Error(`Unexpected command: ${cmd}`);
     }
@@ -305,8 +315,9 @@ describe('hardDeleteMany on the desktop', () => {
     await settle();
     const commands = invoke.mock.calls.map(([cmd]) => cmd);
     expect(commands.filter((cmd) => cmd === 'delete_record')).toHaveLength(0);
-    expect(commands.filter((cmd) => cmd === 'upsert_records')).toHaveLength(1);
-    for (const id of ids) expect(rows.get(id)?.deleted).toBe(true);
+    // Removed for good (round 4): a tombstone kept each record's data.
+    expect(commands.filter((cmd) => cmd === 'remove_records')).toHaveLength(1);
+    for (const id of ids) expect(rows.has(id)).toBe(false);
     expect(rows.get('n15')?.deleted).toBe(false);
     expect(xdb.getAll('notes').map((r) => r.id)).toEqual(['n15', 'n16', 'n17', 'n18', 'n19']);
     expect(xdb.getAllRaw('notes').map((r) => r.id)).toEqual(['n15', 'n16', 'n17', 'n18', 'n19']);
@@ -326,6 +337,7 @@ describe('hardDeleteMany on the desktop', () => {
     try {
       refuse.add('upsert_records');
       refuse.add('delete_record');
+      refuse.add('remove_records');
       expect(xdb.hardDeleteMany('notes', ['n0', 'n1'])).toBe(2);
       await settle();
       expect(xdb.getStorageStatus().issues.some((issue) => issue.kind === 'write-failed' && issue.collection === 'notes')).toBe(true);

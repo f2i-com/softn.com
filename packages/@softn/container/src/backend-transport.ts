@@ -152,8 +152,10 @@ export class VirtualCookieJar {
       } else if (attrName === 'samesite') {
         sameSite = attrVal;
       } else if (attrName === 'max-age') {
-        const secs = Number(attrVal);
-        if (Number.isFinite(secs)) {
+        // A whole number of seconds, or the attribute is ignored (RFC 6265 §5.2.2): `Number('')`
+        // is 0, and an empty Max-Age removed the cookie.
+        if (/^-?[0-9]+$/.test(attrVal)) {
+          const secs = Number(attrVal);
           expiresAt = secs <= 0 ? 0 : Date.now() + secs * 1000;
         }
       } else if (attrName === 'expires' && expiresAt === undefined) {
@@ -259,7 +261,9 @@ export function parseCookieHeader(header: string | undefined): Record<string, st
     if (eq <= 0) continue;
     const k = part.slice(0, eq).trim();
     const v = part.slice(eq + 1).trim();
-    if (!k || BLOCKED_COOKIE_KEYS.has(k)) continue;
+    // The first of a repeated name is kept, as PHP keeps it: the jar sends the cookie of the
+    // longest path first (RFC 6265 §5.4), and the next would put the site's in its place.
+    if (!k || BLOCKED_COOKIE_KEYS.has(k) || k in out) continue;
     try {
       out[k] = decodeURIComponent(v.replace(/\+/g, ' '));
     } catch {
@@ -382,34 +386,71 @@ export function matchBackendTarget(
   return null;
 }
 
+/** The reason phrases of the HTTP statuses a backend may answer (200 to 599), as a server sends them. */
 const STATUS_TEXTS: Readonly<Record<number, string>> = {
   200: 'OK',
   201: 'Created',
   202: 'Accepted',
+  203: 'Non-Authoritative Information',
   204: 'No Content',
+  205: 'Reset Content',
+  206: 'Partial Content',
+  207: 'Multi-Status',
+  208: 'Already Reported',
+  226: 'IM Used',
+  300: 'Multiple Choices',
   301: 'Moved Permanently',
   302: 'Found',
   303: 'See Other',
   304: 'Not Modified',
+  305: 'Use Proxy',
   307: 'Temporary Redirect',
   308: 'Permanent Redirect',
   400: 'Bad Request',
   401: 'Unauthorized',
+  402: 'Payment Required',
   403: 'Forbidden',
   404: 'Not Found',
   405: 'Method Not Allowed',
+  406: 'Not Acceptable',
+  407: 'Proxy Authentication Required',
+  408: 'Request Timeout',
   409: 'Conflict',
   410: 'Gone',
+  411: 'Length Required',
+  412: 'Precondition Failed',
   413: 'Payload Too Large',
+  414: 'URI Too Long',
+  415: 'Unsupported Media Type',
+  416: 'Range Not Satisfiable',
+  417: 'Expectation Failed',
+  418: "I'm a teapot",
+  421: 'Misdirected Request',
   422: 'Unprocessable Entity',
+  423: 'Locked',
+  424: 'Failed Dependency',
+  425: 'Too Early',
+  426: 'Upgrade Required',
+  428: 'Precondition Required',
   429: 'Too Many Requests',
+  431: 'Request Header Fields Too Large',
+  451: 'Unavailable For Legal Reasons',
   500: 'Internal Server Error',
+  501: 'Not Implemented',
   502: 'Bad Gateway',
   503: 'Service Unavailable',
+  504: 'Gateway Timeout',
+  505: 'HTTP Version Not Supported',
+  506: 'Variant Also Negotiates',
+  507: 'Insufficient Storage',
+  508: 'Loop Detected',
+  510: 'Not Extended',
+  511: 'Network Authentication Required',
 };
 
+/** A status's reason phrase, or `''` for a status that has none (as over HTTP/2); it was `'OK'`, so a 504 read "504 OK". */
 export function statusTextFor(status: number): string {
-  return STATUS_TEXTS[status] ?? 'OK';
+  return STATUS_TEXTS[status] ?? '';
 }
 
 export const FORBIDDEN_FETCH_REQUEST_HEADERS = new Set([
@@ -566,6 +607,13 @@ export class RemoteBackendTransport implements BackendTransport {
         redirect: 'manual',
         ...(controller ? { signal: controller.signal } : {}),
       });
+      // `manual` keeps the host's headers at the base URL, and the browser shows the page a
+      // redirect as nothing (status 0, no Location), which the page read as an empty 200. It
+      // fails, as a redirect of the container's own requests does (`redirect: 'error'`).
+      if (resp.type === 'opaqueredirect' || resp.status === 0) {
+        void resp.body?.cancel().catch(() => undefined);
+        throw new Error(`The backend answered ${method} ${req.path} with a redirect, which is not followed`);
+      }
       buf = await bytesWithin(resp, MAX_REMOTE_RESPONSE_BYTES);
     } finally {
       if (timer !== null) clearTimeout(timer);

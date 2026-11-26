@@ -512,7 +512,9 @@ function outline(tokens: Token[], functionNames: ReadonlySet<string>): Outline {
         ) {
           chunk.called.add(word);
         }
-        if (isPunct(next, '=') || isPunct(next, ':')) {
+        // A logical assignment gives a name its function as `=` does: `fmt ??= make()` was not
+        // counted, a drawn function calling `fmt` was not followed, and the page went stale.
+        if (isPunct(next, '=') || isPunct(next, ':') || isPunct(next, '??=') || isPunct(next, '||=') || isPunct(next, '&&=')) {
           file(result.assigned, word, chunk);
           if (functionAt(k + 2)) file(result.made, word, chunk);
         }

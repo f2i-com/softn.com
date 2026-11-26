@@ -151,6 +151,8 @@ interface WebGLCtxEntry {
   handleKinds: Map<number, string>;
   /** Cumulative GPU allocation accounting (`resourceKey` -> bytes) bounded by MAX_WEBGL_CUMULATIVE_BYTES. */
   handleBytes: Map<string, number>;
+  /** The keys of `handleBytes` of each object, by its handle id (`<hid>:...`). */
+  handleByteKeys: Map<number, Set<string>>;
   allocatedBytes: number;
   activeTextureUnit: number;
   boundBuffers: Map<number, number>;
@@ -273,13 +275,27 @@ export class WebGLWorkerHost {
   ): Record<string, unknown> | null {
     if (typeof OffscreenCanvas !== 'function') return null;
     if (this.contexts.size >= MAX_WEBGL_CONTEXTS) {
-      // Evict the oldest never-drawn probe context (e.g. feature-detection canvases like `webglAvailable()`).
+      // Evict the oldest context its app lost on purpose (a renderer destroyed with
+      // WEBGL_lose_context's loseContext, which draws nothing again), else the oldest
+      // never-drawn probe context (e.g. feature-detection canvases like `webglAvailable()`).
+      let spare: number | null = null;
       for (const [oldId, oldEntry] of this.contexts) {
-        if (!oldEntry.hasDrawn) {
-          this.contexts.delete(oldId);
-          this.releaseEntry(oldEntry);
+        let lost = false;
+        try {
+          lost = oldEntry.gl.isContextLost();
+        } catch {
+          lost = false;
+        }
+        if (lost) {
+          spare = oldId;
           break;
         }
+        if (spare === null && !oldEntry.hasDrawn) spare = oldId;
+      }
+      const evicted = spare === null ? undefined : this.contexts.get(spare);
+      if (spare !== null && evicted) {
+        this.contexts.delete(spare);
+        this.releaseEntry(evicted);
       }
       if (this.contexts.size >= MAX_WEBGL_CONTEXTS) return null;
     }
@@ -333,6 +349,7 @@ export class WebGLWorkerHost {
       handles: new Map(),
       handleKinds: new Map(),
       handleBytes: new Map(),
+      handleByteKeys: new Map(),
       allocatedBytes: 0,
       activeTextureUnit: 0,
       boundBuffers: new Map(),
@@ -626,13 +643,20 @@ export class WebGLWorkerHost {
             entry.dirty = true;
             entry.hasDrawn = true;
           }
+          // An object the extension made deleted (a vertex array of OES_vertex_array_object, a
+          // timer's query): its handle is let go of. Each one was kept, and once the table was
+          // full no object of any kind was made again.
+          const deletedHid = method.startsWith('delete') && Array.isArray(cmd[3]) && cmd[3][0] === '$h' ? Number(cmd[3][1]) : 0;
+          if (deletedHid >= SERVER_HANDLE_BASE) entry.handles.delete(deletedHid);
         }
       } catch {
         // Invalid WebGL call sets GL error flag / no-ops without crashing the container Worker.
       }
     }
 
-    if (!syncCmd || !Array.isArray(syncCmd) || syncCmd.length === 0) return null;
+    // Asked for nothing: true, said of a context the Worker has, which ran the commands (the
+    // app's side marks a 2D canvas's drawing that came with them as drawn on the Worker's copy).
+    if (!syncCmd || !Array.isArray(syncCmd) || syncCmd.length === 0) return true;
 
     try {
       if (syncCmd[0] === 'ext') {
@@ -773,22 +797,36 @@ export class WebGLWorkerHost {
     if (nextTotal > MAX_WEBGL_CUMULATIVE_BYTES) return false;
     entry.allocatedBytes = Math.max(0, nextTotal);
     if (clamped === 0) entry.handleBytes.delete(key);
-    else entry.handleBytes.set(key, clamped);
+    else {
+      entry.handleBytes.set(key, clamped);
+      // Kept by object too: deleting one was a look through every allocation of every object
+      // (deleting 10,000 buffers took a second).
+      const hid = Number(key.slice(0, key.indexOf(':')));
+      let keys = entry.handleByteKeys.get(hid);
+      if (!keys) {
+        keys = new Set();
+        entry.handleByteKeys.set(hid, keys);
+      }
+      keys.add(key);
+    }
     return true;
   }
 
   private releaseHandleBytes(entry: WebGLCtxEntry, hid: number): void {
-    const prefix = `${hid}:`;
-    for (const [k, sz] of [...entry.handleBytes]) {
-      if (k === String(hid) || k.startsWith(prefix)) {
+    const keys = entry.handleByteKeys.get(hid);
+    entry.handleByteKeys.delete(hid);
+    if (keys) {
+      for (const k of keys) {
+        const sz = entry.handleBytes.get(k);
+        if (sz === undefined) continue;
         entry.allocatedBytes = Math.max(0, entry.allocatedBytes - sz);
         entry.handleBytes.delete(k);
       }
     }
-    for (const [target, bound] of [...entry.boundBuffers]) {
+    for (const [target, bound] of entry.boundBuffers) {
       if (bound === hid) entry.boundBuffers.delete(target);
     }
-    for (const [slot, bound] of [...entry.boundTextures]) {
+    for (const [slot, bound] of entry.boundTextures) {
       if (bound === hid) entry.boundTextures.delete(slot);
     }
     if (entry.boundRenderbuffer === hid) entry.boundRenderbuffer = 0;
@@ -893,6 +931,7 @@ export class WebGLWorkerHost {
     entry.handles.clear();
     entry.handleKinds.clear();
     entry.handleBytes.clear();
+    entry.handleByteKeys.clear();
     entry.boundBuffers.clear();
     entry.boundTextures.clear();
     entry.boundRenderbuffer = 0;

@@ -205,6 +205,14 @@ export const FRAME_CREDENTIALLESS = 'credentialless';
 /** The attributes that are a frame's own, each read by frameAttributeValue. */
 const FRAME_ATTRIBUTES = new Set(['src', 'sandbox', 'allow', 'allowfullscreen', 'referrerpolicy', 'loading', 'width', 'height', 'frameborder', 'scrolling']);
 
+/**
+ * Attributes of the two elements the app does not create, the document's root and its body
+ * (the viewport), that the app may give them: the rule the patcher holds the app's script to
+ * (dom-patcher.ts `ROOT_ATTRIBUTE`), for the page as the archive wrote it too. The first page
+ * had a list of its own, and an app's `<body dir="rtl" lang="ar">` was drawn left to right.
+ */
+export const ROOT_ATTRIBUTE = /^(?:class|lang|dir|role|title|data-[\w.-]+|aria-[\w-]+)$/;
+
 /** The attributes any element has that say nothing but how it looks and what it is called. */
 function isPlainAttribute(lower: string): boolean {
   return (
@@ -450,6 +458,13 @@ const FORBIDDEN_ANIMATION_TARGETS = new Set([
 
 const SRCSET_DESCRIPTOR_RE = /^(?:[1-9]\d*w|(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?x)$/i;
 
+/**
+ * The candidates of a `srcset`, read as HTML reads one: an address is everything up to the
+ * space after it, commas and all, and commas at its end end the candidate. An address with a
+ * comma in it is an image service's (`…/upload/c_scale,w_480/a.jpg 480w`), and was cut there:
+ * the picture was asked for at `…/upload/c_scale`, which is no picture. What the page is given
+ * is put together again from the candidates read here, each checked, so it reads the same.
+ */
 function parseSrcsetCandidates(raw: string): Array<{ url: string; descriptor: string }> {
   const out: Array<{ url: string; descriptor: string }> = [];
   let i = 0;
@@ -458,16 +473,8 @@ function parseSrcsetCandidates(raw: string): Array<{ url: string; descriptor: st
     while (i < n && (raw[i] === ',' || /\s/.test(raw[i]))) i++;
     if (i >= n) break;
     const urlStart = i;
-    while (i < n && !/\s/.test(raw[i])) {
-      if (raw[i] === ',' && !/^data:/i.test(raw.slice(urlStart, i))) break;
-      i++;
-    }
+    while (i < n && !/\s/.test(raw[i])) i++;
     let url = raw.slice(urlStart, i);
-    if (i < n && raw[i] === ',') {
-      if (url) out.push({ url, descriptor: '' });
-      i++;
-      continue;
-    }
     if (url.endsWith(',')) {
       url = url.replace(/,+$/, '');
       if (url) out.push({ url, descriptor: '' });
@@ -630,6 +637,9 @@ export function hostLabel(value: unknown): string {
 /** The most characters of a name a file is saved under. */
 export const MAX_FILE_NAME_LENGTH = 120;
 
+/** The longest end of a name, from its last `.`, kept when the name is shortened (`.xlsx`, `.gz`). */
+const MAX_FILE_EXTENSION_LENGTH = 16;
+
 /**
  * The name a file an app made is saved under: the app's word for it, as a file's name and
  * nothing else. No folder (a name is not a path), nothing a file system refuses, no control
@@ -640,16 +650,20 @@ export const MAX_FILE_NAME_LENGTH = 120;
  */
 export function hostFileName(value: unknown): string {
   const text = typeof value === 'string' ? value : '';
-  const clean = text
+  const whole = text
     .replace(UNSEEN, '')
     // What a file system refuses, and the quotation marks a bar puts a name between.
     .replace(/[<>:"/\\|?*\u201c-\u201f\u00ab\u00bb]+/g, '_')
     .replace(/\s+/g, ' ')
     .trim()
     .replace(/^\.+/, '')
-    .slice(0, MAX_FILE_NAME_LENGTH)
     .replace(/[. ]+$/, '');
-  return clean || 'download';
+  if (whole.length <= MAX_FILE_NAME_LENGTH) return whole || 'download';
+  // Shortened before its extension, which says what the file is: cut off with the end of a
+  // long name, a report was saved as a file of no kind that nothing would open.
+  const dot = whole.lastIndexOf('.');
+  const extension = dot > 0 && whole.length - dot <= MAX_FILE_EXTENSION_LENGTH ? whole.slice(dot) : '';
+  return `${whole.slice(0, MAX_FILE_NAME_LENGTH - extension.length).replace(/[. ]+$/, '')}${extension}` || 'download';
 }
 
 /** A width or height the app asked a canvas for, held to what the page can hold. */

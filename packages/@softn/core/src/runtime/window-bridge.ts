@@ -211,6 +211,20 @@ export class WindowBridge {
     return owner !== undefined && owner.app !== this.app;
   }
 
+  /** The script's window's digest when discoverSyncKeys last read it; null when it gave none. */
+  private discoveredPrint: number | null = null;
+
+  /** A digest of the script's window, or null where the engine gives none (or says it cannot). */
+  private windowPrint(engine: LogicEngine): number | null {
+    try {
+      const prints = engine.getGlobalsFingerprint?.([this.windowGlobalIndex]);
+      const print = prints && prints.length === 1 ? prints[0] : null;
+      return typeof print === 'number' && !Number.isNaN(print) ? print : null;
+    } catch {
+      return null;
+    }
+  }
+
   /**
    * Discover and bridge VM event listeners to real browser event listeners.
    * Called after every async VM function call so listeners registered in _init()
@@ -273,7 +287,16 @@ export class WindowBridge {
     const engine = this.engine();
     if (this.windowGlobalIndex < 0 || !engine) return;
 
+    // Read only when the window has moved since it was last read here. It is
+    // read after every call into the script, and reading it rebuilds all of it
+    // as the page's values: half of what a call cost with nothing on it, and
+    // most of the call for logic that keeps its records on the window. What a
+    // read finds is the window's and the keys' already taken, which change
+    // only with it (toVM writes the window as it hands a value over).
+    const print = this.windowPrint(engine);
+    if (print !== null && print === this.discoveredPrint) return;
     const vmWindow = engine.getGlobal(this.windowGlobalIndex);
+    this.discoveredPrint = print;
     if (!vmWindow || typeof vmWindow !== 'object') return;
 
     const held = vmWindow as Record<string, unknown>;
@@ -437,6 +460,7 @@ export class WindowBridge {
     this.windowSyncSeen.clear();
     this.windowSyncActive = false;
     this.writesFromStart = false;
+    this.discoveredPrint = null;
     // The app's latches go with the app. Left behind, the next runtime on
     // this page — a reload of the same bundle — would snapshot them as the
     // host's and refuse to write them, and pointer lock would never engage.

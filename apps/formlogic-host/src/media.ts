@@ -166,6 +166,18 @@ export function releaseMedia(url: string): void {
 }
 
 /**
+ * Lets go of every address made here: the frame has ended (main.tsx's terminate), and nothing of the
+ * app is drawn any more. Each file was held here for the frame's life, and a frame its parent ends
+ * may stay on the parent's page (FormLogic keeps one with its error over it), so an ended app held
+ * all its media, up to the 128 MB an update may bring, for as long as that page was open.
+ */
+export function releaseAllMedia(): void {
+  for (const url of made.keys()) URL.revokeObjectURL(url);
+  made.clear();
+  svgTexts.clear();
+}
+
+/**
  * The app's own text files the page is given by name as well: data it reads, never a page or code
  * it would run. `fetch('data/levels.json')` reads one in SoftN Web and in the single-app page, and
  * here it was not found, because the frame served media alone: the parent sends an app's JSON with

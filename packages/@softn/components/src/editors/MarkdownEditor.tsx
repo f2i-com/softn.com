@@ -82,6 +82,10 @@ function typeOver(field: HTMLTextAreaElement, current: string, next: string): bo
     tail++;
   }
   field.focus();
+  // `insertText` types where the focus is. A field that cannot take it (not
+  // drawn in preview mode, inert) left it on another field, or a selection in
+  // another editor, and the toolbar's text was typed in there.
+  if ((field.getRootNode() as Document | ShadowRoot).activeElement !== field) return false;
   field.setSelectionRange(from, current.length - tail);
   try {
     return (

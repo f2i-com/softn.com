@@ -310,6 +310,27 @@ export function normalizeDbKey(rawUrl: string): { key: string; inMemory: boolean
   return { key: clean, inMemory: false };
 }
 
+/** Whether `sql` holds another statement after a `;` outside quotes. */
+function hasFollowingStatement(sql: string): boolean {
+  let inSingle = false;
+  let inDouble = false;
+  for (let k = 0; k < sql.length; k++) {
+    const c = sql[k];
+    if (inSingle) {
+      if (c === "'") inSingle = false;
+    } else if (inDouble) {
+      if (c === '"') inDouble = false;
+    } else if (c === "'") {
+      inSingle = true;
+    } else if (c === '"') {
+      inDouble = true;
+    } else if (c === ';' && sql.slice(k + 1).trim().length > 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function isWriteStatement(sql: string): boolean {
   // Strip leading whitespace and SQL comments (including `--...` without trailing newline).
   let i = 0;
@@ -332,22 +353,7 @@ function isWriteStatement(sql: string): boolean {
   const rest = sql.slice(i);
   if (!rest) return false;
   // Multi-statement batches containing `;` outside quotes may include writes after a SELECT.
-  let inSingle = false;
-  let inDouble = false;
-  for (let k = 0; k < rest.length; k++) {
-    const c = rest[k];
-    if (inSingle) {
-      if (c === "'") inSingle = false;
-    } else if (inDouble) {
-      if (c === '"') inDouble = false;
-    } else if (c === "'") {
-      inSingle = true;
-    } else if (c === '"') {
-      inDouble = true;
-    } else if (c === ';' && rest.slice(k + 1).trim().length > 0) {
-      return true;
-    }
-  }
+  if (hasFollowingStatement(rest)) return true;
   const head = rest.slice(0, 24).toUpperCase();
   if (
     head.startsWith('SELECT') ||
@@ -389,6 +395,13 @@ interface ManagedDb {
   ephemeral: boolean;
 }
 
+/** One backend request's view of the SQL handles (`XdbSqlManager.beginRequestScope`). */
+export interface SqlRequestScope {
+  readonly firstHandleId: number;
+  readonly openTransactions: ReadonlySet<string>;
+  ended: boolean;
+}
+
 const MAX_OPEN_DBS = 8;
 const MAX_OPEN_HANDLES = 32;
 
@@ -408,6 +421,13 @@ export class XdbSqlManager {
   private readonly byKey = new Map<string, ManagedDb>();
   /** Handle table (`connId -> ManagedDb`) exposed to ZIPP guests. */
   private readonly handles = new Map<number, ManagedDb>();
+  /**
+   * The one handle of each persistent database. Its connection is shared by every open, so
+   * every open of it is the same handle, and closing it leaves it open for the others: code
+   * that opens per request and never closes (PDO, the JS template) cannot use the table up,
+   * and a handle opened at start-up or kept between requests stays valid.
+   */
+  private readonly sharedHandleByKey = new Map<string, number>();
   private ephemeralCount = 0;
   private nextHandleId = 1;
   private disposed = false;
@@ -584,11 +604,16 @@ export class XdbSqlManager {
   open(rawUrl: string): { id: number } | { error: string; code: number; unique: boolean } {
     if (this.disposed) return { error: 'SQLite manager is disposed', code: 21, unique: false };
     try {
+      const { key, inMemory } = normalizeDbKey(rawUrl);
+      const canonical = inMemory ? ':memory:' : this.resolveCanonicalKey(key);
+      if (!inMemory) {
+        const shared = this.sharedHandleByKey.get(canonical);
+        const live = this.byKey.get(canonical);
+        if (shared !== undefined && live && this.handles.get(shared) === live) return { id: shared };
+      }
       if (this.handles.size >= MAX_OPEN_HANDLES) {
         return { error: `Too many open SQLite connection handles (max ${MAX_OPEN_HANDLES})`, code: 14, unique: false };
       }
-      const { key, inMemory } = normalizeDbKey(rawUrl);
-      const canonical = inMemory ? ':memory:' : this.resolveCanonicalKey(key);
       if (!inMemory && !this.byKey.has(canonical) && this.byKey.size >= MAX_OPEN_DBS) {
         return { error: `Too many distinct SQLite databases open (max ${MAX_OPEN_DBS})`, code: 14, unique: false };
       }
@@ -597,6 +622,7 @@ export class XdbSqlManager {
         : this.byKey.get(canonical) ?? this.createConnection(canonical, false);
       const id = this.nextHandleId++;
       this.handles.set(id, managed);
+      if (!managed.ephemeral) this.sharedHandleByKey.set(managed.key, id);
       return { id };
     } catch (err) {
       return classifySqlError(err);
@@ -630,7 +656,22 @@ export class XdbSqlManager {
       };
     } catch (err) {
       this.chargeDelta(managed.conn, before, hooks);
+      this.markDirtyAfterFailure(managed, sql, changesBefore);
       return classifySqlError(err);
+    }
+  }
+
+  /**
+   * A batch that fails part-way keeps the statements that ran before the failing one
+   * (each commits on its own outside a transaction), so the saved image must take them.
+   */
+  private markDirtyAfterFailure(managed: ManagedDb, sql: string, changesBefore: number): void {
+    try {
+      if (Number(managed.conn.total_changes()) !== changesBefore || (isWriteStatement(sql) && hasFollowingStatement(sql))) {
+        managed.dirty = true;
+      }
+    } catch {
+      managed.dirty = true;
     }
   }
 
@@ -665,6 +706,7 @@ export class XdbSqlManager {
       };
     } catch (err) {
       this.chargeDelta(managed.conn, before, hooks);
+      this.markDirtyAfterFailure(managed, sql, changesBefore);
       return classifySqlError(err);
     }
   }
@@ -704,6 +746,8 @@ export class XdbSqlManager {
       };
     } catch (err) {
       this.chargeDelta(managed.conn, before, hooks);
+      // A seed that fails part-way has already created or filled what came before.
+      managed.dirty = true;
       return classifySqlError(err);
     }
   }
@@ -712,6 +756,8 @@ export class XdbSqlManager {
   close(handleId: number): { ok: true } {
     const managed = this.handles.get(handleId);
     if (!managed) return { ok: true };
+    // A persistent database's handle is shared by everyone who opened it (see `sharedHandleByKey`).
+    if (!managed.ephemeral && this.sharedHandleByKey.get(managed.key) === handleId) return { ok: true };
     this.handles.delete(handleId);
     if (managed.ephemeral) {
       this.ephemeralCount = Math.max(0, this.ephemeralCount - 1);
@@ -727,6 +773,44 @@ export class XdbSqlManager {
       }
     }
     return { ok: true };
+  }
+
+  /**
+   * Mark the start of one backend request. The native hosts give each request connections of
+   * its own: what a request opens, and a transaction it leaves open, ends with the request.
+   */
+  beginRequestScope(): SqlRequestScope {
+    const openTransactions = new Set<string>();
+    for (const m of this.byKey.values()) {
+      try {
+        if (m.conn.in_transaction()) openTransactions.add(m.key);
+      } catch {
+        // ignore
+      }
+    }
+    return { firstHandleId: this.nextHandleId, openTransactions, ended: false };
+  }
+
+  /**
+   * End a request begun with `beginRequestScope`: roll back a transaction it began and never
+   * finished (as dropping its connection does on the native hosts, and as PDO does when a
+   * script ends), and with `releaseHandles` close the in-memory databases it opened.
+   */
+  endRequestScope(scope: SqlRequestScope, releaseHandles: boolean): void {
+    if (scope.ended || this.disposed) return;
+    scope.ended = true;
+    for (const m of this.byKey.values()) {
+      if (scope.openTransactions.has(m.key)) continue;
+      try {
+        if (m.conn.in_transaction()) m.conn.execute_json('ROLLBACK', null);
+      } catch {
+        // ignore
+      }
+    }
+    if (!releaseHandles) return;
+    for (const [id, m] of this.handles) {
+      if (id >= scope.firstHandleId && m.ephemeral) this.close(id);
+    }
   }
 
   /** Flush all dirty persistent databases that are not mid-transaction, returning snapshots. */
@@ -784,6 +868,7 @@ export class XdbSqlManager {
         try { existing.conn.close(); } catch { /* ignore */ }
         try { existing.conn.free(); } catch { /* ignore */ }
         this.byKey.delete(dstKey);
+        this.sharedHandleByKey.delete(dstKey);
       }
 
       const clonedConn = new this.bindings.WasmConnection(
@@ -816,12 +901,24 @@ export class XdbSqlManager {
    * Deliberately does NOT fall back to single-DB aliasing so removing a scratch DB
    * like `pit-sim.db` or sidecars (`-wal`, `-shm`) can never touch the primary DB.
    */
-  remove(rawUrl: string): { ok: true; removed: boolean } {
+  remove(rawUrl: string): { ok: true; removed: boolean } | { error: string; code: number; unique: boolean } {
     if (this.disposed) return { ok: true, removed: false };
     const { key, inMemory } = normalizeDbKey(rawUrl);
     if (inMemory) return { ok: true, removed: false };
     if (/(?:-wal|-shm|-journal)$/i.test(key)) {
       return { ok: true, removed: true };
+    }
+    // A database the app declares is not removed, as the native hosts refuse it (by its path or
+    // its file name): removed here, the next open brought back the image the visit began with,
+    // and what had been written since was gone.
+    const lower = key.toLowerCase();
+    const baseOf = (k: string) => k.slice(k.lastIndexOf('/') + 1);
+    const configured = this.databases.some((cfg) => {
+      const cfgKey = normalizeDbKey(cfg.file || cfg.name).key.toLowerCase();
+      return cfgKey === lower || baseOf(cfgKey) === baseOf(lower);
+    });
+    if (configured) {
+      return { error: 'cannot remove configured primary database', code: 1, unique: false };
     }
     const existing = this.byKey.get(key);
     if (!existing) return { ok: true, removed: false };
@@ -829,6 +926,7 @@ export class XdbSqlManager {
       if (m === existing) this.handles.delete(hid);
     }
     this.byKey.delete(key);
+    this.sharedHandleByKey.delete(key);
     try { existing.conn.close(); } catch { /* ignore */ }
     try { existing.conn.free(); } catch { /* ignore */ }
     this.onRemove?.(key);
@@ -910,6 +1008,7 @@ export class XdbSqlManager {
     }
     this.byKey.clear();
     this.handles.clear();
+    this.sharedHandleByKey.clear();
     this.ephemeralCount = 0;
   }
 }

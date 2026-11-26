@@ -10,7 +10,7 @@ import { createBackendQueue, BACKEND_UNREADABLE } from './backendQueue';
 import { acceptEngine, acceptZippAddress, acceptZippBytes, bundleLanguages, documentEngines, readyEngines, requireBundleLanguages, requireEngineLanguages, servableEngines, zippIdentities } from './engineInit';
 import { createNativeNetFetch } from './nativeFetch';
 import { zippDirectory } from './framePolicy';
-import { mediaBytes, mediaUrl, releaseMedia, sameMedia, svgTextOf, textFileUrl } from './media';
+import { mediaBytes, mediaUrl, releaseAllMedia, releaseMedia, sameMedia, svgTextOf, textFileUrl } from './media';
 import { seedBundledData } from './seed';
 import { createUpdater, importsFrom, type ImportResolver } from './update';
 import { isOtherPage, linkedPage, startPlace, writePlace } from './place';
@@ -84,6 +84,8 @@ function terminate(): void {
     rootMounted = false;
     root.unmount();
   }
+  // Nothing of the app is drawn any more: its media go, which the page kept for the frame's life.
+  releaseAllMedia();
 }
 // A page kept in the back/forward cache comes back as it was, port and all;
 // only one that is going for good ends (a terminated frame takes no new init).
@@ -204,7 +206,16 @@ interface ShownPage {
   imports: ImportResolver;
   /** The named page it starts on, where the parent said one (`init.place`). */
   initialState?: Record<string, unknown>;
+  /**
+   * Which of the parent's Back and Forward (`formlogic:navigate`) put it on screen, part of the
+   * renderer's key: each is a run of the page of its own, as a page a link goes to is. The renderer
+   * reads a named page only as a page starts, so one shown again on the same page file, after the
+   * app had left it, stayed where the app was.
+   */
+  visit?: number;
 }
+/** How many times the parent has sent the app to a place (`formlogic:navigate`). */
+let visits = 0;
 class Boundary extends Component<{ children: React.ReactNode }, { failed: boolean; reason: string }> {
   state = { failed: false, reason: '' };
   static getDerivedStateFromError(error: unknown) { return { failed: true, reason: reasonOf(error) }; }
@@ -230,12 +241,20 @@ window.addEventListener('message', async event => {
   // What the parent grants, decided before the app opens: a grant changed under a running app
   // restarts its logic, so the parent asks the person first and sends the answer here.
   const framePermissions: FramePermissions = grantedPermissions(event.data.permissions);
+  // Back or Forward in the parent while the app is still opening: taken once it is open, as the
+  // web frame takes it (web.ts's pendingNavigate). It was dropped, and the app opened where `init`
+  // said while the parent's address said the place the person went back to.
+  let navigateWhenOpen: string | undefined;
   port.onmessage = event => {
     if (event.data?.type === 'formlogic:dispose') { terminate(); return; }
     // A newer version of the app, told apart by its type before anything is read as an answer:
     // its id is the parent's own, and may be a number one of the frame's calls has.
     if (event.data?.type === 'formlogic:update') { updates.receive(event.data); return; }
-    if (event.data?.type === 'formlogic:navigate' && typeof event.data.to === 'string') { navigatePlace?.(event.data.to); return; }
+    if (event.data?.type === 'formlogic:navigate' && typeof event.data.to === 'string') {
+      if (navigatePlace) navigatePlace(event.data.to);
+      else navigateWhenOpen = event.data.to;
+      return;
+    }
     if (event.data?.type !== undefined) return;
     if (!calls.settle(event.data?.id, event.data?.result)) storageCalls?.settle(event.data?.id, event.data?.result);
   };
@@ -386,11 +405,12 @@ window.addEventListener('message', async event => {
       root.render(<Boundary><ThemeProvider defaultDarkMode={dark} declaredMode={declaredThemeMode(manifest)}>
         {savesAcknowledged && <XDBStorageNotice appId={appId} problemsOnly />}
         <SoftNWithXDB {...composed} app={live} appId={appId} resumeSavedSyncRoom={false}
-          // Another page file is another run of the app (the key), on the same records. A link
+          // Another page file is another run of the app (the key), on the same records, and so is
+          // each place the parent sends it to (`visit`). A link
           // to one is shown here (followLink), and the page's own code goes to one of the app's
           // pages or nowhere (pagesOnly): any other address the frame went to was FormLogic's own
           // page, which refuses to be framed, and the app went blank.
-          key={page.file ?? ''} onLink={followLink} pagesOnly
+          key={`${page.visit ?? 0}/${page.file ?? ''}`} onLink={followLink} pagesOnly
           initialState={page.initialState}
           onPageChange={name => { if (shown === page) { section = name; tellPlace(); } }}
           permissionConfig={framePermissions} scriptExecutionMode="main"
@@ -447,10 +467,17 @@ window.addEventListener('message', async event => {
       const dest = startPlace(to, text, main, bundlePageAt);
       const targetPath = dest.file ?? main;
       if (!targetPath) return;
-      if (dest.file === shown.file && dest.section === section) return;
+      // The page on screen, with no named page asked for, stays as it is. Such a place is the first
+      // of the two a page whose logic starts on a named page is told by (`/`, then `/#home`): run
+      // again, the page would tell the second again, which a parent that keeps each place as a step
+      // of its history would keep, and Back would come back to it for ever. Drawn again, as it was,
+      // the page stayed on its named page and the parent was told it was at the page alone.
+      if (dest.file === shown.file && (dest.section === null || dest.section === section)) return;
       try {
         const composed = composePage(text, targetPath);
-        shown = { file: dest.file, composed, live: createLiveApp(), imports: importsFrom(text), ...(dest.section ? { initialState: { currentPage: dest.section } } : {}) };
+        // A run of its own (`visit`): the renderer takes a named page as the page starts. Drawn
+        // again on the same page file, a named page the app had left since was not shown again.
+        shown = { file: dest.file, composed, live: createLiveApp(), imports: importsFrom(text), visit: ++visits, ...(dest.section ? { initialState: { currentPage: dest.section } } : {}) };
         section = dest.section;
         draw();
       } catch (problem) {
@@ -463,10 +490,14 @@ window.addEventListener('message', async event => {
       update: revision => shown.live.update(revision),
       redraw: next => { manifest = next; draw(); },
       page: () => shown.file,
+      // Each page put on screen is a run of its own, a place the parent sent the app to as well.
+      run: () => shown,
       // A version without the page on screen: the app is opened at its main page from it.
       leave: revision => show(null, revision, revision.importResolver),
     });
     draw();
+    // Back or Forward in the parent while the app was opening: it is put where the parent now is.
+    if (navigateWhenOpen !== undefined) navigatePlace(navigateWhenOpen);
   } catch (error) {
     if (terminated) return;
     const reason = reasonOf(error);

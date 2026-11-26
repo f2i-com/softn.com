@@ -115,6 +115,11 @@ const invoke = vi.fn(async (cmd: string, args: Record<string, unknown> = {}) => 
       for (const record of args.records as Row[]) rows.set(record.id, record);
       return [];
     }
+    case 'remove_records': {
+      // For good, with no tombstone (db.rs remove_records).
+      for (const id of args.ids as string[]) if (rows.get(id)?.collection === args.collection) rows.delete(id);
+      return [];
+    }
     default:
       throw new Error(`Unexpected command: ${cmd}`);
   }
@@ -441,9 +446,10 @@ describe("a pull's deletions on the desktop", () => {
     });
     await settle();
     const commands = invoke.mock.calls.map(([cmd]) => cmd);
-    expect(commands.filter((cmd) => cmd === 'upsert_records')).toHaveLength(1);
+    // Removed for good (round 4), as browser storage removes them: a tombstone kept the data.
+    expect(commands.filter((cmd) => cmd === 'remove_records')).toHaveLength(1);
     expect(commands).not.toContain('delete_record');
-    expect(['a', 'b', 'c'].map((id) => rows.get(id)?.deleted)).toEqual([true, true, true]);
+    expect(['a', 'b', 'c'].map((id) => rows.has(id))).toEqual([false, false, false]);
     expect(store.query('notes')).toEqual([]);
     sync.disconnect();
   });

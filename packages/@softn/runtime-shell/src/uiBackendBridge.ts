@@ -157,7 +157,7 @@ export function createUiBackendBridge(options: UiBackendBridgeOptions): UiBacken
   async function ensureTransport() {
     if (transportPromise) return transportPromise;
     const gen = generation;
-    transportPromise = (async () => {
+    const starting = (async () => {
       const container = await import('@softn/container');
       const routing = container.buildBackendRoutingConfig(backend);
       const hosted = hostedContainerOptions();
@@ -227,7 +227,16 @@ export function createUiBackendBridge(options: UiBackendBridgeOptions): UiBacken
         throw new Error('Backend bridge was disposed while starting.');
       }
       liveTransport = transport;
-      await transport.ready;
+      try {
+        await transport.ready;
+      } catch (error) {
+        // A backend that did not start is let go. Kept, its worker stayed up,
+        // and the next request started another beside it: one more for every
+        // request the app made after its backend failed.
+        transport.dispose();
+        if (liveTransport === transport) liveTransport = null;
+        throw error;
+      }
       if (disposed || gen !== generation) {
         transport.dispose();
         if (liveTransport === transport) liveTransport = null;
@@ -240,10 +249,14 @@ export function createUiBackendBridge(options: UiBackendBridgeOptions): UiBacken
         statusTextFor: container.statusTextFor,
       };
     })();
-    transportPromise.catch(() => {
-      transportPromise = null;
+    transportPromise = starting;
+    // Only this start is forgotten when it fails. A start the bridge was
+    // disposed during fails after a newer one has begun, and forgetting that
+    // one started a third: two backends ran, and the second was never stopped.
+    starting.catch(() => {
+      if (transportPromise === starting) transportPromise = null;
     });
-    return transportPromise;
+    return starting;
   }
 
   const netFetchHandler: NetFetchHandler = async (

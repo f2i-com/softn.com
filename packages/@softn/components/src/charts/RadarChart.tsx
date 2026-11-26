@@ -332,7 +332,8 @@ export function RadarChart({
           }}
         >
           {series.map((s, idx) => {
-            const color = s.color || defaultColors[idx % defaultColors.length];
+            // The colour its shape is drawn in (safeSvgPaint), not `s.color` as given.
+            const color = safeSvgPaint(s.color, defaultColors[idx % defaultColors.length]);
             return (
               <div
                 key={`${idx}-${s.name}`}

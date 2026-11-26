@@ -72,6 +72,19 @@ pub async fn delete_record(
 }
 
 #[tauri::command]
+pub async fn remove_records(
+    db_manager: State<'_, SharedDbManager>,
+    network: State<'_, SharedNetworkState>,
+    identity: State<'_, DataIdentity>,
+    app_id: Option<String>,
+    collection: String,
+    ids: Vec<String>,
+) -> Result<Vec<String>, String> {
+    let app_id = identity.require(app_id.as_deref())?;
+    xdb::tauri::remove_records(db_manager, network, Some(app_id), collection, ids).await
+}
+
+#[tauri::command]
 pub async fn upsert_record(
     db_manager: State<'_, SharedDbManager>,
     network: State<'_, SharedNetworkState>,

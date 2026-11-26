@@ -112,9 +112,49 @@ function isWs(ch: number): boolean {
   return ch === 32 || ch === 9 || ch === 10 || ch === 13 || ch === 12 || ch === 160;
 }
 
+/**
+ * The named character references JSX reads (XHTML's 253, as Babel, esbuild and TypeScript
+ * read them), as runs of names of consecutive code points. Only six were read, and text with
+ * `&copy;`, `&mdash;`, `&times;` or `&hellip;` in it showed the reference itself.
+ */
+const ENTITY_RUNS: Array<[number, string]> = [
+  [0x22, 'quot'], [0x26, 'amp apos'], [0x3c, 'lt'], [0x3e, 'gt'],
+  [0xa0, 'nbsp iexcl cent pound curren yen brvbar sect uml copy ordf laquo not shy reg macr deg plusmn sup2 sup3 acute micro para middot cedil sup1 ordm raquo frac14 frac12 frac34 iquest ' +
+    'Agrave Aacute Acirc Atilde Auml Aring AElig Ccedil Egrave Eacute Ecirc Euml Igrave Iacute Icirc Iuml ETH Ntilde Ograve Oacute Ocirc Otilde Ouml times Oslash Ugrave Uacute Ucirc Uuml Yacute THORN szlig ' +
+    'agrave aacute acirc atilde auml aring aelig ccedil egrave eacute ecirc euml igrave iacute icirc iuml eth ntilde ograve oacute ocirc otilde ouml divide oslash ugrave uacute ucirc uuml yacute thorn yuml'],
+  [0x152, 'OElig oelig'], [0x160, 'Scaron scaron'], [0x178, 'Yuml'], [0x192, 'fnof'], [0x2c6, 'circ'], [0x2dc, 'tilde'],
+  [0x391, 'Alpha Beta Gamma Delta Epsilon Zeta Eta Theta Iota Kappa Lambda Mu Nu Xi Omicron Pi Rho'],
+  [0x3a3, 'Sigma Tau Upsilon Phi Chi Psi Omega'],
+  [0x3b1, 'alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigmaf sigma tau upsilon phi chi psi omega'],
+  [0x3d1, 'thetasym upsih'], [0x3d6, 'piv'],
+  [0x2002, 'ensp emsp'], [0x2009, 'thinsp'], [0x200c, 'zwnj zwj lrm rlm'], [0x2013, 'ndash mdash'], [0x2018, 'lsquo rsquo sbquo'],
+  [0x201c, 'ldquo rdquo bdquo'], [0x2020, 'dagger Dagger bull'], [0x2026, 'hellip'], [0x2030, 'permil'], [0x2032, 'prime Prime'],
+  [0x2039, 'lsaquo rsaquo'], [0x203e, 'oline'], [0x2044, 'frasl'], [0x20ac, 'euro'], [0x2111, 'image'], [0x2118, 'weierp'],
+  [0x211c, 'real'], [0x2122, 'trade'], [0x2135, 'alefsym'], [0x2190, 'larr uarr rarr darr harr'], [0x21b5, 'crarr'],
+  [0x21d0, 'lArr uArr rArr dArr hArr'], [0x2200, 'forall'], [0x2202, 'part exist'], [0x2205, 'empty'], [0x2207, 'nabla isin notin'],
+  [0x220b, 'ni'], [0x220f, 'prod'], [0x2211, 'sum minus'], [0x2217, 'lowast'], [0x221a, 'radic'], [0x221d, 'prop infin'],
+  [0x2220, 'ang'], [0x2227, 'and or cap cup int'], [0x2234, 'there4'], [0x223c, 'sim'], [0x2245, 'cong'], [0x2248, 'asymp'],
+  [0x2260, 'ne equiv'], [0x2264, 'le ge'], [0x2282, 'sub sup nsub'], [0x2286, 'sube supe'], [0x2295, 'oplus'], [0x2297, 'otimes'],
+  [0x22a5, 'perp'], [0x22c5, 'sdot'], [0x2308, 'lceil rceil lfloor rfloor'], [0x2329, 'lang rang'], [0x25ca, 'loz'],
+  [0x2660, 'spades'], [0x2663, 'clubs'], [0x2665, 'hearts diams'],
+];
+
+let entities: Map<string, string> | null = null;
+
+/** The character a named reference stands for, or undefined. */
+function namedEntity(name: string): string | undefined {
+  if (entities === null) {
+    entities = new Map();
+    for (const [first, names] of ENTITY_RUNS) {
+      names.split(' ').forEach((n, k) => entities!.set(n, String.fromCharCode(first + k)));
+    }
+  }
+  return entities.get(name);
+}
+
 function decodeHtmlEntities(text: string): string {
   if (!text.includes('&')) return text;
-  return text.replace(/&(?:#x([0-9a-fA-F]+)|#(\d+)|(amp|lt|gt|quot|apos|nbsp));/g, (m, hex, dec, named) => {
+  return text.replace(/&(?:#x([0-9a-fA-F]+)|#([0-9]+)|([A-Za-z][A-Za-z0-9]*));/g, (m, hex, dec, named) => {
     if (hex) {
       const cp = parseInt(hex, 16);
       return cp >= 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : m;
@@ -123,16 +163,39 @@ function decodeHtmlEntities(text: string): string {
       const cp = parseInt(dec, 10);
       return cp >= 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : m;
     }
-    switch (named) {
-      case 'amp': return '&';
-      case 'lt': return '<';
-      case 'gt': return '>';
-      case 'quot': return '"';
-      case 'apos': return "'";
-      case 'nbsp': return '\u00a0';
-      default: return m;
-    }
+    return namedEntity(named) ?? m;
   });
+}
+
+/** Line breaks in text as JS counts them (`\r\n` once). */
+function lineBreaks(text: string): number {
+  let n = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (c === 10) n++;
+    else if (c === 13) {
+      n++;
+      if (text.charCodeAt(i + 1) === 10) i++;
+    }
+  }
+  return n;
+}
+
+function newlines(n: number): string {
+  return n > 0 ? '\n'.repeat(n) : '';
+}
+
+/**
+ * Code with what surrounds it reduced to its line breaks, before it and after it: what the
+ * element is turned into has as many lines as it had, so the lines after it (and inside it)
+ * are where they were when an error names one. `.trim()` took them away, and every error
+ * after a JSX element of more than one line was reported lines too early.
+ */
+function keepLines(code: string, empty = ''): string {
+  const trimmed = code.trim();
+  if (trimmed === code) return code || empty;
+  const lead = code.length - code.trimStart().length;
+  return newlines(lineBreaks(code.slice(0, lead))) + (trimmed || empty) + newlines(lineBreaks(code.slice(lead + trimmed.length)));
 }
 
 /** Collapse JSX child text lines following the standard JSX/Babel whitespace rule. */
@@ -226,6 +289,28 @@ class JsxScanner {
       break;
     }
     return this.src.slice(start, this.pos);
+  }
+
+  /** Past whitespace and comments from p (without moving), to what comes next. */
+  private pastWsAndComments(p: number): number {
+    while (p < this.len) {
+      const ch = this.src.charCodeAt(p);
+      if (isWs(ch)) {
+        p++;
+        continue;
+      }
+      if (ch === 47 && this.src.charCodeAt(p + 1) === 47) {
+        while (p < this.len && this.src.charCodeAt(p) !== 10) p++;
+        continue;
+      }
+      if (ch === 47 && this.src.charCodeAt(p + 1) === 42) {
+        const end = this.src.indexOf('*/', p + 2);
+        p = end < 0 ? this.len : end + 2;
+        continue;
+      }
+      break;
+    }
+    return p;
   }
 
   private scanString(quote: number): string {
@@ -370,8 +455,9 @@ class JsxScanner {
       const afterGeneric = this.skipBalancedAngle(p);
       if (afterGeneric > p) p = afterGeneric;
     }
-    // Skip whitespace after tag name (and optional type args)
-    while (p < len && isWs(this.src.charCodeAt(p))) p++;
+    // Skip whitespace and comments after tag name (and optional type args): `<div /* … */ id="a">`
+    // is an element (it was left as it was, and the module did not compile).
+    p = this.pastWsAndComments(p);
     if (p >= len) return false;
     const nextCh = this.src.charCodeAt(p);
     // `<const T>` TypeScript 5.0 const type parameter
@@ -531,7 +617,9 @@ class JsxScanner {
         while (this.pos < this.len && isIdentPart(this.src.charCodeAt(this.pos))) this.pos++;
         const word = this.src.slice(start, this.pos);
         out += word;
-        if (JSX_EXPR_KEYWORDS.has(word) || REGEX_PRECEDING_KEYWORDS.has(word)) {
+        // A property's name is no keyword, however spelled: `x.default / 2` divides (taken for a
+        // regular expression's start, it swallowed the line and the brackets on it).
+        if ((JSX_EXPR_KEYWORDS.has(word) || REGEX_PRECEDING_KEYWORDS.has(word)) && !(prevSigType === 'punct' && prevSigVal === '.')) {
           prevSigType = 'keyword';
         } else {
           prevSigType = 'ident';
@@ -611,10 +699,15 @@ class JsxScanner {
     // Fragment: `<> ... </>`
     if (this.pos < this.len && this.src.charCodeAt(this.pos) === 62) {
       this.pos++; // consume `>`
-      const children = this.parseJsxChildren('');
-      const args = ['globalThis.__softnFragment', 'null', ...children];
-      return `globalThis.__softnJsx(${args.join(', ')})`;
+      const children = this.parseJsxChildren(0);
+      const args = ['globalThis.__softnFragment', 'null', ...children.parts];
+      return `globalThis.__softnJsx(${args.join(', ')}${newlines(children.owed)})`;
     }
+
+    // The element's line breaks not yet in what it becomes: put in before the next of its
+    // props or children, or at its end. (What it became was all on one line, and every line
+    // after an element of more than one was reported that many lines too early.)
+    let owed = 0;
 
     // Parse tag name (and skip optional TypeScript generic type arguments `<T>` on component tags)
     const tagStart = this.pos;
@@ -622,17 +715,19 @@ class JsxScanner {
     const tagName = this.src.slice(tagStart, this.pos);
     if (!isHtmlTag(tagName) && this.pos < this.len && this.src.charCodeAt(this.pos) === 60) {
       const afterGeneric = this.skipBalancedAngle(this.pos);
-      if (afterGeneric > this.pos) this.pos = afterGeneric;
+      if (afterGeneric > this.pos) {
+        owed += lineBreaks(this.src.slice(this.pos, afterGeneric));
+        this.pos = afterGeneric;
+      }
     }
     const tagExpr = isHtmlTag(tagName) ? JSON.stringify(tagName) : tagName;
 
-    // Parse attributes / props
-    type PropChunk = { kind: 'spread'; expr: string } | { kind: 'entry'; key: string; val: string };
+    // Parse attributes / props (each with the line breaks before it)
     const propChunks: PropChunk[] = [];
     let selfClosing = false;
 
     while (this.pos < this.len) {
-      this.skipWsAndComments();
+      owed += lineBreaks(this.skipWsAndComments());
       if (this.pos >= this.len) break;
       const ch = this.src.charCodeAt(this.pos);
       if (ch === 47 && this.pos + 1 < this.len && this.src.charCodeAt(this.pos + 1) === 62) {
@@ -647,42 +742,46 @@ class JsxScanner {
       // Spread prop `{...expr}`
       if (ch === 123) {
         this.pos++; // `{`
-        const inner = this.scanCode(true).trim();
-        if (inner.startsWith('...')) {
-          propChunks.push({ kind: 'spread', expr: inner.slice(3).trim() });
+        const raw = this.scanCode(true);
+        const lead = raw.length - raw.trimStart().length;
+        if (raw.startsWith('...', lead)) {
+          propChunks.push({ kind: 'spread', pre: newlines(owed + lineBreaks(raw.slice(0, lead))), expr: keepLines(raw.slice(lead + 3)) });
+          owed = 0;
+        } else {
+          owed += lineBreaks(raw);
         }
         continue;
       }
       // Attribute name
       if (isIdentStart(ch)) {
+        const before = owed;
+        owed = 0;
         const aStart = this.pos;
         this.pos++;
         while (this.pos < this.len && isJsxNamePart(this.src.charCodeAt(this.pos))) this.pos++;
         const attrName = this.src.slice(aStart, this.pos);
-        this.skipWsAndComments();
+        let gap = lineBreaks(this.skipWsAndComments());
+        let val = 'true';
         if (this.pos < this.len && this.src.charCodeAt(this.pos) === 61) {
           this.pos++; // `=`
-          this.skipWsAndComments();
+          gap += lineBreaks(this.skipWsAndComments());
           const vCh = this.pos < this.len ? this.src.charCodeAt(this.pos) : 0;
           if (vCh === 34 || vCh === 39) {
             const rawStr = this.scanJsxAttrString(vCh);
-            const inner = rawStr.slice(1, -1);
-            propChunks.push({ kind: 'entry', key: attrName, val: JSON.stringify(decodeHtmlEntities(inner)) });
+            val = JSON.stringify(decodeHtmlEntities(rawStr.slice(1, -1)));
+            owed += lineBreaks(rawStr);
           } else if (vCh === 123) {
             this.pos++; // `{`
-            const rawExpr = this.scanCode(true).trim();
-            const safeExpr = rawExpr ? (rawExpr.includes('//') ? `${rawExpr}\n` : rawExpr) : 'undefined';
-            propChunks.push({ kind: 'entry', key: attrName, val: safeExpr });
+            val = keepLines(this.scanCode(true), 'undefined');
           } else if (vCh === 60) {
-            const elemExpr = this.parseJsxElement();
-            propChunks.push({ kind: 'entry', key: attrName, val: elemExpr });
-          } else {
-            propChunks.push({ kind: 'entry', key: attrName, val: 'true' });
+            val = this.parseJsxElement();
           }
         } else {
-          // Boolean shorthand attribute (`disabled`, `checked`)
-          propChunks.push({ kind: 'entry', key: attrName, val: 'true' });
+          // Boolean shorthand attribute (`disabled`, `checked`): what followed it is before the next.
+          owed += gap;
+          gap = 0;
         }
+        propChunks.push({ kind: 'entry', pre: newlines(before + gap), key: attrName, val });
         continue;
       }
       // Skip unexpected char defensively to avoid infinite loops on malformed input
@@ -690,18 +789,18 @@ class JsxScanner {
     }
 
     const propsExpr = this.formatProps(propChunks);
-    const children = selfClosing ? [] : this.parseJsxChildren(tagName);
-    const args = [tagExpr, propsExpr, ...children];
-    return `globalThis.__softnJsx(${args.join(', ')})`;
+    if (selfClosing) return `globalThis.__softnJsx(${tagExpr}, ${propsExpr}${newlines(owed)})`;
+    const children = this.parseJsxChildren(owed);
+    const args = [tagExpr, propsExpr, ...children.parts];
+    return `globalThis.__softnJsx(${args.join(', ')}${newlines(children.owed)})`;
   }
 
-  private formatProps(chunks: Array<{ kind: 'spread'; expr: string } | { kind: 'entry'; key: string; val: string }>): string {
+  private formatProps(chunks: PropChunk[]): string {
     if (chunks.length === 0) return 'null';
+    const entry = (c: Extract<PropChunk, { kind: 'entry' }>): string => `${c.pre}${quotePropKey(c.key)}: ${c.val}`;
     const hasSpread = chunks.some((c) => c.kind === 'spread');
     if (!hasSpread) {
-      const pairs = chunks.map((c) =>
-        c.kind === 'entry' ? `${quotePropKey(c.key)}: ${c.val}` : ''
-      );
+      const pairs = chunks.map((c) => (c.kind === 'entry' ? entry(c) : ''));
       return `{ ${pairs.join(', ')} }`;
     }
     const assignArgs: string[] = ['{}'];
@@ -715,39 +814,44 @@ class JsxScanner {
     for (const c of chunks) {
       if (c.kind === 'spread') {
         flushEntries();
-        assignArgs.push(c.expr);
+        assignArgs.push(`${c.pre}${c.expr}`);
       } else {
-        pendingEntries.push(`${quotePropKey(c.key)}: ${c.val}`);
+        pendingEntries.push(entry(c));
       }
     }
     flushEntries();
     return `Object.assign(${assignArgs.join(', ')})`;
   }
 
-  private parseJsxChildren(expectedClosingTag: string): string[] {
-    const children: string[] = [];
+  /** The children up to the closing tag, each with the line breaks before it, and the breaks still owed after them. */
+  private parseJsxChildren(owedBefore: number): { parts: string[]; owed: number } {
+    const parts: string[] = [];
+    let owed = owedBefore;
+    const push = (text: string): void => {
+      parts.push(newlines(owed) + text);
+      owed = 0;
+    };
     while (this.pos < this.len) {
       const ch = this.src.charCodeAt(this.pos);
       if (ch === 60) {
         // Closing tag `</Tag>` or `</>`
         if (this.pos + 1 < this.len && this.src.charCodeAt(this.pos + 1) === 47) {
           this.pos += 2; // `</`
+          const nameStart = this.pos;
           while (this.pos < this.len && this.src.charCodeAt(this.pos) !== 62) this.pos++;
+          owed += lineBreaks(this.src.slice(nameStart, this.pos));
           if (this.pos < this.len) this.pos++; // `>`
           break;
         }
-        children.push(this.parseJsxElement());
+        push(this.parseJsxElement());
         continue;
       }
       if (ch === 123) {
         this.pos++; // `{`
         const expr = this.scanCode(true);
-        const meaningful = stripLeadingComments(expr);
-        if (meaningful.length > 0) {
-          const trimmed = expr.trim();
-          // Ensure a trailing `//` comment inside `{expr // note}` never comments out the closing `,`/`)`.
-          children.push(trimmed.includes('//') ? `${trimmed}\n` : trimmed);
-        }
+        // A comment's own line breaks, and any after `{expr // note`, are kept: no `//` comment ends the call.
+        if (stripLeadingComments(expr).length > 0) push(keepLines(expr));
+        else owed += lineBreaks(expr);
         continue;
       }
       // Plain text until `<` or `{`
@@ -757,15 +861,22 @@ class JsxScanner {
         if (c === 60 || c === 123) break;
         this.pos++;
       }
-      const cleaned = cleanJsxText(this.src.slice(tStart, this.pos));
+      const raw = this.src.slice(tStart, this.pos);
+      const cleaned = cleanJsxText(raw);
       if (cleaned.length > 0) {
-        children.push(JSON.stringify(cleaned));
+        const lead = lineBreaks(raw.slice(0, raw.length - raw.trimStart().length));
+        owed += lead;
+        push(JSON.stringify(cleaned) + newlines(lineBreaks(raw) - lead));
+      } else {
+        owed += lineBreaks(raw);
       }
     }
-    void expectedClosingTag;
-    return children;
+    return { parts, owed };
   }
 }
+
+/** A prop of an element: a spread (`{...p}`) or a named one, with the line breaks before it. */
+type PropChunk = { kind: 'spread'; pre: string; expr: string } | { kind: 'entry'; pre: string; key: string; val: string };
 
 /**
  * Transform JSX/TSX syntax in `code` to `globalThis.__softnJsx(...)` calls.

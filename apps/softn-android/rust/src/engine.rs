@@ -1285,8 +1285,13 @@ impl SoftnMobileEngine {
                 .find_map(|id| self.dom_to_flid.get(id).copied());
 
             if let Some(flid) = target_flid {
+                // A tap on a label's text acts on the control the label names, as in a
+                // browser: the tap's own events go to what was tapped, then (unless that click
+                // was prevented) the control is activated and clicked.
+                let label_control = self.label_control(flid);
+                let acting = label_control.unwrap_or(flid);
                 // Check whether the tapped element is an input/textarea/select/checkbox/submit button
-                let meta = self.inspect_js_node(flid);
+                let meta = self.inspect_js_node(acting);
                 let tag = meta
                     .get("tag")
                     .and_then(|v| v.as_str())
@@ -1301,7 +1306,7 @@ impl SoftnMobileEngine {
                     if let Some(ref mut st) = self.js_state {
                         if let Ok(JsValue::String(raw)) = st.call_global(
                             "__softnInspectSelect",
-                            &[JsValue::Number(f64::from(flid))],
+                            &[JsValue::Number(f64::from(acting))],
                         ) {
                             if let Ok(parsed) = serde_json::from_str::<Value>(&raw) {
                                 let opts: Vec<String> = parsed
@@ -1324,7 +1329,7 @@ impl SoftnMobileEngine {
                                         .and_then(|v| v.as_i64())
                                         .unwrap_or(0) as i32;
                                     select_picker = Some(SelectPickerRequest {
-                                        flid,
+                                        flid: acting,
                                         selected_index,
                                         options: opts,
                                     });
@@ -1339,7 +1344,7 @@ impl SoftnMobileEngine {
                         && itype != "submit"
                         && itype != "button")
                 {
-                    self.focused_flid = Some(flid);
+                    self.focused_flid = Some(acting);
                     wants_ime = true;
                     input_text = meta
                         .get("value")
@@ -1353,14 +1358,13 @@ impl SoftnMobileEngine {
                     };
                 } else {
                     self.focused_flid = None;
-                    if tag == "input" && itype == "checkbox" {
+                    // Through a label the control toggles after the label's click, below.
+                    if label_control.is_none() && tag == "input" && (itype == "checkbox" || itype == "radio") {
+                        let toggle = if itype == "radio" { "__softnCheckRadio" } else { "__softnToggleCheckbox" };
                         let _doc_guard = LayoutDocGuard::enter(self.doc.as_ref());
                         if let Some(ref mut st) = self.js_state {
                             stacker::maybe_grow(512 * 1024, 16 * 1024 * 1024, || {
-                                let _ = st.call_global(
-                                    "__softnToggleCheckbox",
-                                    &[JsValue::Number(f64::from(flid))],
-                                );
+                                let _ = st.call_global(toggle, &[JsValue::Number(f64::from(flid))]);
                             });
                         }
                     }
@@ -1376,22 +1380,37 @@ impl SoftnMobileEngine {
                     }
                 }
                 if select_picker.is_none() {
+                    // Where the finger was, in the viewport's CSS pixels (clientX/clientY).
+                    let client_x = f64::from(phys_x / self.scale);
+                    let client_y = f64::from(phys_y / self.scale);
                     {
                         let _doc_guard = LayoutDocGuard::enter(self.doc.as_ref());
                         if let Some(ref mut st) = self.js_state {
                             stacker::maybe_grow(512 * 1024, 16 * 1024 * 1024, || {
-                                let mut prevented = false;
-                                for handler_flid in &flid_chain {
-                                    if let Ok(JsValue::Bool(true)) = st.call_global(
-                                        "__zippDispatchEvent",
+                                // The browser's pointer, mouse and click events, bubbling to the
+                                // window and stopped where a listener stops them.
+                                let mut prevented = matches!(
+                                    st.call_global(
+                                        "__softnDispatchTap",
                                         &[
-                                            JsValue::Number(f64::from(*handler_flid)),
                                             JsValue::Number(f64::from(flid)),
-                                            JsValue::String("click".into()),
+                                            JsValue::Number(client_x),
+                                            JsValue::Number(client_y),
                                         ],
-                                    ) {
-                                        prevented = true;
+                                    ),
+                                    Ok(JsValue::Bool(true))
+                                );
+                                // The label's activation: its checkbox or radio toggles, and the
+                                // control gets the click (React reads a checkbox's change there).
+                                if label_control.is_some() && !prevented {
+                                    if tag == "input" && (itype == "checkbox" || itype == "radio") {
+                                        let toggle = if itype == "radio" { "__softnCheckRadio" } else { "__softnToggleCheckbox" };
+                                        let _ = st.call_global(toggle, &[JsValue::Number(f64::from(acting))]);
                                     }
+                                    prevented = matches!(
+                                        st.call_global("__softnDispatchClick", &[JsValue::Number(f64::from(acting))]),
+                                        Ok(JsValue::Bool(true))
+                                    );
                                 }
                                 // If a submit button (or a child inside a submit button) was clicked and click didn't preventDefault, submit ancestor form
                                 let is_submit_trigger = (tag == "button" && (itype == "submit" || itype == "text"))
@@ -1400,7 +1419,7 @@ impl SoftnMobileEngine {
                                     if is_submit_trigger {
                                         let _ = st.call_global(
                                             "__softnSubmitAncestorForm",
-                                            &[JsValue::Number(f64::from(flid))],
+                                            &[JsValue::Number(f64::from(acting))],
                                         );
                                     } else {
                                         // Check if any ancestor in flid_chain is a submit <button> (e.g., tapping an SVG/span inside a button)
@@ -1723,7 +1742,11 @@ impl SoftnMobileEngine {
             self.rust_active_until = Instant::now() + Duration::from_secs(2);
         }
         if let Some(flid) = self.focused_flid {
-            {
+            // Done is Enter: a text input's submits its form (a browser's implicit
+            // submission), a textarea's is a new line and submits nothing.
+            let in_textarea =
+                self.inspect_js_node(flid).get("tag").and_then(|v| v.as_str()) == Some("textarea");
+            if !in_textarea {
                 let _doc_guard = LayoutDocGuard::enter(self.doc.as_ref());
                 if let Some(ref mut st) = self.js_state {
                     let _ = st.call_global(
@@ -1935,6 +1958,15 @@ impl SoftnMobileEngine {
             y += 12.0;
         }
         None
+    }
+
+    /// The control a tap on `flid` activates through the label holding it (`__softnLabelControl`).
+    fn label_control(&mut self, flid: u32) -> Option<u32> {
+        let st = self.js_state.as_mut()?;
+        match st.call_global("__softnLabelControl", &[JsValue::Number(f64::from(flid))]) {
+            Ok(JsValue::Number(n)) if n >= 0.0 && n <= f64::from(u32::MAX) && n != f64::from(flid) => Some(n as u32),
+            _ => None,
+        }
     }
 
     fn inspect_js_node(&mut self, flid: u32) -> Value {
@@ -2774,7 +2806,11 @@ fn boot_frontend_vm(
                 let headers_json = arg(2);
                 let body_text = arg(3);
                 let credentials = arg(4);
-                Ok(handle_softn_fetch(
+                // `fetch()` asks for the body's bytes ("bytes"): the JSON's text cannot carry
+                // what is not UTF-8, and `arrayBuffer()` must not fetch the URL a second time.
+                let mut body_bytes: Option<Vec<u8>> = None;
+                let wants_bytes = arg(5) == "bytes";
+                let res = handle_softn_fetch(
                     &bundle_hc,
                     backend_hc.as_deref(),
                     &blobs_hc,
@@ -2786,7 +2822,12 @@ fn boot_frontend_vm(
                     headers_json,
                     body_text,
                     credentials,
-                ))
+                    wants_bytes.then_some(&mut body_bytes),
+                );
+                if let Some(bytes) = body_bytes {
+                    pending_bytes = bytes;
+                }
+                Ok(res)
             }
             "softn.device" => {
                 let req_id: u64 = arg(0).parse().unwrap_or(0);
@@ -3565,6 +3606,7 @@ fn handle_softn_fetch(
     headers_json: &str,
     body_text: &str,
     credentials: &str,
+    body_bytes: Option<&mut Option<Vec<u8>>>,
 ) -> String {
     if method.eq_ignore_ascii_case("GET") && (raw_url.starts_with("blob:") || raw_url.starts_with("data:")) {
         let (status, ct, bytes, err) = handle_softn_fetch_bytes(
@@ -3581,7 +3623,7 @@ fn handle_softn_fetch(
         if let Some(error) = err {
             return json!({ "error": error }).to_string();
         }
-        return format_fetch_response(raw_url, status, vec![("Content-Type".into(), ct)], &bytes);
+        return format_fetch_response(raw_url, status, vec![("Content-Type".into(), ct)], &bytes, body_bytes);
     }
 
     let mut headers: Vec<(String, String)> = Vec::new();
@@ -3623,7 +3665,7 @@ fn handle_softn_fetch(
             if send_same_origin_cookies {
                 store_set_cookies(cookies, raw_url, &resp.headers);
             }
-            return format_fetch_response(raw_url, resp.status, resp.headers, &resp.body);
+            return format_fetch_response(raw_url, resp.status, resp.headers, &resp.body, body_bytes);
         }
     }
 
@@ -3669,7 +3711,7 @@ fn handle_softn_fetch(
                 if send_same_origin_cookies {
                     store_set_cookies(cookies, &norm_path, &resp.headers);
                 }
-                return format_fetch_response(raw_url, resp.status, resp.headers, &resp.body);
+                return format_fetch_response(raw_url, resp.status, resp.headers, &resp.body, body_bytes);
             }
         }
 
@@ -3679,6 +3721,7 @@ fn handle_softn_fetch(
                 200,
                 vec![("Content-Type".into(), mime.into())],
                 &bytes,
+                body_bytes,
             );
         }
 
@@ -3687,6 +3730,7 @@ fn handle_softn_fetch(
             404,
             vec![("Content-Type".into(), "text/plain".into())],
             b"Not Found",
+            body_bytes,
         );
     }
 
@@ -3711,6 +3755,7 @@ fn handle_softn_fetch(
                     e.status,
                     vec![("Content-Type".into(), e.content_type)],
                     &e.body,
+                    body_bytes,
                 );
             }
             CacheLookup::Revalidate(e) => Some(e),
@@ -3755,6 +3800,7 @@ fn handle_softn_fetch(
                         refreshed.status,
                         merged_hdrs,
                         &refreshed.body,
+                        body_bytes,
                     );
                 }
             }
@@ -3763,30 +3809,40 @@ fn handle_softn_fetch(
             } else if matches!(upper_method.as_str(), "POST" | "PUT" | "PATCH" | "DELETE") {
                 http_cache.invalidate(raw_url);
             }
-            format_fetch_response(&final_url, status, resp_hdrs, &body)
+            format_fetch_response(&final_url, status, resp_hdrs, &body, body_bytes)
         }
         Err(e) => json!({ "error": e }).to_string(),
     }
 }
 
+/// The response as JSON for the page. When the page asked for the body's bytes
+/// (`body_bytes`) and they are not ASCII, they go there too and `binLen` says how many:
+/// `body` is lossy UTF-8, and an ASCII body is its own bytes.
 fn format_fetch_response(
     url: &str,
     status: u16,
     headers: Vec<(String, String)>,
     body: &[u8],
+    body_bytes: Option<&mut Option<Vec<u8>>>,
 ) -> String {
     let hdr_pairs: Vec<[String; 2]> = headers
         .into_iter()
         .filter(|(k, _)| !k.eq_ignore_ascii_case("set-cookie"))
         .map(|(k, v)| [k, v])
         .collect();
-    json!({
+    let mut out = json!({
         "url": url,
         "status": status,
         "headers": hdr_pairs,
         "body": String::from_utf8_lossy(body),
-    })
-    .to_string()
+    });
+    if let Some(sink) = body_bytes {
+        if !body.is_ascii() {
+            out["binLen"] = json!(body.len());
+            *sink = Some(body.to_vec());
+        }
+    }
+    out.to_string()
 }
 
 fn gesture_now_ms() -> u64 {

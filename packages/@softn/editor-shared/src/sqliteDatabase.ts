@@ -99,10 +99,17 @@ export interface SqliteTableStructure {
   pkColumns: string[];
 }
 
+/**
+ * A row's rowid: a number while a number holds it exactly, and past 2^53 its
+ * digits as text. Read as a number, 9007199254740993 came back as ...992,
+ * which is another row's, and Browse's Edit and Delete changed that row.
+ */
+export type SqliteRowid = number | string;
+
 export interface SqliteBrowseResult {
   columns: string[];
   /** Rows in column order; `rowid` is tracked separately when available. */
-  rows: Array<{ rowid: number | null; values: unknown[] }>;
+  rows: Array<{ rowid: SqliteRowid | null; values: unknown[] }>;
   totalRows: number;
   page: number;
   pageSize: number;
@@ -138,6 +145,24 @@ export function quoteSqlIdent(ident: string): string {
   const clean = String(ident ?? '');
   if (!clean) throw new Error('Identifier cannot be empty.');
   return `"${clean.replace(/"/g, '""')}"`;
+}
+
+/** A rowid read as text (`CAST(rowid AS TEXT)`): a number while a number holds it exactly, else the digits. */
+function rowidRead(raw: unknown): SqliteRowid | null {
+  if (raw === null || raw === undefined) return null;
+  const text = String(raw);
+  const n = Number(text);
+  return Number.isSafeInteger(n) ? n : text;
+}
+
+/**
+ * A rowid as it is bound in a WHERE: a finite number, or the digits of one a
+ * number cannot hold, which SQLite compares with the rowid as the integer they
+ * spell. Null for anything else.
+ */
+function rowidBound(rowid: SqliteRowid | null | undefined): SqliteRowid | null {
+  if (typeof rowid === 'number') return Number.isFinite(rowid) ? rowid : null;
+  return typeof rowid === 'string' && /^-?\d+$/.test(rowid) ? rowid : null;
 }
 
 /** The hex digits of a BLOB value in the engine's JSON form, or null for anything else. */
@@ -738,15 +763,16 @@ export class SqliteSession {
       };
     }
 
+    // The rowid as text, which the engine's JSON cannot round (see SqliteRowid).
     const selectSql = struct.hasRowid
-      ? `SELECT rowid AS __softn_rowid, ${colSelect} FROM ${quotedTable}${whereSql}${orderSql} LIMIT ? OFFSET ?`
+      ? `SELECT CAST(rowid AS TEXT) AS __softn_rowid, ${colSelect} FROM ${quotedTable}${whereSql}${orderSql} LIMIT ? OFFSET ?`
       : `SELECT ${colSelect} FROM ${quotedTable}${whereSql}${orderSql} LIMIT ? OFFSET ?`;
 
     const dataRes = this.exec(selectSql, [...params, pageSize, offset]);
     const rows = dataRes.rows.map((r) => {
       if (struct.hasRowid) {
         return {
-          rowid: r[0] === null || r[0] === undefined ? null : Number(r[0]),
+          rowid: rowidRead(r[0]),
           values: r.slice(1),
         };
       }
@@ -778,7 +804,7 @@ export class SqliteSession {
 
   updateRow(
     tableName: string,
-    locator: { rowid?: number | null; pkValues?: Record<string, unknown> },
+    locator: { rowid?: SqliteRowid | null; pkValues?: Record<string, unknown> },
     updates: Record<string, unknown>
   ): SqliteExecResult {
     const entries = Object.entries(updates);
@@ -789,8 +815,9 @@ export class SqliteSession {
     const setSql = entries.map(([k]) => `${quoteSqlIdent(k)} = ?`).join(', ');
     const params: unknown[] = entries.map(([, v]) => (v === undefined ? null : v));
 
-    if (typeof locator.rowid === 'number' && Number.isFinite(locator.rowid)) {
-      params.push(locator.rowid);
+    const rowid = rowidBound(locator.rowid);
+    if (rowid !== null) {
+      params.push(rowid);
       return this.exec(`UPDATE ${qt} SET ${setSql} WHERE rowid = ?`, params);
     }
     const pkEntries = Object.entries(locator.pkValues ?? {});
@@ -809,11 +836,12 @@ export class SqliteSession {
 
   deleteRow(
     tableName: string,
-    locator: { rowid?: number | null; pkValues?: Record<string, unknown> }
+    locator: { rowid?: SqliteRowid | null; pkValues?: Record<string, unknown> }
   ): SqliteExecResult {
     const qt = quoteSqlIdent(tableName);
-    if (typeof locator.rowid === 'number' && Number.isFinite(locator.rowid)) {
-      return this.exec(`DELETE FROM ${qt} WHERE rowid = ?`, [locator.rowid]);
+    const rowid = rowidBound(locator.rowid);
+    if (rowid !== null) {
+      return this.exec(`DELETE FROM ${qt} WHERE rowid = ?`, [rowid]);
     }
     const pkEntries = Object.entries(locator.pkValues ?? {});
     if (pkEntries.length === 0) {

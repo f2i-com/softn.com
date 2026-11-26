@@ -313,8 +313,28 @@ interface PageOutline {
 
 /** The blocks the lexer reads as raw text up to their closing tag. */
 const RAW_BLOCKS = new Set(['style', 'script', 'logic']);
-const CONTROL_FLOW_WORD = /#(if|elseif|else|each|empty|end)(?![A-Za-z])/y;
-const TAG_NAME = /[A-Za-z_$][\w$]*/y;
+/** A block's word after `#`, ending where the lexer's name does (`#each_day` and `#endổ` are words). */
+const CONTROL_FLOW_WORD = /#(if|elseif|else|each|empty|end)(?![\p{ID_Continue}$\u{200c}\u{200d}])/uy;
+/** A tag's name, and a custom element's to its end (`style-box`, `data-grid`), as the parser reads one. */
+const TAG_NAME = /[A-Za-z_$][\w$]*(?:-[\w$]+)*/y;
+
+/**
+ * The end tag of the raw block `name` from `from` on, as the lexer ends one
+ * (`blockEndAhead`): `</name` in any case and then `>` or white space, to its
+ * `>`. Null where there is none. An exact `</style>` was looked for, so a
+ * `</style >` the page ended its block with left the page unreadable here.
+ */
+function rawBlockEnd(source: string, name: string, from: number): { start: number; end: number } | null {
+  const lower = source.toLowerCase();
+  const close = `</${name}`;
+  for (let at = lower.indexOf(close, from); at !== -1; at = lower.indexOf(close, at + 1)) {
+    const after = source[at + close.length] ?? '';
+    if (after !== '>' && !/[ \t\n\f\r]/.test(after)) continue;
+    const end = source.indexOf('>', at + close.length);
+    return { start: at, end: end === -1 ? source.length : end + 1 };
+  }
+  return null;
+}
 
 /** Where `pattern` (a sticky one) ends when it matches at `at`, or -1. */
 function endOfMatch(pattern: RegExp, source: string, at: number): number {
@@ -398,8 +418,8 @@ function commentSpans(source: string): Span[] {
         i = tag.end;
         if (RAW_BLOCKS.has(name) && !tag.selfClosing) {
           // Read as text to its closing tag: nothing inside is a comment of the page's.
-          const close = source.toLowerCase().indexOf(`</${name}>`, tag.end);
-          i = close === -1 ? source.length : close + name.length + 3;
+          const close = rawBlockEnd(source, name, tag.end);
+          i = close === null ? source.length : close.end;
         }
         atTokenStart = true;
         continue;
@@ -501,10 +521,10 @@ function outlinePage(source: string): PageOutline {
       const dataClose = top && name === 'data' && !tag.selfClosing ? closingTag(source, name, tag.end) : null;
       if (RAW_BLOCKS.has(name) && !tag.selfClosing) {
         // Read as text to its closing tag, whatever is inside; never a root.
-        const close = source.toLowerCase().indexOf(`</${name}>`, tag.end);
-        const end = close === -1 ? source.length : close + name.length + 3;
-        if (top && name === 'style' && close !== -1) {
-          outline.styleBlocks.push({ start: i, end, innerStart: tag.end, innerEnd: close });
+        const close = rawBlockEnd(source, name, tag.end);
+        const end = close === null ? source.length : close.end;
+        if (top && name === 'style' && close !== null) {
+          outline.styleBlocks.push({ start: i, end, innerStart: tag.end, innerEnd: close.start });
         }
         i = end;
       } else if (RAW_BLOCKS.has(name) || (top && name === 'import')) {

@@ -1314,3 +1314,133 @@ fn the_pages_stamp_a_moment_behind_this_clock_is_kept() {
     let (edited, _) = db.update_record_at("c", json!({ "title": "mine" }), Some(&older)).unwrap();
     assert!(time(&edited.updated_at) >= now, "{}", edited.updated_at);
 }
+
+// ── R4: a record removed for good leaves no tombstone and no data behind ──
+
+/// The delta a peer sends when it takes `ids` out of its copy of `collection`'s document: what
+/// a store that removes records for good publishes (a Yrs map key removal, no tombstone).
+fn removal_delta(from: &mut XdbDatabase, collection: &str, ids: &[&str]) -> Vec<u8> {
+    let doc = Doc::new();
+    doc.transact_mut()
+        .apply_update(Update::decode_v1(&from.get_full_state(collection).unwrap()).unwrap())
+        .unwrap();
+    let before = doc.transact().state_vector();
+    {
+        let map = doc.get_or_insert_map("records");
+        let mut txn = doc.transact_mut();
+        for id in ids {
+            assert!(map.remove(&mut txn, id).is_some(), "{id} is in the document");
+        }
+    }
+    let delta = doc.transact().encode_state_as_update_v1(&before);
+    delta
+}
+
+/// A peer that removed a record for good took its key out of the replicated document. The
+/// document here followed (the key went) but the row stayed, live: the page went on showing
+/// it, an edit of it put it back in the document, and so back on the peer that had removed it.
+#[test]
+fn a_record_a_peer_removed_for_good_is_removed_here_too() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut origin = database(&dir, "origin.sqlite");
+    origin.upsert_record(note("kept", "stays")).unwrap();
+    origin.upsert_record(note("gone", "removed on the peer")).unwrap();
+    // A record of another collection under the same id is no record of this one: never touched.
+    origin.upsert_record(Record { collection: "private".into(), ..note("other", "mine") }).unwrap();
+    let mut here = database(&dir, "here.sqlite");
+    here.apply_remote_update("notes", &origin.get_full_state("notes").unwrap()).unwrap();
+    here.upsert_record(Record { collection: "private".into(), ..note("elsewhere", "mine") }).unwrap();
+    assert_eq!(live_ids(&here, "notes"), vec!["gone", "kept"]);
+
+    let delta = removal_delta(&mut origin, "notes", &["gone"]);
+    here.apply_remote_update("notes", &delta).unwrap();
+    assert_eq!(live_ids(&here, "notes"), vec!["kept"]);
+    assert!(matches!(here.get_record("gone"), Err(DbError::NotFound(_))), "the row is gone, not a tombstone");
+    assert_eq!(here.get_record("elsewhere").unwrap().collection, "private");
+    // The saved document agrees with the rows, after a reopen too.
+    drop(here);
+    let (rows, replica) = rows_and_replica(&dir, "here.sqlite", "notes");
+    assert_eq!(rows, replica);
+    assert_eq!(rows.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), vec!["kept"]);
+    // A duplicate delivery changes nothing.
+    let mut here = database(&dir, "here.sqlite");
+    here.apply_remote_update("notes", &delta).unwrap();
+    assert_eq!(live_ids(&here, "notes"), vec!["kept"]);
+}
+
+fn holds_bytes(haystack: &[u8], needle: &str) -> bool {
+    haystack.windows(needle.len()).any(|window| window == needle.as_bytes())
+}
+
+/// The page's `hardDelete` (and `db.prune`, `db.clearCollection`) on the desktop could only
+/// write a tombstone, and a tombstone keeps the record's data: in its row, in the saved
+/// document, and in every room the page's peer sync pushed it to after the next start.
+#[test]
+fn records_removed_for_good_leave_no_row_and_none_of_their_data() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut db = database(&dir, "removed.sqlite");
+    db.upsert_record(note("kept", "stays")).unwrap();
+    db.upsert_record(note("gone", "SECRET-MARKER-ONE")).unwrap();
+    db.upsert_record(note("deleted-first", "SECRET-MARKER-TWO")).unwrap();
+    db.delete_record("deleted-first").unwrap();
+    db.upsert_record(Record { collection: "private".into(), ..note("private-id", "mine") }).unwrap();
+    let mut peer = database(&dir, "peer.sqlite");
+    peer.apply_remote_update("notes", &db.get_full_state("notes").unwrap()).unwrap();
+
+    let ids = ["gone", "deleted-first", "private-id", "never-held"].map(String::from);
+    let (delta, refused) = db.remove_records("notes", &ids).unwrap();
+    assert_eq!(refused, vec!["private-id".to_string()], "another collection's record is left alone");
+    assert_eq!(live_ids(&db, "notes"), vec!["kept"]);
+    for id in ["gone", "deleted-first"] {
+        assert!(matches!(db.get_record(id), Err(DbError::NotFound(_))), "{id} left a row");
+    }
+    assert_eq!(db.get_record("private-id").unwrap().data, json!({ "title": "mine" }));
+    let saved: Vec<u8> = db.conn.query_row("SELECT doc_state FROM crdt_state WHERE collection = 'notes'", [], |row| row.get(0)).unwrap();
+    for marker in ["SECRET-MARKER-ONE", "SECRET-MARKER-TWO"] {
+        assert!(!holds_bytes(&saved, marker), "{marker} is still in the saved document");
+        assert!(!holds_bytes(&db.get_full_state("notes").unwrap(), marker), "{marker} would go to a peer");
+    }
+
+    // A peer that applies the delta removes them as well.
+    peer.apply_remote_update("notes", &delta.expect("the document changed")).unwrap();
+    assert_eq!(live_ids(&peer, "notes"), vec!["kept"]);
+    assert!(matches!(peer.get_record("deleted-first"), Err(DbError::NotFound(_))));
+
+    // As they are on disk: the rows and the document agree, and a removed id is free again.
+    drop(db);
+    let (rows, replica) = rows_and_replica(&dir, "removed.sqlite", "notes");
+    assert_eq!(rows, replica);
+    let mut db = database(&dir, "removed.sqlite");
+    db.create_record_with_id("notes", Some("gone"), json!({ "title": "made again" })).unwrap();
+    // Nothing left to remove is no delta, and a collection never held gets no document.
+    assert_eq!(db.remove_records("notes", &["never-held".to_string()]).unwrap(), (None, Vec::new()));
+    let documents = db.docs.len();
+    assert_eq!(db.remove_records("never-a-collection", &["gone".to_string()]).unwrap(), (None, vec!["gone".to_string()]));
+    assert_eq!(db.docs.len(), documents);
+}
+
+/// Inside a batch the removal is in the one document the batch saves, and a removal that
+/// fails rolls back alone.
+#[test]
+fn a_removal_inside_a_batch_is_saved_with_the_batch() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut db = database(&dir, "removed-batch.sqlite");
+    for id in ["a", "b", "c"] {
+        db.upsert_record(note(id, "here")).unwrap();
+    }
+    db.with_batch(|db| {
+        db.upsert_record(note("d", "pushed"))?;
+        db.remove_records("notes", &["a".to_string(), "b".to_string()])?;
+        let undone: DbResult<()> = db.with_transaction(|db| {
+            db.remove_records("notes", &["c".to_string()])?;
+            Err(DbError::InvalidOperation("refused".into()))
+        });
+        assert!(undone.is_err());
+        Ok(())
+    })
+    .unwrap();
+    drop(db);
+    let (rows, replica) = rows_and_replica(&dir, "removed-batch.sqlite", "notes");
+    assert_eq!(rows.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), vec!["c", "d"]);
+    assert_eq!(replica, rows);
+}

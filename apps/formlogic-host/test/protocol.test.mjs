@@ -109,7 +109,7 @@ test('a link to another page of the app is shown in the frame, and the parent is
   assert.match(main, /type: 'formlogic:ready'[^\n]*, places: 1(, [^\n]*)? \}, '\*'\);/);
   // The renderer asks the frame about each link, and the page's own code is sent to the app's
   // pages or nowhere: any other address the frame goes to is the parent's own page.
-  assert.match(main, /key=\{page\.file \?\? ''\} onLink=\{followLink\} pagesOnly/);
+  assert.match(main, /key=\{`\$\{page\.visit \?\? 0\}\/\$\{page\.file \?\? ''\}`\} onLink=\{followLink\} pagesOnly/);
   // Decided as SoftN Web decides it, by core's own reading of the bundle, from the files of the
   // version on screen; a link that is not to a page of the app stays the browser's.
   const follow = main.slice(main.indexOf('const followLink = (href: string): boolean => {'), main.indexOf('updates.open('));
@@ -125,6 +125,22 @@ test('a link to another page of the app is shown in the frame, and the parent is
   assert.ok(main.indexOf("port?.postMessage({ type: 'shown' })") < main.indexOf('drawn = true; tellPlace();'));
   // A named page the renderer reports is the app's place only while its page is the one on screen.
   assert.match(main, /onPageChange=\{name => \{ if \(shown === page\) \{ section = name; tellPlace\(\); \} \}\}/);
+});
+
+test('Back and Forward in the parent put the app at the place it names, in a run of the page of its own', () => {
+  // The lines navigate-live.test.mjs runs the real renderer with. A named page shown again on the
+  // same page file was handed to the renderer as a change of state, which it takes only when it
+  // differs from the one handed it before, so after the app chose another page Back showed nothing
+  // new; and a place with no named page drew the page again where it stood and told the parent `/`.
+  const navigate = main.slice(main.indexOf('navigatePlace = (to: string) => {'), main.indexOf('updates.open('));
+  assert.match(navigate, /const dest = startPlace\(to, text, main, bundlePageAt\);\s*const targetPath = dest\.file \?\? main;\s*if \(!targetPath\) return;/);
+  assert.match(navigate, /if \(dest\.file === shown\.file && \(dest\.section === null \|\| dest\.section === section\)\) return;/);
+  assert.match(navigate, /shown = \{ file: dest\.file, composed, live: createLiveApp\(\), imports: importsFrom\(text\), visit: \+\+visits, \.\.\.\(dest\.section \? \{ initialState: \{ currentPage: dest\.section \} \} : \{\}\) \};\s*section = dest\.section;\s*draw\(\);/);
+  // Each is a run of its own: part of the renderer's key, as the page file is.
+  assert.match(main, /key=\{`\$\{page\.visit \?\? 0\}\/\$\{page\.file \?\? ''\}`\}/);
+  // One that comes while the app is opening is taken once it is open, as the web frame takes it.
+  assert.match(main, /if \(navigatePlace\) navigatePlace\(event\.data\.to\);\s*else navigateWhenOpen = event\.data\.to;/);
+  assert.match(main, /draw\(\);\s*(\/\/[^\n]*\n\s*)*if \(navigateWhenOpen !== undefined\) navigatePlace\(navigateWhenOpen\);\s*\} catch \(error\) \{/);
 });
 
 test('no link the person clicks takes the frame off the app: one to the outside goes to the parent', () => {
@@ -149,6 +165,14 @@ test('no link the person clicks takes the frame off the app: one to the outside 
   assert.match(main, /pageLinks = \{\s*isPage: href => linkedPage\(updates\.files\(\), mainPage\(updates\.files\(\)\), shown\.file, href, bundlePageAt\) !== null,\s*follow: followLink,\s*\};/);
 });
 
+test('an app that ends lets go of its media, once nothing of it is drawn', () => {
+  // A frame its parent ends may stay on the parent's page, with every file of the app's media held
+  // (media.test.mjs: releaseAllMedia). Let go of in the one place the frame ends, after the unmount.
+  const end = main.slice(main.indexOf('function terminate(): void {'), main.indexOf("window.addEventListener('pagehide'"));
+  assert.match(end, /root\.unmount\(\);\s*\}\s*(\/\/[^\n]*\n\s*)*releaseAllMedia\(\);\s*\}/);
+  assert.equal((main.match(/releaseAllMedia\(\)/g) || []).length, 1);
+});
+
 test('the page reads its own data files by name, as SoftN Web gives them', () => {
   assert.match(main, /textUrl: textFileUrl,/);
 });
@@ -161,7 +185,7 @@ test('a parent may send media as bytes, file by file, and the page is given blob
   assert.match(main, /for \(const \[path, value\] of Object\.entries\(event\.data\.assets \|\| \{\}\)\) \{\s*const url = mediaUrl\(path, value\);\s*if \(url\) media\.set\(path, url\);\s*\}/);
   // An update's media go through the same module: a file sent again as it was keeps its address, and one
   // no version has is let go of; one the page was given, past a limit, by its size (update.test.mjs).
-  assert.match(main, /import \{ mediaBytes, mediaUrl, releaseMedia, sameMedia, svgTextOf, textFileUrl \} from '\.\/media';/);
+  assert.match(main, /import \{ mediaBytes, mediaUrl, releaseAllMedia, releaseMedia, sameMedia, svgTextOf, textFileUrl \} from '\.\/media';/);
   assert.match(main, /languages: bundleLanguages, compose: composeBundleSource, mediaUrl, themeOf: declaredThemeMode,\s*(\/\/[^\n]*\n\s*)*sameMedia, releaseMedia, mediaBytes,/);
 });
 
@@ -182,4 +206,7 @@ test('an app on another of its pages is handed a newer version of that page', ()
   // The rules (update.ts) ask where the app stands and whether a version still has that page.
   assert.match(main, /hasPage: \(files, main, path\) => isOtherPage\(files, main, path, bundlePageAt\),/);
   assert.match(main, /page: \(\) => shown\.file,/);
+  // And which run of it is on screen: a place the parent sent the app to is a run of its own, of
+  // the same page file too, and a version handed to the run it replaced goes to it (update.test.mjs).
+  assert.match(main, /page: \(\) => shown\.file,\s*(\/\/[^\n]*\n\s*)*run: \(\) => shown,/);
 });

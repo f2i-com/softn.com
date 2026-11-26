@@ -520,7 +520,8 @@ export function BarChart({
                   width: '10px',
                   height: '10px',
                   borderRadius: '2px',
-                  backgroundColor: s.color || defaultColors[idx % defaultColors.length],
+                  // The colour its bars are drawn in (safeSvgPaint), not `s.color` as given.
+                  backgroundColor: safeSvgPaint(s.color, defaultColors[idx % defaultColors.length]),
                 }}
               />
               <span style={{ color: 'var(--color-text, #e4e4e7)' }}>{s.name}</span>

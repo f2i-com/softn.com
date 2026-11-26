@@ -26,6 +26,9 @@ export function recordDate(value: unknown): Date {
   if (day) {
     const [year, month, date] = [Number(day[1]), Number(day[2]) - 1, Number(day[3])];
     const local = new Date(year, month, date);
+    // `new Date(y, m, d)` reads a year below 100 as 19yy: "0050-06-01" was
+    // 1 June 1950. setFullYear takes the year as it is written.
+    if (year < 100) local.setFullYear(year, month, date);
     return local.getMonth() === month && local.getDate() === date ? local : new Date(NaN);
   }
   return new Date(value as string | number);

@@ -87,6 +87,8 @@ interface NativeThreeRendererEntry {
   materials: Map<number, import('three').Material>;
   textures: Map<number, import('three').Texture>;
   resourceBytes: Map<string, number>;
+  /** The keys of `resourceBytes` of each geometry, by its prefix (`geo:<id>:`), made as they are tracked. */
+  resourceKeys?: Map<string, Set<string>>;
   allocatedBytes: number;
   dirty: boolean;
   disposed?: boolean;
@@ -616,23 +618,29 @@ export class ThreeWorkerHost {
                   wantedSet.add(ch);
                 }
               }
-              // Remove children no longer present
+              // Remove children no longer present: the app's. (A model loaded into a group of the
+              // app's, loadGLTF's, is the Worker's own and stays: the app adding to the group
+              // made the model vanish.)
               for (let c = parent.children.length - 1; c >= 0; c--) {
                 const existing = parent.children[c];
-                if (!wantedSet.has(existing)) {
+                if (!wantedSet.has(existing) && existing.userData?.__snId) {
                   parent.remove(existing);
                 }
               }
-              // Add missing children and match exact order
+              // Add missing children and match exact order (the Worker's own first)
               for (let c = 0; c < wanted.length; c++) {
                 const ch = wanted[c];
                 if (ch.parent !== parent) {
                   parent.add(ch);
                 }
               }
-              if (parent.children.length === wanted.length) {
+              const own = parent.children.filter((ch) => !wantedSet.has(ch));
+              if (parent.children.length === own.length + wanted.length) {
+                for (let c = 0; c < own.length; c++) {
+                  parent.children[c] = own[c];
+                }
                 for (let c = 0; c < wanted.length; c++) {
-                  parent.children[c] = wanted[c];
+                  parent.children[own.length + c] = wanted[c];
                 }
               }
             }
@@ -794,8 +802,21 @@ export class ThreeWorkerHost {
     const nextTotal = entry.allocatedBytes - prev + nextBytes;
     if (nextTotal > MAX_THREE_CUMULATIVE_BYTES) return false;
     entry.allocatedBytes = Math.max(0, nextTotal);
-    if (nextBytes > 0) entry.resourceBytes.set(key, nextBytes);
-    else entry.resourceBytes.delete(key);
+    if (nextBytes > 0) {
+      entry.resourceBytes.set(key, nextBytes);
+      // Kept by geometry too: letting go of one was a look through every part of every geometry
+      // (deleting a scene of 10,000 geometries took seconds).
+      if (key.startsWith('geo:')) {
+        const prefix = key.slice(0, key.indexOf(':', 4) + 1);
+        if (!entry.resourceKeys) entry.resourceKeys = new Map();
+        let keys = entry.resourceKeys.get(prefix);
+        if (!keys) {
+          keys = new Set();
+          entry.resourceKeys.set(prefix, keys);
+        }
+        keys.add(key);
+      }
+    } else entry.resourceBytes.delete(key);
     return true;
   }
 
@@ -812,6 +833,13 @@ export class ThreeWorkerHost {
   private releaseResourceBytesPrefix(entry: NativeThreeRendererEntry, prefix: string): void {
     if (!entry.resourceBytes) return;
     if (typeof entry.allocatedBytes !== 'number') entry.allocatedBytes = 0;
+    if (entry.resourceKeys && prefix.startsWith('geo:')) {
+      // Every key of a geometry is kept under its prefix as it is tracked.
+      const keys = entry.resourceKeys.get(prefix);
+      entry.resourceKeys.delete(prefix);
+      if (keys) for (const k of keys) this.releaseResourceBytes(entry, k);
+      return;
+    }
     for (const [k, v] of [...entry.resourceBytes]) {
       if (k.startsWith(prefix)) {
         entry.allocatedBytes = Math.max(0, entry.allocatedBytes - v);
@@ -856,18 +884,31 @@ export class ThreeWorkerHost {
       if (data.byteLength > MAX_THREE_TEXTURE_BYTES || !this.trackResourceBytes(entry, `tex:${id}`, data.byteLength)) return;
       const fmt = typeof spec.format === 'number' ? (spec.format as import('three').PixelFormat) : THREE.RGBAFormat;
       const typ = typeof spec.type === 'number' ? (spec.type as import('three').TextureDataType) : THREE.UnsignedByteType;
-      tex?.dispose();
-      tex = new THREE.DataTexture(data as BufferSource, w, h, fmt, typ);
-      entry.textures.set(id, tex);
+      const prev = tex as import('three').DataTexture | undefined;
+      if (prev && prev.isDataTexture) {
+        // The same texture, new data: what is drawn with it (a material's map, a scene's
+        // background) names this one, and a new one in its place was never seen. Its storage
+        // is made again when its size or kind changed.
+        const had = prev.image as { width?: number; height?: number } | null;
+        if (!had || had.width !== w || had.height !== h || prev.format !== fmt || prev.type !== typ) prev.dispose();
+        prev.image = { data, width: w, height: h } as typeof prev.image;
+        prev.format = fmt;
+        prev.type = typ;
+      } else {
+        tex?.dispose();
+        tex = new THREE.DataTexture(data as BufferSource, w, h, fmt, typ);
+        entry.textures.set(id, tex);
+      }
     } else if (kind === 'img') {
       const bmp = typeof spec.ref === 'string' ? (resolvers?.getImageBitmap?.(spec.ref) ?? null) : null;
-      if (bmp) {
-        if (!tex) {
-          tex = new THREE.Texture(bmp as unknown as HTMLImageElement);
-          entry.textures.set(id, tex);
-        } else {
-          tex.image = bmp;
-        }
+      if (!tex) {
+        // Made now, with its picture or before it has come (TextureLoader's texture is the
+        // app's at once, its picture later): a material sent with it is bound to it, and it
+        // is given its picture when it comes.
+        tex = new THREE.Texture((bmp ?? undefined) as unknown as HTMLImageElement);
+        entry.textures.set(id, tex);
+      } else if (bmp) {
+        tex.image = bmp;
       }
     }
     if (!tex) return;
@@ -881,7 +922,8 @@ export class ThreeWorkerHost {
     if (typeof spec.generateMipmaps === 'boolean') tex.generateMipmaps = spec.generateMipmaps;
     if (typeof spec.flipY === 'boolean') tex.flipY = spec.flipY;
     if (typeof spec.anisotropy === 'number') tex.anisotropy = spec.anisotropy;
-    tex.needsUpdate = true;
+    // Uploaded when it has a picture (one asked to upload without, Three.js warns of every frame).
+    if (tex.image) tex.needsUpdate = true;
   }
 
   private applyGeometryOp(
@@ -1327,7 +1369,12 @@ export class ThreeWorkerHost {
     }> = [];
     for (let i = 0; i < hits.length && i < 64; i++) {
       const h = hits[i];
-      const snId = Number(h.object?.userData?.__snId);
+      // A loaded model's own meshes (loadGLTF) are the Worker's and carry no id of the app's:
+      // the hit is on the nearest object up from it that the app holds, the model's.
+      let snId = 0;
+      for (let o: import('three').Object3D | null = h.object ?? null, depth = 0; o && !snId && depth < MAX_OBJECTS; o = o.parent, depth++) {
+        snId = Number(o.userData?.__snId) || 0;
+      }
       if (!snId) continue;
       out.push({
         id: snId,

@@ -55,6 +55,16 @@ function nativeStore() {
         if (!row) throw new Error('Record not found');
         return row;
       }
+      case 'remove_records': {
+        // For good, with no tombstone; another collection's id is left (db.rs remove_records).
+        const refused: string[] = [];
+        for (const id of args.ids as string[]) {
+          const held = rows.get(id);
+          if (held && held.collection !== args.collection) refused.push(id);
+          else rows.delete(id);
+        }
+        return refused;
+      }
       case 'import_records':
         return { imported: 0, tombstoned: 0, collections: [] };
       default:
@@ -138,7 +148,8 @@ describe('a peer\'s removal of a record in a collection that did not load', () =
     expect(xdb.isHydrated('notes')).toBe(false);
     xdb.removeRecord('notes', 'n1', { fromPeer: true });
     await settle();
-    expect(native.rows.get('n1')?.deleted).toBe(true);
+    // Removed for good (round 4): a tombstone kept the record's data.
+    expect(native.rows.has('n1')).toBe(false);
     expect(() => xdb.removeRecord('notes', 'n2')).toThrow(/has not been loaded/);
     expect(native.rows.get('n2')?.deleted).toBe(false);
   });

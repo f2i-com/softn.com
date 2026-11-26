@@ -160,7 +160,9 @@ export function last<T>(items: T[], count?: number): T | T[] | undefined {
     return items[items.length - 1];
   }
 
-  return items.slice(-count);
+  // `slice(-0)` is the whole list: a count of 0 (or none that is a number) is no items, as
+  // `first` answers.
+  return count > 0 ? items.slice(-count) : [];
 }
 
 /**

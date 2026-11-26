@@ -805,10 +805,22 @@ export class DocumentShell implements DocumentShellView {
       for (const list of media) list.removeEventListener?.('change', viewChanged);
       this.sizes?.disconnect();
       this.sizes = null;
+      // The observer goes with the page; what it measured is measured again
+      // on the next (a container drawn anew, StrictMode's second connect).
+      for (const id of this.measuring.values()) this.remeasure.add(id);
+      this.measuring.clear();
     });
     for (const type of this.listened) this.hear(type);
     // Values and settings the code asked for before the page was drawn.
     for (const id of [...this.pendingProps.keys()]) this.settle(id);
+    // What was measured on the page before, where this one draws it. One it
+    // does not draw is let go, as an element taken off the page is.
+    const measured = [...this.remeasure];
+    this.remeasure.clear();
+    for (const id of measured) {
+      const element = this.elementById(id);
+      if (element) this.measure(id, element);
+    }
   }
 
   disconnect(): void {
@@ -821,10 +833,25 @@ export class DocumentShell implements DocumentShellView {
   private readonly measuring = new Map<Element, number>();
   private boxesDue: Array<[number, number, number, number, number]> | null = null;
 
+  /**
+   * The ids measured before the shell was last disconnected: the code asks
+   * once, so each is measured again on the page connected next (`connect`).
+   */
+  private remeasure = new Set<number>();
+
   /** Measure an element of the code's, now and whenever it changes size. */
   private measure(id: number, element: Element): void {
-    if (typeof ResizeObserver !== 'function' || this.measuring.size >= MAX_MEASURED) return;
-    for (const [known, knownId] of this.measuring) if (knownId === id && known !== element) this.sizes?.unobserve(known);
+    if (typeof ResizeObserver !== 'function') return;
+    // One element for each of the code's: one drawn in another's place is let
+    // go. Unobserved but kept, it was held and counted, and once MAX_MEASURED
+    // had been drawn again so, nothing on the page was measured any more.
+    for (const [known, knownId] of this.measuring) {
+      if (knownId === id && known !== element) {
+        this.sizes?.unobserve(known);
+        this.measuring.delete(known);
+      }
+    }
+    if (!this.measuring.has(element) && this.measuring.size >= MAX_MEASURED) return;
     this.measuring.set(element, id);
     this.sizes ??= new ResizeObserver((entries) => {
       for (const entry of entries) {

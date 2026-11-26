@@ -49,7 +49,8 @@ describe('a call into a worker', () => {
     try {
       const loaded = await runtime.loadScript({ type: 'LogicBlock', code: 'function take(a) { return 1 }', loc: { line: 1, column: 0, start: 0, end: 0 } });
       await expect(loaded.functions.take!({ value: 1, done: () => undefined }, [new Map([[1, 2]])])).resolves.toBe(1);
-      expect(received).toEqual([[{ value: 1, done: null }, [null]]]);
+      // A Map crosses as its [key, value] pairs (vm-args.ts dataOf).
+      expect(received).toEqual([[{ value: 1, done: null }, [[[1, 2]]]]]);
     } finally {
       runtime.cleanup();
     }

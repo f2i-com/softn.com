@@ -71,7 +71,17 @@ const MIME_TYPES: Readonly<Record<string, string>> = {
   mp3: 'audio/mpeg',
   wav: 'audio/wav',
   ogg: 'audio/ogg',
+  // The audio and video types the bundle directory (softn-api's bundle.php)
+  // and the FormLogic host already give these files. Without them a <track>
+  // was refused (a browser loads captions only as text/vtt) and these media
+  // went out as application/octet-stream.
+  opus: 'audio/ogg',
+  m4a: 'audio/mp4',
+  aac: 'audio/aac',
+  flac: 'audio/flac',
+  vtt: 'text/vtt; charset=utf-8',
   mp4: 'video/mp4',
+  ogv: 'video/ogg',
   webm: 'video/webm',
   glb: 'model/gltf-binary',
   gltf: 'model/gltf+json',
@@ -165,6 +175,41 @@ export function resolveVfsPath(input: string, basePath = 'index.html'): string |
   return resolved.length > 0 ? resolved.join('/') : null;
 }
 
+/**
+ * The address of a file by its name in the archive: the name, with what an address reads as
+ * something else (`%`, `?`, `#`) written as itself, so that resolveVfsPath gives the name back.
+ */
+export function addressOfName(name: string): string {
+  return name.replace(/[%?#]/g, (c) => encodeURIComponent(c));
+}
+
+/**
+ * An import map's relative targets, resolved against the page that holds the map, as a
+ * browser resolves them, and written as root-relative addresses of the frontend's files.
+ * Left as written, a target was resolved against each importing module: with
+ * `{"lib": "./vendor/lib.js"}` in index.html, `src/main.js` importing `lib` got
+ * `src/vendor/lib.js`, where a browser gives `vendor/lib.js`. Other targets are kept.
+ */
+function importMapFromPage(imports: Record<string, string>, pageVfsPath: string): Record<string, string> {
+  const fromPage: Record<string, string> = Object.create(null);
+  for (const [key, target] of Object.entries(imports)) {
+    if (!target.startsWith('./') && !target.startsWith('../')) {
+      fromPage[key] = target;
+      continue;
+    }
+    // A prefix target (`./vendor/pkg/`, or `./` itself) is resolved with a name after it, so
+    // that its folder survives: resolveVfsPath gives no folder of its own.
+    const folder = target.endsWith('/');
+    const resolved = resolveVfsPath(folder ? `${target}x` : target, pageVfsPath);
+    if (resolved === null) {
+      fromPage[key] = target;
+      continue;
+    }
+    fromPage[key] = '/' + addressOfName(folder ? resolved.slice(0, -1) : resolved);
+  }
+  return fromPage;
+}
+
 export function bytesToBase64(bytes: Uint8Array): string {
   let binary = '';
   for (let i = 0; i < bytes.length; i += 0x8000) {
@@ -242,6 +287,18 @@ export function piecesSize(given: unknown): number {
   let size = 0;
   for (const piece of given as unknown[]) if (piece && typeof (piece as BlobPiece).base64 === 'string') size += Math.ceil(((piece as BlobPiece).base64.length * 3) / 4);
   return size;
+}
+
+/**
+ * What a folder compressed in a Mac's Finder carries beside its files: the `__MACOSX/` tree
+ * of resource forks, and a `.DS_Store` in every folder that was looked at. Neither is the
+ * app's (Studio's import leaves both out by the same rule, projectImport.ts). Here they were
+ * files of the app's: a `dist/` zipped so had two top folders and kept its folder's name in
+ * every path, and `__MACOSX/dist/._index.html` (a resource fork) could be the page it ran.
+ */
+function isArchiveLitter(path: string): boolean {
+  const segments = path.split('/');
+  return segments[0] === '__MACOSX' || segments[segments.length - 1] === '.DS_Store';
 }
 
 /**
@@ -369,7 +426,7 @@ export class ContainerArchive {
           ? precomputedDigest.toLowerCase()
           : await sha256Hex(bytes);
       const zipArchive = openBundleArchive(bytes);
-      const rawNames = zipArchive.names();
+      const rawNames = zipArchive.names().filter((n) => !isArchiveLitter(n));
       const rawPrefix = detectSingleRootPrefix(rawNames);
       const normalizedList = rawNames.map((n) => (rawPrefix && n.startsWith(rawPrefix) ? n.slice(rawPrefix.length) : n)).filter(Boolean);
       const manifestRawName = rawNames.find((n) => (rawPrefix && n.startsWith(rawPrefix) ? n.slice(rawPrefix.length) : n) === 'manifest.json');
@@ -412,9 +469,10 @@ export class ContainerArchive {
       });
     }
 
-    // Unpacked file map — apply the same path-safety checks as ZIP entries.
+    // Unpacked file map — apply the same path-safety checks as ZIP entries (and leave out the
+    // same litter, isArchiveLitter).
     const isUnsafeMapKey = (key: string): boolean => {
-      if (!key || key.includes('\0') || /^[a-zA-Z]:/.test(key) || key.startsWith('/') || key.endsWith('/')) return true;
+      if (!key || key.includes('\0') || /^[a-zA-Z]:/.test(key) || key.startsWith('/') || key.endsWith('/') || isArchiveLitter(key)) return true;
       const segs = key.split('/');
       for (const s of segs) {
         if (!s || s === '.' || s === '..' || UNSAFE_PATH_SEGMENTS.has(s)) return true;
@@ -611,8 +669,20 @@ export class ContainerArchive {
     return true;
   }
 
+  /**
+   * The file `path` names: itself when it is the name of one of the archive's files, and
+   * otherwise the file it is the address of (resolveExistingPath). A reader is handed names
+   * as often as addresses (a file the page's address was resolved to, every file of the
+   * archive's own list), and a name read as an address once more is another file's or none:
+   * `img/100%.png` does not decode, `img/what?.png` is `img/what`, `img/a%20b.png` is
+   * `img/a b.png`. Each of those was missing from the app's files and showed no picture.
+   */
+  private nameOf(path: string, basePath?: string): string | null {
+    return basePath === undefined && this.normalizedNames.has(path) ? path : this.resolveExistingPath(path, basePath);
+  }
+
   has(path: string): boolean {
-    return this.resolveExistingPath(path) !== null;
+    return this.nameOf(path) !== null;
   }
 
   names(): string[] {
@@ -620,7 +690,8 @@ export class ContainerArchive {
   }
 
   readText(path: string, basePath?: string): string | null {
-    const resolved = this.resolveExistingPath(path, basePath);
+    if (this.disposed) return null;
+    const resolved = this.nameOf(path, basePath);
     if (!resolved) return null;
     const cached = this.textCache.get(resolved);
     if (cached !== undefined) return cached;
@@ -633,7 +704,7 @@ export class ContainerArchive {
 
   readBytes(path: string, basePath?: string): Uint8Array | null {
     if (this.disposed) return null;
-    const resolved = this.resolveExistingPath(path, basePath);
+    const resolved = this.nameOf(path, basePath);
     if (!resolved) return null;
     const cachedBin = this.binaryCache.get(resolved);
     if (cachedBin) return cachedBin;
@@ -665,7 +736,11 @@ export class ContainerArchive {
    */
   getBlobUrl(path: string, basePath?: string): string | null {
     if (this.disposed || typeof URL.createObjectURL !== 'function') return null;
-    const resolved = this.resolveFrontendExistingPath(path, basePath);
+    // A name of the archive's is that file or nothing (nameOf); anything else is an address.
+    const resolved =
+      basePath === undefined && this.normalizedNames.has(path)
+        ? this.isFrontendPath(path) ? path : null
+        : this.resolveFrontendExistingPath(path, basePath);
     if (!resolved) return null;
     const existing = this.blobUrls.get(resolved);
     if (existing) return existing;
@@ -751,8 +826,12 @@ export class ContainerArchive {
   putRuntimeBlob(id: string, type: string, bytes: Uint8Array): boolean {
     if (this.disposed || !/^[\w-]{1,64}$/.test(id) || this.runtimeBlobs.has(id)) return false;
     if (this.runtimeBlobs.size >= MAX_RUNTIME_BLOBS || this.runtimeBlobBytes + bytes.byteLength > MAX_RUNTIME_BLOB_BYTES) return false;
-    // Its type as a type and nothing else: it ends up in an address.
-    const clean = /^[\w.+-]+\/[\w.+-]+$/.test(type) ? type.toLowerCase() : 'application/octet-stream';
+    // Its type as a type and nothing else: it ends up in an address. Without its parameters
+    // (`image/svg+xml;charset=utf-8`, `audio/webm;codecs=opus`), which a type is written with
+    // as often as not: the whole was refused as no type, and a drawing made as text and shown
+    // as a picture was handed to the page as bytes of no kind, which no picture is drawn from.
+    const essence = String(type).split(';')[0].trim();
+    const clean = /^[\w.+-]+\/[\w.+-]+$/.test(essence) ? essence.toLowerCase() : 'application/octet-stream';
     this.runtimeBlobs.set(id, { bytes, type: clean, url: null });
     this.runtimeBlobBytes += bytes.byteLength;
     return true;
@@ -927,7 +1006,7 @@ export class ContainerArchive {
         files.push({
           name: rest,
           path: name,
-          urlPath: `/${name}`,
+          urlPath: `/${addressOfName(name)}`,
           kind: 'file',
           navigable,
           ext: ext || undefined,
@@ -943,7 +1022,7 @@ export class ContainerArchive {
         return {
           name: dirName,
           path: full,
-          urlPath: `/${full}/`,
+          urlPath: `/${addressOfName(full)}/`,
           kind: 'dir',
           navigable: true,
         };
@@ -999,6 +1078,9 @@ export class ContainerArchive {
     this.blobUrls.clear();
     for (const id of [...this.runtimeBlobs.keys()]) this.dropRuntimeBlob(id);
     this.binaryCache.clear();
+    // Every text file of the app, decoded: kept past this by whatever still holds the archive
+    // (a host's handle of the mount), it was the app's whole source held for nothing.
+    this.textCache.clear();
     this.zipArchive?.release();
   }
 }
@@ -1061,12 +1143,29 @@ export function isBackendPrivatePath(path: string, hasBackend: boolean, backendR
   return false;
 }
 
+/**
+ * A path `manifest.json` names (`main`, `frontendRoot`, `backend.entry`, `backend.root`) as a
+ * name of the archive's, read as both servers read it (softn-host-rust's `normalize_vfs_key`,
+ * softn-host-php's `normalizeVfsKey`): slashes for backslashes, no empty or `.` segments, and
+ * `..` taking the segment before it away. `"main": "./public/index.html"` ran on either
+ * server and, here, named no file, so the container started on another page of the app's.
+ */
+function normalizeManifestPath(raw: string): string {
+  const parts: string[] = [];
+  for (const seg of raw.replace(/\\/g, '/').split('/')) {
+    if (!seg || seg === '.') continue;
+    if (seg === '..') parts.pop();
+    else parts.push(seg);
+  }
+  return parts.join('/');
+}
+
 function parseExplicitBackend(raw: unknown): BackendConfig | undefined {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
   const obj = raw as Record<string, unknown>;
   const rt = typeof obj.runtime === 'string' ? obj.runtime.toLowerCase() : '';
   if (!['rust', 'php', 'javascript', 'typescript', 'python'].includes(rt)) return undefined;
-  const entry = typeof obj.entry === 'string' ? obj.entry.replace(/\\/g, '/').replace(/^\/+/, '') : '';
+  const entry = typeof obj.entry === 'string' ? normalizeManifestPath(obj.entry) : '';
   if (!entry) return undefined;
   const mode = obj.mode === 'ssr' || obj.mode === 'api' ? obj.mode : undefined;
   const routes = Array.isArray(obj.routes)
@@ -1081,7 +1180,7 @@ function parseExplicitBackend(raw: unknown): BackendConfig | undefined {
           Object.entries(obj.env as Record<string, unknown>).map(([k, v]) => [k, String(v ?? '')])
         )
       : undefined;
-  const root = typeof obj.root === 'string' ? obj.root.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '') : undefined;
+  const root = typeof obj.root === 'string' ? normalizeManifestPath(obj.root) : undefined;
   const phpMode = obj.phpMode === 'worker' || obj.phpMode === 'sapi' ? obj.phpMode : undefined;
   return {
     runtime: rt as BackendRuntimeKind,
@@ -1211,9 +1310,9 @@ function buildContainerMeta(
   let backend = parseExplicitBackend(rawManifest?.backend);
   let frontendRoot =
     typeof rawManifest?.frontendRoot === 'string'
-      ? rawManifest.frontendRoot.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
+      ? normalizeManifestPath(rawManifest.frontendRoot) || undefined
       : typeof (rawManifest?.frontend as Record<string, unknown> | undefined)?.root === 'string'
-        ? String((rawManifest?.frontend as Record<string, unknown>).root).replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
+        ? normalizeManifestPath(String((rawManifest?.frontend as Record<string, unknown>).root)) || undefined
         : undefined;
   const databases = parseExplicitDatabases(rawManifest?.databases) ?? discoverDatabases(names, texts);
 
@@ -1304,7 +1403,7 @@ function buildContainerMeta(
   }
 
   // Entry file discovery (explicit manifest -> frontendRoot/index.html -> root index.html -> SSR backend -> sole root .html -> legacy .ui)
-  let main = typeof rawManifest?.main === 'string' ? rawManifest.main.replace(/^\/+/, '') : '';
+  let main = typeof rawManifest?.main === 'string' ? normalizeManifestPath(rawManifest.main) : '';
   let ssrEntry = false;
   if (!main || !names.has(main)) {
     if (frontendRoot && names.has(`${frontendRoot}/index.html`)) {
@@ -1351,7 +1450,9 @@ function buildContainerMeta(
       : 'web';
   const entryHtml = mode === 'web' && !ssrEntry ? rawEntryText : '';
   const htmlMeta = entryHtml ? extractHtmlHeadMeta(entryHtml) : {};
-  const manifestImports = readWebImportMap(entryHtml, rawManifest?.imports);
+  const feRootPrefix = frontendRoot ? frontendRoot.replace(/^\/+|\/+$/g, '') + '/' : '';
+  const pageVfsPath = feRootPrefix && main.startsWith(feRootPrefix) ? main.slice(feRootPrefix.length) : main;
+  const manifestImports = importMapFromPage(readWebImportMap(entryHtml, rawManifest?.imports), pageVfsPath);
 
   const config =
     rawManifest?.config && typeof rawManifest.config === 'object'

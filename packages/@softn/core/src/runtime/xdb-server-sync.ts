@@ -673,6 +673,15 @@ export class XDBServerSync {
   /** Records received per collection of a pull that named a point to start from. */
   private sincePulled = new Map<string, number>();
   /**
+   * The catch-up pull from a floor of each collection whose whole pull is still coming in: sent
+   * when its last page has arrived (`handleSyncState`). Both answer as `sync_state` and nothing
+   * says which pull an answer is of, so sent with the whole pull, the catch-up's answer moved the
+   * place to the floor between two of its pages, and a drop before the next page lost what that
+   * page held here. One for each collection, however often the pulls are asked for again; a new
+   * connection asks afresh.
+   */
+  private catchUpAfterWhole = new Map<string, ClientMessage>();
+  /**
    * The device's time up to which every change made here is in the queue or
    * answered (`WATCHED_META`); null when this store has never been synced,
    * and every record in it is one the server has yet to be sent.
@@ -1132,6 +1141,7 @@ export class XDBServerSync {
           // to go again once the error had moved it, and the host applied
           // and broadcast it a second time.
           if (this.inflightOps.delete(id) || this.pendingOps.delete(id)) {
+            if (op) this.forgetLastOp(op);
             this.forgetMade(id);
             this.finished.add(id);
             this.removals.delete(id);
@@ -1231,8 +1241,11 @@ export class XDBServerSync {
    */
   private retryNotFound(opId: string, reason: string): boolean {
     const op = this.inflightOps.get(opId);
-    if (!op || op.operation !== 'update' || !/\bRecord not found\b/.test(String(reason))) return false;
-    if (!this.xdb.get(op.collection, op.recordId)) return false;
+    if (!op || (op.operation !== 'update' && op.operation !== 'delete') || !/\bRecord not found\b/.test(String(reason))) return false;
+    // An update of a record live here. A delete too, by the same rule: dropped, another tab's
+    // create of the record that reached the host afterwards brought it back everywhere. A
+    // removal of a record the host never had is done, not sent again (handleSyncReject).
+    if (op.operation === 'update' ? !this.xdb.get(op.collection, op.recordId) : this.removals.has(opId)) return false;
     // Once for each update, whichever way.
     if (this.retriedUpdates.has(opId)) return false;
     this.retriedUpdates.add(opId);
@@ -1311,6 +1324,7 @@ export class XDBServerSync {
     this.readTo.clear();
     this.heardLive.clear();
     this.sincePulled.clear();
+    this.catchUpAfterWhole.clear();
     this.clearPullRetry();
     this.pullRetryAttempts = 0;
 
@@ -1413,10 +1427,9 @@ export class XDBServerSync {
         } else if (floor !== undefined && now !== null && floor < now) {
           // An earlier connection asked for it whole and had no answer, and
           // may have brought records by deltas: what changed since then,
-          // deletions included, comes with the whole pull.
+          // deletions included, comes after the whole pull (catchUpAfterWhole).
           const from = askFrom({ at: floor, id: '' });
-          since.push({ type: 'sync_pull', collections: [collection], lastSync: from.at, lastId: from.id });
-          this.sincePulled.set(collection, 0);
+          this.catchUpAfterWhole.set(collection, { type: 'sync_pull', collections: [collection], lastSync: from.at, lastId: from.id });
         }
       }
     }
@@ -1680,6 +1693,13 @@ export class XDBServerSync {
       // pull, so not one the count below is for.)
       this.sincePulled.delete(collection);
       this.send({ type: 'sync_pull', collections: [collection], cursor: { at: more.at, id: more.id } });
+    } else if (this.catchUpAfterWhole.has(collection)) {
+      // The whole pull's last page: nothing else of this collection was asked for while the
+      // catch-up waited, so this answer is the whole pull's. What changed since the floor now.
+      const catchUp = this.catchUpAfterWhole.get(collection)!;
+      this.catchUpAfterWhole.delete(collection);
+      this.sincePulled.set(collection, 0);
+      this.send(catchUp);
     } else {
       const counted = this.sincePulled.get(collection);
       if (counted !== undefined) {
@@ -1843,6 +1863,27 @@ export class XDBServerSync {
     return true;
   }
 
+  /**
+   * Whether another device's `delta` of a record edited here is newer than every edit of it this
+   * device has sent and had no answer to, with none still to send. The host keeps the newer
+   * stamp whichever comes first; when this device's edit came first it is answered with an
+   * acknowledgement alone, so a newer edit broadcast before that acknowledgement, left to the
+   * answer, was never heard here, and this device's next edit overwrote it everywhere. An edit
+   * still to send is answered with the record as the host keeps it when it loses, as before.
+   */
+  private deltaOvertakes(delta: SyncOp, answered: ReadonlySet<string>): boolean {
+    const at = Date.parse(delta.timestamp);
+    if (!Number.isFinite(at)) return false;
+    const mine = (op: SyncOp) => op.collection === delta.collection && op.recordId === delta.recordId && op.operation !== 'create' && !answered.has(op.id);
+    for (const op of this.pendingOps.values()) if (mine(op)) return false;
+    for (const op of this.inflightOps.values()) {
+      if (!mine(op)) continue;
+      const sent = Date.parse(op.timestamp);
+      if (!Number.isFinite(sent) || sent >= at) return false;
+    }
+    return true;
+  }
+
   /** Apply live deltas from other clients. */
   private handleSyncDelta(ops: SyncOp[]): void {
     // The host sends this device the record as it stands for an op of its
@@ -1887,7 +1928,7 @@ export class XDBServerSync {
       // Another device's edit to a record edited here is left to the answer
       // to this device's edit: the host weighs the two, and sends the record
       // as it stands if the edit made here lost.
-      if (here === 'update' && op.operation !== 'delete') {
+      if (here === 'update' && op.operation !== 'delete' && !this.deltaOvertakes(op, answered)) {
         this.noteHeardLive(op.collection, op.recordId);
         continue;
       }
@@ -1978,6 +2019,15 @@ export class XDBServerSync {
     return this.sentAt.get(op.id) ?? Date.parse(op.timestamp) - this.clockOffset;
   }
 
+  /**
+   * An op answered or dropped is no record's last op any more. Kept, `lastOpFor` gained an entry
+   * for every record changed in the session, removed records included.
+   */
+  private forgetLastOp(op: SyncOp): void {
+    const key = recordKey(op);
+    if (this.lastOpFor.get(key) === op.id) this.lastOpFor.delete(key);
+  }
+
   /** Forget when an op was made and what bounds its stamp: it is stamped, answered or gone. */
   private forgetMade(id: string): void {
     this.madeAt.delete(id);
@@ -1993,6 +2043,7 @@ export class XDBServerSync {
     const refused = this.pendingOps.get(opId) ?? this.inflightOps.get(opId);
     if (!removed) this.noteRefused(refused, reason);
     if (!removed && refused?.operation === 'delete') this.refusedDeletes.add(recordKey(refused));
+    if (refused) this.forgetLastOp(refused);
     this.pendingOps.delete(opId);
     this.inflightOps.delete(opId);
     this.forgetMade(opId);
@@ -2026,6 +2077,7 @@ export class XDBServerSync {
    * for good.
    */
   private refuseOp(op: SyncOp, reason: string): void {
+    this.forgetLastOp(op);
     this.pendingOps.delete(op.id);
     this.forgetMade(op.id);
     this.finished.add(op.id);

@@ -49,6 +49,14 @@ const MAX_DELAY_MS = 2_147_483_647;
 /** Timers a script may have waiting at once. */
 const MAX_LIVE_TIMERS = 10_000;
 
+/** Timers whose last fire is remembered for their next wait (LogicTimers.fired). */
+const MAX_FIRED = 1_024;
+
+/** The host's clock, which does not move when the system's time is set. */
+function now(): number {
+  return typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
+}
+
 /**
  * Timeouts run as the script loads, at most. One that sets another with no
  * delay, forever, would otherwise never let the load end; past this many the
@@ -190,6 +198,16 @@ function delayOf(raw: string | undefined): number {
  */
 export class LogicTimers {
   private readonly waiting = new Map<string, { handle: ReturnType<typeof setTimeout>; callId: number }>();
+  /**
+   * When each timer last fired, until its next wait is asked for. An
+   * interval asks again from inside its callback, so the wait was counted
+   * from when the callback's entry ended: every period was the interval plus
+   * the callback and the entry around it, and a clock ticking once a second
+   * fell further behind with every tick. A browser counts the next period
+   * from the fire, and so does this. A timeout never asks again: at most
+   * {@link MAX_FIRED} are remembered, the oldest forgotten first.
+   */
+  private readonly fired = new Map<string, number>();
   private stopped = false;
   private warnedFull = false;
 
@@ -205,8 +223,11 @@ export class LogicTimers {
     const rest: PendingHostCall[] = [];
     for (const call of calls) {
       if (call.kind === TIMER_WAIT) this.wait(call);
-      else if (call.kind === TIMER_CLEAR) this.stop(String(call.args[0]));
-      else rest.push(call);
+      else if (call.kind === TIMER_CLEAR) {
+        const id = String(call.args[0]);
+        this.stop(id);
+        this.fired.delete(id);
+      } else rest.push(call);
     }
     return rest;
   }
@@ -219,6 +240,7 @@ export class LogicTimers {
   clear(): void {
     for (const { handle } of this.waiting.values()) clearTimeout(handle);
     this.waiting.clear();
+    this.fired.clear();
   }
 
   /** Stop every wait and take no more: the runtime is going. */
@@ -242,11 +264,19 @@ export class LogicTimers {
     // A script asks again for a timer only once the last wait was answered;
     // the guest's own bookkeeping guarantees it, and this keeps one per id.
     this.stop(id);
+    const delay = delayOf(call.args[1]);
+    // An interval's next period counts from its last fire (see `fired`);
+    // after a callback longer than the period, the next fire is at once.
+    const last = this.fired.get(id);
+    this.fired.delete(id);
+    const wait = last === undefined ? delay : Math.max(MIN_DELAY_MS, Math.min(delay, last + delay - now()));
     const handle = setTimeout(() => {
       if (this.waiting.get(id)?.handle !== handle) return;
       this.waiting.delete(id);
+      this.fired.set(id, now());
+      if (this.fired.size > MAX_FIRED) this.fired.delete(this.fired.keys().next().value as string);
       this.answer(call.id);
-    }, delayOf(call.args[1]));
+    }, wait);
     this.waiting.set(id, { handle, callId: call.id });
   }
 

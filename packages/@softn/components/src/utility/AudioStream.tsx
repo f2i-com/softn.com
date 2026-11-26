@@ -966,7 +966,11 @@ export function AudioStream({
     if (!context) return;
     // The gesture that was being waited for has happened (or was never needed).
     detachGestureListeners();
-    setStatus('running');
+    // A tap after `running` went false still unlocks the sound, and the
+    // listeners waiting for it go; but the stream is stopped and says so,
+    // until the running effect asks again and finds the graph running. It
+    // used to show "running" (and the rate) over a stream that pulled nothing.
+    setStatus(runningRef.current ? 'running' : 'idle');
     setError(null);
     if (!readyFiredRef.current) {
       readyFiredRef.current = true;

@@ -160,6 +160,16 @@ describe('XDB Service (Tauri mode)', () => {
           }
           return [];
         }
+        case 'remove_records': {
+          // As XDB's command: the named collection's rows go, with no tombstone; an id another
+          // collection holds is left alone and answered.
+          const named = String(args?.collection ?? '');
+          const ids = args?.ids as string[];
+          const refused = ids.filter((id) => [...backend.entries()].some(([collection, records]) => collection !== named && records.some((r) => r.id === id)));
+          const records = backend.get(named);
+          if (records) backend.set(named, records.filter((r) => !ids.includes(r.id)));
+          return refused;
+        }
         case 'get_record': {
           const id = String(args?.id ?? '');
           for (const records of backend.values()) {
@@ -441,8 +451,9 @@ describe('XDB Service (Tauri mode)', () => {
     await flushPromises();
     expect(backend.get('private')![0].deleted).toBe(false);
     expect(xdb.getAll('private').map((r) => r.id)).toEqual(['shared-id']);
-    expect(backend.get('public')![0].deleted).toBe(true);
-    expect(invokeMock).toHaveBeenCalledWith('delete_record', expect.objectContaining({ id: 'shared-id', collection: 'public' }));
+    // Removed for good (round 4): a tombstone kept the record's data.
+    expect(backend.get('public')).toEqual([]);
+    expect(invokeMock).toHaveBeenCalledWith('remove_records', expect.objectContaining({ ids: ['shared-id'], collection: 'public' }));
   });
 
   // ── Audit SN-01: import/restore acknowledge committed data ──
@@ -874,11 +885,11 @@ describe('XDB Service (Tauri mode)', () => {
       await xdb.isReady;
       const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
       try {
-        refuse.add('delete_record');
+        refuse.add('remove_records');
         expect(xdb.hardDelete('tasks', 'one')).toBe(true);
         await flushPromises();
         expect(xdb.getStorageStatus().issues).toEqual([expect.objectContaining({ kind: 'write-failed', collection: 'tasks' })]);
-        refuse.delete('delete_record');
+        refuse.delete('remove_records');
         refuse.add('clear_collection');
         xdb.clear('tasks');
         await flushPromises();
@@ -931,7 +942,8 @@ describe('XDB Service (Tauri mode)', () => {
       expect(xdb.hardDelete('tasks', pending.id)).toBe(true);
       await flushPromises();
       await flushPromises();
-      expect(backend.get('tasks')![0].deleted).toBe(true);
+      // Removed for good once the create lands (round 4): a tombstone kept its data.
+      expect(backend.get('tasks')).toEqual([]);
       expect(xdb.getAll('tasks')).toEqual([]);
       expect(xdb.getAllRaw('tasks')).toEqual([]);
       expect(xdb.getStorageStatus().issues).toEqual([]);

@@ -37,6 +37,17 @@ export const GUEST_REACT_VENDOR_SOURCE = String.raw`
       Suspense.$$softnKind = 'fragment';
       var PortalType = { $$softnKind: 'portal' };
 
+      // What a component says a prop is when it is not given (its defaultProps), filled in as
+      // React 18 fills it in: a component that relied on one was given undefined.
+      function withDefaults(type, props) {
+        var defaults = type && (typeof type === 'function' || typeof type === 'object')
+          ? type.defaultProps || (type.$$softnKind === 'memo' && type.type ? type.type.defaultProps : null)
+          : null;
+        if (!defaults || typeof defaults !== 'object') return props;
+        for (var name in defaults) if (props[name] === undefined) props[name] = defaults[name];
+        return props;
+      }
+
       function createElement(type, rawProps) {
         var props = {};
         var key = null;
@@ -57,7 +68,7 @@ export const GUEST_REACT_VENDOR_SOURCE = String.raw`
           for (var i = 0; i < argLen; i++) arr[i] = arguments[i + 2];
           props.children = arr;
         }
-        return { $$typeof: 'softn.react.element', type: type, key: key, ref: ref, props: props };
+        return { $$typeof: 'softn.react.element', type: type, key: key, ref: ref, props: withDefaults(type, props) };
       }
 
       function jsxFactory(type, rawProps, maybeKey) {
@@ -72,7 +83,7 @@ export const GUEST_REACT_VENDOR_SOURCE = String.raw`
             else props[k] = rawProps[k];
           }
         }
-        return { $$typeof: 'softn.react.element', type: type, key: key, ref: ref, props: props };
+        return { $$typeof: 'softn.react.element', type: type, key: key, ref: ref, props: withDefaults(type, props) };
       }
 
       function isValidElement(obj) {
@@ -140,9 +151,22 @@ export const GUEST_REACT_VENDOR_SOURCE = String.raw`
         var list = pendingEffects.splice(0);
         for (var i = 0; i < list.length; i++) {
           var item = list[i];
-          if (item.inst.unmounted) continue;
+          // The cleanup of the effect this one takes the place of, read now: one that ran since
+          // this was asked for (rendered twice before effects ran) has one by now. Read when it
+          // was asked for, that one was never cleaned up.
+          var replaced = item.prev;
+          var cleanup = replaced ? replaced.cleanup : null;
+          if (replaced) replaced.cleanup = null;
+          if (item.inst.unmounted) {
+            // Unmounted before it ran: what it replaced is cleaned up all the same (unmounting
+            // cleaned up this one, which had nothing to clean up yet).
+            if (typeof cleanup === 'function') {
+              try { cleanup(); } catch (err) { g.console && g.console.error && g.console.error(err); }
+            }
+            continue;
+          }
           try {
-            if (typeof item.prevCleanup === 'function') item.prevCleanup();
+            if (typeof cleanup === 'function') cleanup();
             var c = item.fn();
             if (typeof c === 'function') item.slot.cleanup = c;
           } catch (err) {
@@ -166,7 +190,13 @@ export const GUEST_REACT_VENDOR_SOURCE = String.raw`
             var inst = batch[i];
             if (!inst.unmounted && inst.dirty) {
               inst.dirty = false;
-              rerenderInst(inst);
+              // One that throws is said, and the others go on: it threw out of the whole batch,
+              // into a promise nobody heard, and every other update in it was left undone.
+              try {
+                rerenderInst(inst);
+              } catch (err) {
+                g.console && g.console.error && g.console.error(err);
+              }
             }
           }
         }
@@ -211,12 +241,24 @@ export const GUEST_REACT_VENDOR_SOURCE = String.raw`
         return last ? last.nextSibling : null;
       }
 
+      // Where what is made in the place of another kind of node goes: after the last of the old
+      // one's nodes, which are taken away first. (Put before the first of them, it was put before
+      // a node no longer on the page, which threw: {on ? <A /> : 'text'} left the rest of the
+      // render undone, and the page as it was.)
+      function placeOf(parentDom, prevRec, beforeNode) {
+        var after = prevRec ? nextSiblingAfter(prevRec) : null;
+        return after && after.parentNode === parentDom ? after : beforeNode;
+      }
+
       function mapEventName(propKey, tagName) {
         var raw = propKey.slice(2).toLowerCase();
         if (raw === 'doubleclick') return ['dblclick'];
         if (raw === 'change') {
+          // A field's onChange is React's: called as what it holds changes, which its input event
+          // says, for a box or a choice as for text. (Heard on change too, it was called twice for
+          // each: a box toggled with setOn(v => !v) was toggled back.)
           var tl = String(tagName || '').toLowerCase();
-          if (tl === 'input' || tl === 'textarea') return ['input', 'change'];
+          if (tl === 'input' || tl === 'textarea') return ['input'];
           return ['change'];
         }
         if (raw === 'focus') return ['focus'];
@@ -515,7 +557,7 @@ export const GUEST_REACT_VENDOR_SOURCE = String.raw`
       function reconcileNorm(parentDom, prevRec, nv, beforeNode, isSvg, ctxMap) {
         if (nv.kind === 'empty') {
           if (prevRec && prevRec.kind === 'empty') return prevRec;
-          var b = prevRec ? (firstDom(prevRec) || beforeNode) : beforeNode;
+          var b = placeOf(parentDom, prevRec, beforeNode);
           if (prevRec) unmountRec(prevRec);
           var c = doc.createComment('');
           parentDom.insertBefore(c, b || null);
@@ -529,7 +571,7 @@ export const GUEST_REACT_VENDOR_SOURCE = String.raw`
             }
             return prevRec;
           }
-          var bt = prevRec ? (firstDom(prevRec) || beforeNode) : beforeNode;
+          var bt = placeOf(parentDom, prevRec, beforeNode);
           if (prevRec) unmountRec(prevRec);
           var tn = doc.createTextNode(nv.text);
           parentDom.insertBefore(tn, bt || null);
@@ -554,7 +596,7 @@ export const GUEST_REACT_VENDOR_SOURCE = String.raw`
             ensureAnchorState(prevRec, bf);
             return prevRec;
           }
-          var bfNew = prevRec ? (firstDom(prevRec) || beforeNode) : beforeNode;
+          var bfNew = placeOf(parentDom, prevRec, beforeNode);
           if (prevRec) unmountRec(prevRec);
           var frec = { kind: 'fragment', parentDom: parentDom, children: [], anchor: null, key: nv.key };
           frec.children = reconcileChildren(parentDom, [], nv.children, bfNew, isSvg, ctxMap);
@@ -570,7 +612,7 @@ export const GUEST_REACT_VENDOR_SOURCE = String.raw`
             ensureAnchorState(prevRec, bp);
             return prevRec;
           }
-          var bpNew = prevRec ? (firstDom(prevRec) || beforeNode) : beforeNode;
+          var bpNew = placeOf(parentDom, prevRec, beforeNode);
           if (prevRec) unmountRec(prevRec);
           var pvRec = { kind: 'provider', ctxId: nv.ctxId, parentDom: parentDom, children: [], anchor: null, key: nv.key };
           pvRec.children = reconcileChildren(parentDom, [], nv.children, bpNew, isSvg, nextCtx);
@@ -596,7 +638,7 @@ export const GUEST_REACT_VENDOR_SOURCE = String.raw`
             }
             return prevRec;
           }
-          var bh = prevRec ? (firstDom(prevRec) || beforeNode) : beforeNode;
+          var bh = placeOf(parentDom, prevRec, beforeNode);
           if (prevRec) unmountRec(prevRec);
           var el = (isSvg || nv.type === 'svg') && typeof doc.createElementNS === 'function'
             ? doc.createElementNS(SVG_NS, nv.type)
@@ -627,7 +669,7 @@ export const GUEST_REACT_VENDOR_SOURCE = String.raw`
           ensureAnchorState(prevRec, bc);
           return prevRec;
         }
-        var bcNew = prevRec ? (firstDom(prevRec) || beforeNode) : beforeNode;
+        var bcNew = placeOf(parentDom, prevRec, beforeNode);
         if (prevRec) unmountRec(prevRec);
         var newInst = { type: nv.type, props: nv.props, ref: nv.ref, hooks: [], hookIdx: 0, ctxMap: ctxMap, dirty: false, unmounted: false, rec: null, classInst: null };
         var crec = { kind: 'comp', type: nv.type, inst: newInst, parentDom: parentDom, isSvg: isSvg, childRec: null, anchor: null, key: nv.key };
@@ -704,10 +746,9 @@ export const GUEST_REACT_VENDOR_SOURCE = String.raw`
         var idx = inst.hookIdx++;
         var prev = inst.hooks[idx];
         if (!prev || depsChanged(prev.deps, deps)) {
-          var prevCleanup = prev ? prev.cleanup : null;
           var slot = { $$effect: true, deps: deps, cleanup: null };
           inst.hooks[idx] = slot;
-          pendingEffects.push({ inst: inst, fn: fn, prevCleanup: prevCleanup, slot: slot });
+          pendingEffects.push({ inst: inst, fn: fn, prev: prev || null, slot: slot });
           scheduleEffects();
         }
       }

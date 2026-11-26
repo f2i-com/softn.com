@@ -17,8 +17,12 @@ var __softnInspectSelect = function () { return "{}"; };
 var __softnSetSelectIndex = function () { return false; };
 var __softnSetInputValue = function () { return false; };
 var __softnToggleCheckbox = function () { return false; };
+var __softnCheckRadio = function () { return false; };
+var __softnLabelControl = function () { return -1; };
+var __softnDispatchClick = function () { return false; };
 var __softnSubmitAncestorForm = function () { return false; };
 var __zippDispatchPointerEvent = function () { return false; };
+var __softnDispatchTap = function () { return false; };
 var softn = {};
 
 (function () {
@@ -74,15 +78,11 @@ var softn = {};
     var ct = headers.get("content-type") || "application/octet-stream";
     var url = raw.url || reqUrl || "";
     var cachedBytes = raw._bytes || null;
+    // The body's own bytes: handed over beside the response when they are not ASCII
+    // (`_bytes`), else its text's. Never the URL fetched again: that was a second request,
+    // a GET whatever the method, without the page's headers.
     function readBytes() {
       if (cachedBytes) return Promise.resolve(cachedBytes.slice(0));
-      if (url && typeof __zippFetchBytes === "function") {
-        try {
-          var ab = __zippFetchBytes(url, credentials || "same-origin");
-          cachedBytes = new Uint8Array(ab);
-          return Promise.resolve(cachedBytes.slice(0));
-        } catch (e) {}
-      }
       var enc = typeof TextEncoder === "function" ? new TextEncoder().encode(bodyText) : null;
       if (enc) return Promise.resolve(enc instanceof Uint8Array ? enc : new Uint8Array(enc));
       var out = new Uint8Array(bodyText.length);
@@ -200,11 +200,22 @@ var softn = {};
           }, url, credentials));
           return;
         }
-        var raw = __zippHostCall("softn.fetch", method, url, JSON.stringify(headersObj), body, credentials);
+        var raw = __zippHostCall("softn.fetch", method, url, JSON.stringify(headersObj), body, credentials, "bytes");
         var parsed = JSON.parse(raw);
         if (parsed && parsed.error && !parsed.status) {
           reject(new TypeError(String(parsed.error)));
           return;
+        }
+        if (parsed && typeof parsed.binLen === "number") {
+          var blen = parsed.binLen;
+          if (__zippHostBytes.length < blen) {
+            __zippHostBytes = new Uint8Array(Math.max(blen, __zippHostBytes.length * 2));
+          }
+          __zippHostCall("take_bytes");
+          parsed._bytes = __zippHostBytes.slice(0, blen);
+          if (__zippHostBytes.length > 262144) {
+            __zippHostBytes = new Uint8Array(65536);
+          }
         }
         resolve(makeResponse(parsed, url, credentials));
       } catch (e) {
@@ -723,6 +734,19 @@ var softn = {};
     return new DataView(buf.buffer);
   }
 
+  // A Web Bluetooth UUID as the bridge takes it: a 16- or 32-bit alias given as a number
+  // (`0x180D`, as `BluetoothUUID.getService` reads one) as its hex digits; a string as
+  // written. `String(0x180D)` was "6157", a different service, refused by the allowlist.
+  function __bleUuid(v) {
+    if (typeof v === "number" && isFinite(v) && v >= 0 && v <= 0xffffffff && Math.floor(v) === v) {
+      var hex = v.toString(16);
+      var width = v <= 0xffff ? 4 : 8;
+      while (hex.length < width) hex = "0" + hex;
+      return hex;
+    }
+    return String(v);
+  }
+
   var __geoWatchSeq = 1;
   var __geoWatches = Object.create(null);
 
@@ -801,19 +825,19 @@ var softn = {};
       },
       requestDevice: function (opts) {
         var o = opts || {};
+        // The scan looks for what the filters name. `optionalServices` are what the page
+        // may use once connected, not what a device must advertise: as scan filters they
+        // let a device that advertises only one of them be the one picked.
         var services = [];
         if (Array.isArray(o.filters)) {
           for (var i = 0; i < o.filters.length; i++) {
             var f = o.filters[i];
             if (f && Array.isArray(f.services)) {
-              for (var j = 0; j < f.services.length; j++) services.push(String(f.services[j]));
+              for (var j = 0; j < f.services.length; j++) {
+                var s = __bleUuid(f.services[j]);
+                if (services.indexOf(s) < 0) services.push(s);
+              }
             }
-          }
-        }
-        if (Array.isArray(o.optionalServices)) {
-          for (var k = 0; k < o.optionalServices.length; k++) {
-            var s = String(o.optionalServices[k]);
-            if (services.indexOf(s) < 0) services.push(s);
           }
         }
         var namePrefix = "";
@@ -846,13 +870,13 @@ var softn = {};
               softnBluetooth.disconnect(devId).catch(function () {});
             },
             getPrimaryService: function (serviceUuid) {
-              var sUuid = String(serviceUuid);
+              var sUuid = __bleUuid(serviceUuid);
               return Promise.resolve({
                 device: gatt.device,
                 uuid: sUuid,
                 isPrimary: true,
                 getCharacteristic: function (charUuid) {
-                  var cUuid = String(charUuid);
+                  var cUuid = __bleUuid(charUuid);
                   return Promise.resolve({
                     uuid: cUuid,
                     value: null,
@@ -1139,6 +1163,39 @@ var softn = {};
   };
   g.__zippDispatchPointerEvent = __zippDispatchPointerEvent;
 
+  // A tap as a phone's browser fires it: pointerdown, mousedown, pointerup, mouseup, click,
+  // each bubbling from the tapped element through its ancestors to the body, the document
+  // and the window (the shim's dispatchEvent), and stopping where a listener stops it. The
+  // mouse events follow only a pointerdown nothing canceled, as compatibility mouse events
+  // do. Taps used to fire a click alone, one handler list at a time, so stopPropagation()
+  // stopped nothing and a document's `mousedown` (how menus close on an outside tap) never
+  // came. True when the click's default was prevented.
+  __softnDispatchTap = function (targetFlid, clientX, clientY) {
+    var target = __nodesById[targetFlid];
+    if (!target || typeof target.dispatchEvent !== "function") return false;
+    var x = Number(clientX) || 0;
+    var y = Number(clientY) || 0;
+    var Pointer = typeof PointerEvent === "function" ? PointerEvent : MouseEvent;
+    function fire(Ctor, type, buttons, extra) {
+      var init = {
+        bubbles: true, cancelable: true, composed: true, view: window, detail: 1,
+        clientX: x, clientY: y, screenX: x, screenY: y, button: 0, buttons: buttons
+      };
+      if (extra) for (var k in extra) init[k] = extra[k];
+      var ev = new Ctor(type, init);
+      try { ev.isTrusted = true; ev.timeStamp = Date.now ? Date.now() : 0; ev.nativeEvent = ev; } catch (e) {}
+      target.dispatchEvent(ev);
+      return Boolean(ev.defaultPrevented);
+    }
+    var touch = { pointerId: 1, pointerType: "touch", isPrimary: true, width: 1, height: 1 };
+    var canceled = fire(Pointer, "pointerdown", 1, Object.assign({ pressure: 0.5 }, touch));
+    if (!canceled) fire(MouseEvent, "mousedown", 1);
+    fire(Pointer, "pointerup", 0, touch);
+    if (!canceled) fire(MouseEvent, "mouseup", 0);
+    return fire(MouseEvent, "click", 0);
+  };
+  g.__softnDispatchTap = __softnDispatchTap;
+
   __softnSetInputValue = function (flid, newValue) {
     var node = __nodesById[flid];
     if (!node) return false;
@@ -1182,6 +1239,99 @@ var softn = {};
     return true;
   };
   g.__softnToggleCheckbox = __softnToggleCheckbox;
+
+  // A tapped radio, checked as a browser checks it before the click: on, and every other
+  // radio of its name in the same form (or, outside any form, the document) off, with input
+  // and change fired at it when that changed anything. A tap used to leave radios as they
+  // were, so a choice could not be made and React's onChange (which reads the click) never ran.
+  function __softnInputType(node) {
+    return String((node.getAttribute && node.getAttribute("type")) || node.type || "text").toLowerCase();
+  }
+  function __softnFormOf(node) {
+    for (var n = node.parentNode; n; n = n.parentNode) {
+      if (String(n.tagName || "").toLowerCase() === "form") return n;
+    }
+    return null;
+  }
+  __softnCheckRadio = function (flid) {
+    var node = __nodesById[flid];
+    if (!node || node.checked || __softnInputType(node) !== "radio") return false;
+    node.checked = true;
+    if (node.attributes) node.attributes.checked = "checked";
+    var name = (node.getAttribute && node.getAttribute("name")) || node.name || "";
+    if (name) {
+      var form = __softnFormOf(node);
+      var stack = [form || doc];
+      while (stack.length > 0) {
+        var n = stack.pop();
+        if (!n) continue;
+        if (n !== node && n.checked && String(n.tagName || "").toLowerCase() === "input"
+            && __softnInputType(n) === "radio"
+            && ((n.getAttribute && n.getAttribute("name")) || n.name || "") === name
+            && __softnFormOf(n) === form) {
+          n.checked = false;
+          if (n.attributes) delete n.attributes.checked;
+        }
+        var kids = n.childNodes || [];
+        for (var i = 0; i < kids.length; i++) stack.push(kids[i]);
+      }
+    }
+    if (typeof __domMutations === "number") __domMutations++;
+    if (typeof node.dispatchEvent === "function") {
+      node.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+      node.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    return true;
+  };
+  g.__softnCheckRadio = __softnCheckRadio;
+
+  // The control a tap on a label's content activates, as a browser finds it: the element the
+  // label's `for` names, else the first input, select or textarea inside it. -1 when the tap
+  // is on a control, a button or a link (they take it themselves), when the control is
+  // disabled, or when no label holds the tapped element. A label's text did nothing on a tap,
+  // and SoftN's Checkbox, Radio and Switch put theirs beside an invisible input.
+  __softnLabelControl = function (flid) {
+    for (var n = __nodesById[flid]; n; n = n.parentNode) {
+      var tag = String(n.tagName || "").toLowerCase();
+      if (tag === "input" || tag === "select" || tag === "textarea" || tag === "button" || tag === "a") return -1;
+      if (tag !== "label") continue;
+      var forId = n.getAttribute ? n.getAttribute("for") : null;
+      var control = null;
+      if (forId) {
+        control = doc.getElementById ? doc.getElementById(forId) : null;
+      } else {
+        var stack = (n.childNodes || []).slice().reverse();
+        while (stack.length > 0) {
+          var c = stack.pop();
+          var ct = String((c && c.tagName) || "").toLowerCase();
+          if ((ct === "input" && __softnInputType(c) !== "hidden") || ct === "select" || ct === "textarea") {
+            control = c;
+            break;
+          }
+          var kids = (c && c.childNodes) || [];
+          for (var i = kids.length - 1; i >= 0; i--) stack.push(kids[i]);
+        }
+      }
+      var ctag = String((control && control.tagName) || "").toLowerCase();
+      if (!control || control.disabled || control._id === undefined
+          || (ctag !== "input" && ctag !== "select" && ctag !== "textarea")) return -1;
+      return control._id;
+    }
+    return -1;
+  };
+  g.__softnLabelControl = __softnLabelControl;
+
+  // The click a label's activation sends its control, bubbling from the control (the finger's
+  // pointer and mouse events went to the label). True when its default was prevented.
+  __softnDispatchClick = function (flid) {
+    var target = __nodesById[flid];
+    if (!target || typeof target.dispatchEvent !== "function") return false;
+    var ev = new MouseEvent("click", { bubbles: true, cancelable: true, composed: true, view: window, detail: 1 });
+    try { ev.isTrusted = true; ev.timeStamp = Date.now ? Date.now() : 0; ev.nativeEvent = ev; } catch (e) {}
+    target.dispatchEvent(ev);
+    return Boolean(ev.defaultPrevented);
+  };
+  g.__softnDispatchClick = __softnDispatchClick;
 
   __softnSubmitAncestorForm = function (flid) {
     var cur = __nodesById[flid];

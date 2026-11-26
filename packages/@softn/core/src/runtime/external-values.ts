@@ -72,19 +72,55 @@ export function readExternalValue(externalFunctions: ExternalFunctions | null, n
 }
 
 /**
+ * The host functions that could be declared for a script: every name that can
+ * safely become a declaration and is not served by another bridge (`xdb_*`,
+ * `asset`). Nothing is called to say so.
+ */
+export function externalCandidates(externalFunctions: ExternalFunctions | null | undefined): string[] {
+  return Object.keys(externalFunctions ?? {}).filter(
+    (name) =>
+      VALID_IDENTIFIER.test(name) && !EXTERNAL_FUNCTION_RESERVED_NAMES.has(name) && !name.startsWith('xdb_') && name !== 'asset'
+  );
+}
+
+const IDENTIFIER_PART = /[A-Za-z0-9_$]/;
+
+/**
+ * Whether `name` is written in `code` as a name of its own, not as part of a
+ * longer one. Read as text, comments and strings included: a name found
+ * where it is not used costs one read of a getter, where a name missed would
+ * leave the logic calling a function that is not declared.
+ */
+export function namedInLogic(code: string, name: string): boolean {
+  for (let at = code.indexOf(name); at !== -1; at = code.indexOf(name, at + 1)) {
+    const before = at === 0 ? '' : code[at - 1];
+    const after = code[at + name.length] ?? '';
+    if (!IDENTIFIER_PART.test(before) && !IDENTIFIER_PART.test(after)) return true;
+  }
+  return false;
+}
+
+/**
  * The host functions that are declared, with their values now. Names that
  * cannot safely become declarations, or are served by another bridge
  * (`xdb_*`, `asset`), are skipped.
+ *
+ * With `code`, the logic that will be compiled, only the functions it names
+ * are read. Reading one is calling it, and a host hands the page functions for
+ * its markup as well (`@click={logout}`): every one of them was called with
+ * no arguments as the app loaded, and those that answered nothing (an action
+ * answers `undefined`) were then declared and called again before every call
+ * into the logic, so `logout` ran as the app opened and at each click. A
+ * function the logic does not name is one it cannot call, and is left alone.
  */
-export function collectExternalValues(externalFunctions: ExternalFunctions | null): {
+export function collectExternalValues(externalFunctions: ExternalFunctions | null, code?: string): {
   names: string[];
   values: ExternalPrimitive[];
 } {
   const names: string[] = [];
   const values: ExternalPrimitive[] = [];
-  for (const name of Object.keys(externalFunctions ?? {})) {
-    if (!VALID_IDENTIFIER.test(name) || EXTERNAL_FUNCTION_RESERVED_NAMES.has(name)) continue;
-    if (name.startsWith('xdb_') || name === 'asset') continue;
+  for (const name of externalCandidates(externalFunctions)) {
+    if (code !== undefined && !namedInLogic(code, name)) continue;
     const value = readExternalValue(externalFunctions, name);
     // Preserve the established bridge contract: only synchronous
     // primitive-valued getters become globals in this compilation.
@@ -114,11 +150,13 @@ export function externalValuesPreamble(names: readonly string[], values: readonl
  * declarations. The worker's snapshot is taken once, at load: nothing
  * refreshes it afterwards, where the main thread refreshes its table on every
  * call — a known gap, acceptable for values that do not move while an app runs.
+ * With `code`, only the functions the logic names are read (collectExternalValues).
  */
 export function buildExternalValuesPreamble(
-  externalFunctions: Record<string, (...args: unknown[]) => unknown> | null | undefined
+  externalFunctions: Record<string, (...args: unknown[]) => unknown> | null | undefined,
+  code?: string
 ): string {
   if (!externalFunctions) return '';
-  const { names, values } = collectExternalValues(externalFunctions);
+  const { names, values } = collectExternalValues(externalFunctions, code);
   return externalValuesPreamble(names, values);
 }

@@ -8,6 +8,7 @@
 import React, { useState, useCallback, useEffect, useRef, useId, useMemo } from 'react';
 import { choice } from '../utils/choice';
 import { TOUCH_MEDIA } from '../utils/media';
+import { idPart } from '../utils/text';
 
 /** Whether two keys name the same tab: as text, since a page writes `activeKey="2"` for a tab keyed 2. */
 function sameKey(a: unknown, b: unknown): boolean {
@@ -82,8 +83,8 @@ export function Tabs({
   const idPrefix = useId();
   // The key escaped: `aria-controls` and `aria-labelledby` are lists split at
   // spaces, and a tab keyed "Billing info" pointed at two ids, neither its panel.
-  const tabId = (key: string) => `${idPrefix}-tab-${encodeURIComponent(key)}`;
-  const panelId = (key: string) => `${idPrefix}-panel-${encodeURIComponent(key)}`;
+  const tabId = (key: string) => `${idPrefix}-tab-${idPart(key)}`;
+  const panelId = (key: string) => `${idPrefix}-panel-${idPart(key)}`;
   const [internalActiveKey, setInternalActiveKey] = useState(defaultActiveKey);
   const [hoveredKey, setHoveredKey] = useState<string | null>(null);
   const tabRefs = useRef<Map<string, HTMLButtonElement>>(new Map());

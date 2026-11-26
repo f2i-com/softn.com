@@ -24,6 +24,7 @@ import {
 import type { VFSFile } from '../../types/studio';
 import type { VFSChangeRecord } from '../../stores/vfsStore';
 import { resolveProjectPath } from '../paths';
+import { appliedMigrationRefusal } from './appliedMigrations';
 import {
   buildSqlitePersistRecords,
   detectStudioSqliteDatabases,
@@ -300,6 +301,9 @@ function writableProblem(path: string, ending?: RegExp): { path: string; problem
   if (!verdict.ok) return { path, problem: `${path} is not a project path: ${verdict.reason}` };
   if (verdict.private) return { path, problem: `${verdict.path} is private editor state (builder/), which you do not write` };
   if (ending && !ending.test(verdict.path)) return { path, problem: `${verdict.path} is not a .sql file, and the seed dump is SQL: give seed_sql_path a .sql file` };
+  // A migration the app's host has run is rewritten by none of the tools, the seed dump included.
+  const applied = appliedMigrationRefusal(verdict.path, 'edit');
+  if (applied) return { path: verdict.path, problem: applied.replace(/\.$/, '') };
   return null;
 }
 

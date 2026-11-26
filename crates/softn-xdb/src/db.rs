@@ -1103,6 +1103,60 @@ impl XdbDatabase {
         Ok(update)
     }
 
+    /// Remove records of `collection` for good: their rows, and their entries in the
+    /// collection's replicated document, with no tombstone (the page's `hardDelete`, which
+    /// `db.prune` and `db.clearCollection` use). `delete_record` keeps a tombstone that carries
+    /// the record's data: the desktop page loaded it again at its next start, and its peer sync
+    /// put it, data and all, back into the room the removal was for. A peer applying the
+    /// returned delta removes the records too (`apply_remote_update`).
+    ///
+    /// An id another collection holds is left alone and answered among the refused; one held
+    /// nowhere is already gone. The delta is `None` when the document had none of the ids.
+    pub fn remove_records(&mut self, collection: &str, ids: &[String]) -> DbResult<(Option<Vec<u8>>, Vec<String>)> {
+        let collection = collection.to_string();
+        let ids = ids.to_vec();
+        self.with_transaction(|this| this.remove_records_inner(&collection, &ids))
+    }
+
+    fn remove_records_inner(&mut self, collection: &str, ids: &[String]) -> DbResult<(Option<Vec<u8>>, Vec<String>)> {
+        let mut refused = Vec::new();
+        let mut gone: Vec<&str> = Vec::with_capacity(ids.len());
+        for id in ids {
+            let held: Option<String> = self
+                .conn
+                .query_row("SELECT collection FROM records WHERE id = ?1", params![id], |row| row.get(0))
+                .optional()?;
+            match held {
+                Some(other) if other != collection => {
+                    refused.push(id.clone());
+                    continue;
+                }
+                Some(_) => {
+                    self.conn.execute("DELETE FROM records WHERE id = ?1", params![id])?;
+                }
+                None => {}
+            }
+            gone.push(id);
+        }
+        // A collection this database never held has no document to take them out of.
+        let update = match self.held_doc(collection)? {
+            None => None,
+            Some(doc) => {
+                let map = doc.get_or_insert_map("records");
+                let mut txn = doc.transact_mut();
+                let mut removed = false;
+                for id in &gone {
+                    removed |= map.remove(&mut txn, id).is_some();
+                }
+                removed.then(|| txn.encode_update_v1())
+            }
+        };
+        if let Some(update) = &update {
+            self.save_or_batch(collection, update)?;
+        }
+        Ok((update, refused))
+    }
+
     /// Upsert a record with a specific ID (used for external sync sources)
     pub fn upsert_record(&mut self, record: Record) -> DbResult<Vec<u8>> {
         self.with_transaction(|this| this.upsert_record_inner(record))
@@ -1522,8 +1576,9 @@ impl XdbDatabase {
         // XD-04): a map observer collects the touched keys while the
         // transaction commits, so a one-record delta writes one row instead
         // of re-upserting the whole collection. A duplicate delivery changes
-        // no key and therefore writes nothing.
-        let updated_records: Vec<Record> = {
+        // no key and therefore writes nothing. A key the update took out of
+        // the map is a record the peer removed for good (`remove_records`).
+        let (updated_records, removed): (Vec<Record>, Vec<String>) = {
             let doc = self.get_or_create_doc(collection)?;
             let changed: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
             let map = doc.get_or_insert_map("records");
@@ -1548,8 +1603,28 @@ impl XdbDatabase {
                 .lock()
                 .map(|k| k.clone())
                 .unwrap_or_default();
-            Self::records_from_doc_keys(collection, doc, &keys)?
+            let records = Self::records_from_doc_keys(collection, doc, &keys)?;
+            let removed: Vec<String> = if records.len() == keys.len() {
+                Vec::new()
+            } else {
+                let txn = doc.transact();
+                match txn.get_map("records") {
+                    Some(map) => keys.iter().filter(|key| map.get(&txn, key.as_str()).is_none()).cloned().collect(),
+                    None => keys.iter().cloned().collect(),
+                }
+            };
+            (records, removed)
         };
+
+        // A record the peer removed for good goes from here too, this collection's alone. Its
+        // key went from the document and its row stayed, live: shown here, and put back in the
+        // document (and so on the peer that removed it) by the next edit of it.
+        for id in &removed {
+            self.conn.execute(
+                "DELETE FROM records WHERE id = ?1 AND collection = ?2",
+                params![id, collection],
+            )?;
+        }
 
         // Now update SQLite with the extracted records: those of this collection, and not
         // over a record another collection holds under the same id (`upsert_record`).
@@ -1598,7 +1673,7 @@ impl XdbDatabase {
     }
 
     /// Validated records for the given map keys only (keys no longer present
-    /// are skipped: records are never removed from the map, only tombstoned).
+    /// are skipped: a record removed for good, `remove_records`, has no entry).
     fn records_from_doc_keys(
         collection: &str,
         doc: &Doc,

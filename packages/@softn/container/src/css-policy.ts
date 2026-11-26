@@ -163,6 +163,9 @@ function skipBalanced(css: string, at: number): number {
 const REWRITE_TRIGGER_RE = /\/\*|["'@\\]/;
 const REWRITE_FUNC_RE = /(?:url|src|image|image-set|cross-fade|expression)\s*\(/i;
 const HOST_PSEUDO_RE = /host/i;
+/** `@namespace [prefix] url(…)|"…";` in its plain form: no escapes, no comments, one line of each part. */
+const NAMESPACE_RULE =
+  /@namespace[ \t\n]+(?:([A-Za-z_][\w-]*)[ \t\n]+)?(?:url\([ \t\n]*(?:"([^"\\\n]*)"|'([^'\\\n]*)'|([^\s"'()\\]*))[ \t\n]*\)|"([^"\\\n]*)"|'([^'\\\n]*)')[ \t\n]*;/y;
 const MAX_CSS_NESTING_DEPTH = 64;
 
 export function rewriteCss(css: string, mapUrl: (address: string) => string | null, options: { keepHost?: boolean } = {}): string {
@@ -224,6 +227,21 @@ export function rewriteCss(css: string, mapUrl: (address: string) => string | nu
         out += ' ';
         i = end;
         continue;
+      }
+      if (rule.name === 'namespace') {
+        // A namespace's name, written as an address and never fetched: kept. Read as an
+        // address, it became `about:blank`, and `@namespace url(http://www.w3.org/1999/xhtml)`
+        // left no element in the namespace the sheet's selectors name: none of it applied.
+        // Only in its plain form, written again here as a string, so that it reads as the
+        // same one rule to the page: anything else is read on as any other at-rule.
+        NAMESPACE_RULE.lastIndex = i;
+        const ns = NAMESPACE_RULE.exec(css);
+        if (ns) {
+          const name = ns[2] ?? ns[3] ?? ns[4] ?? ns[5] ?? ns[6] ?? '';
+          out += `@namespace ${ns[1] ? `${ns[1]} ` : ''}url(${cssString(name)});`;
+          i = NAMESPACE_RULE.lastIndex;
+          continue;
+        }
       }
       out += css.slice(i, rule.end);
       i = rule.end;
@@ -869,6 +887,56 @@ export function transformContainerCss(
     scopeSelectors: options.scopeSelectors,
     rewriteViewportUnits: options.rewriteViewportUnits,
   });
+}
+
+/**
+ * `css` with what is still open at its end closed there, as the end of a stylesheet closes it:
+ * each bracket, and a rule or an at-rule that has not begun its block (`.a`, `@media print`)
+ * given its end. A stylesheet is read by itself, and a browser closes all of that at its end;
+ * the container puts the page's sheets in one `<style>`, where a sheet that had lost its last
+ * `}` took every sheet after it into its last rule, and none of them applied.
+ */
+export function closeOpenCss(css: string): string {
+  const closers: string[] = [];
+  // What the top level holds since its last rule: nothing, a rule's prelude, or an at-rule's.
+  let pending: '' | 'rule' | 'at' = '';
+  let i = 0;
+  while (i < css.length) {
+    const c = css[i];
+    if (c === '/' && css[i + 1] === '*') {
+      const close = css.indexOf('*/', i + 2);
+      i = close < 0 ? css.length : close + 2;
+      continue;
+    }
+    if (closers.length === 0 && pending === '' && !isSpace(c)) pending = c === '@' ? 'at' : 'rule';
+    if (c === '"' || c === "'") {
+      i = readString(css, i).end;
+      continue;
+    }
+    if (c === '\\') {
+      i = readEscape(css, i).end;
+      continue;
+    }
+    if (c === '{' || c === '(' || c === '[') {
+      closers.push(c === '{' ? '}' : c === '(' ? ')' : ']');
+    } else if (c === '}' || c === ')' || c === ']') {
+      // A closer that is not the open bracket's own is a token inside it, as CSS reads it.
+      if (closers.length > 0 && closers[closers.length - 1] === c) {
+        closers.pop();
+        if (closers.length === 0 && c === '}') pending = '';
+      }
+    } else if (c === ';' && closers.length === 0 && pending === 'at') {
+      pending = '';
+    }
+    i++;
+  }
+  if (closers.length === 0 && pending === '') return css;
+  let tail = '';
+  for (let k = closers.length - 1; k >= 0; k--) tail += closers[k];
+  // Closed brackets of a prelude leave the prelude: an at-rule ends as a statement, a rule
+  // with an empty block (dropped, as one with none is; the sheet after it is not touched).
+  if (closers[0] !== '}' && pending !== '') tail += pending === 'at' ? ';' : '{}';
+  return css + tail;
 }
 
 const GENERIC_FONT_KEYWORDS = new Set([

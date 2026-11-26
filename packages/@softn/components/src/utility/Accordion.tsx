@@ -8,6 +8,7 @@
 
 import React from 'react';
 import { nameList } from '../utils/lists';
+import { idPart } from '../utils/text';
 
 export interface AccordionItem {
   /** Unique key */
@@ -226,8 +227,8 @@ export function Accordion({
       {items.map((item, index) => {
         const isOpen = currentOpenKeys.includes(item.key);
         // The key escaped: the ids are named in space-separated lists (see Tabs).
-        const buttonId = `${idPrefix}-button-${encodeURIComponent(item.key)}`;
-        const panelId = `${idPrefix}-panel-${encodeURIComponent(item.key)}`;
+        const buttonId = `${idPrefix}-button-${idPart(item.key)}`;
+        const panelId = `${idPrefix}-panel-${idPart(item.key)}`;
 
         return (
           <div key={item.key} style={getItemStyle(index)}>

@@ -1019,13 +1019,16 @@ describe('a pull from where the last one ended', () => {
 
     // n1 was deleted meanwhile; the whole pull lists live records alone, one
     // of them received after the deletion, and cannot say n1 went. What
-    // changed since the first connection is asked for with it.
+    // changed since the first connection is asked for after it, once its
+    // last page is in (a catch-up answered between two of its pages moved
+    // the place past the pages still to come: r4-review-server-sync).
     const second = open(storage, '2026-01-08T00:00:00.000Z');
+    expect(second.socket.ofType('sync_pull')).toEqual([{ type: 'sync_pull', collections: ['notes'] }]);
+    second.socket.receive({ type: 'sync_state', collection: 'notes', records: [row('n2', 7)] });
     expect(second.socket.ofType('sync_pull')).toEqual([
       { type: 'sync_pull', collections: ['notes'] },
       { type: 'sync_pull', collections: ['notes'], lastSync: '2026-01-04T23:59:59.999Z', lastId: '' },
     ]);
-    second.socket.receive({ type: 'sync_state', collection: 'notes', records: [row('n2', 7)] });
     expect(ids(second.store)).toEqual(['n1', 'n2']);
     // The connection drops before the second answer.
     second.sync.disconnect();

@@ -1269,6 +1269,9 @@ export class Lexer {
     // Check for exponential notation (e.g., 1e10, 3.14E-2)
     if (this.ch === 'e' || this.ch === 'E') {
       let exp = this.ch;
+      // Where the `e` is, to come back to: reading past it may read a line break.
+      const eLine = this.line;
+      const eColumn = this.column;
       this.readChar();
 
       // Handle optional sign (use currentChar() to avoid TypeScript narrowing)
@@ -1284,10 +1287,12 @@ export class Lexer {
         num += exp;
       } else {
         // Invalid exponential, backtrack
-        // Put back the characters we read, and the columns they were counted
-        // as: every token after `1em` on the line was placed one column on.
+        // Put back the characters we read, and the line and column they were
+        // counted on: every token after `1em` on the line was placed one
+        // column on, and a `1e` before a line break counted that line twice.
         this.position -= exp.length;
-        this.column -= exp.length;
+        this.line = eLine;
+        this.column = eColumn;
         this.readPosition = this.position + 1;
         this.ch = this.source[this.position] || '';
       }
@@ -1769,13 +1774,14 @@ export class Lexer {
    * never going to parse as control flow.
    */
   private hashStartsControlFlow(at: number = this.position): boolean {
+    // The word as readIdentifier reads the one after `#`, to the end of the
+    // name. Read to its first character past ASCII letters, `#endổ`, `#ifで`
+    // and `#each_day` were taken for blocks, a header was opened, the word
+    // came out as a name and not as the block's, and the header never closed:
+    // the rest of the page was read into it.
     let i = at + 1;
-    let word = '';
-    while (i < this.source.length && /[A-Za-z]/.test(this.source[i])) {
-      word += this.source[i];
-      i++;
-    }
-    return CONTROL_FLOW_WORDS.has(word.toLowerCase());
+    while (i < this.source.length && this.isIdentifierPart(this.source[i])) i++;
+    return CONTROL_FLOW_WORDS.has(this.source.slice(at + 1, i).toLowerCase());
   }
 
   /** Move to the next character, counting lines and columns. */

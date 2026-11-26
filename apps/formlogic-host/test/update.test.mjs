@@ -645,6 +645,8 @@ function site({ leave = true, hasPage = (text, main, path) => path !== main && t
     update: revision => screen.app.update(revision),
     redraw: next => redraws.push(next),
     page: () => screen.page,
+    // The run on screen: another with every page put there (main.tsx: `run: () => shown`).
+    run: () => screen.app,
     ...(leave ? { leave: revision => { left.push(revision); start(null, revision); } } : {}),
   });
   go(null);
@@ -804,6 +806,31 @@ test('a link followed while a version is being taken leaves it for the page now 
   await tick(); await tick();
   // The version was not lost with the page that had it: the page now showing took it.
   assert.deepEqual(composedWith, ['ui/about.ui', 'ui/main.ui']);
+  assert.equal(screen.app.revisions.length, 1);
+  assert.equal(screen.app.revisions[0].source, '<div>Home {count}</div>');
+  assert.deepEqual(posted, [{ type: 'updated', id: 1, outcome: 'updated', changed: ['page'] }]);
+});
+
+test('a place the parent sends the app to while a version is being taken leaves it for the run now showing, on the same page too', async () => {
+  // Back or Forward in the parent puts a run of its own on screen (main.tsx's navigatePlace), of
+  // the same page file where it names another named page of it. The run handed the version is
+  // taken down before it answers, and core's renderer answers for it that it was kept back. Told
+  // apart by its page file alone, that was the version's answer: `kept` ("The app was closed."),
+  // which the parent takes for a version the frame has, while the run showing had the one before.
+  const { posted, send, go, screen, composedWith } = site();
+  const first = screen.app;
+  let closed;
+  first.update = revision => { first.revisions.push(revision); return new Promise(resolve => { closed = () => resolve({ outcome: 'kept', changed: [], problem: 'The app was closed.' }); }); };
+  send(1, pages({ 'ui/main.ui': '<div>Home {count}</div>' }));
+  await tick();
+  assert.equal(first.revisions.length, 1);
+  // The same page file, another run of it, composed from the version still on screen.
+  go(null);
+  assert.notEqual(screen.app, first);
+  assert.equal(screen.app.shown.source, '<div>{count}</div>');
+  closed();
+  await tick(); await tick();
+  assert.deepEqual(composedWith, ['ui/main.ui', 'ui/main.ui']);
   assert.equal(screen.app.revisions.length, 1);
   assert.equal(screen.app.revisions[0].source, '<div>Home {count}</div>');
   assert.deepEqual(posted, [{ type: 'updated', id: 1, outcome: 'updated', changed: ['page'] }]);

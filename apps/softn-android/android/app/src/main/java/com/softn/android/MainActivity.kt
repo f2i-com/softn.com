@@ -706,7 +706,7 @@ class MainActivity : AppCompatActivity() {
                     out.toByteArray()
                 }
                 if (bytes == null || bytes.isEmpty()) {
-                    mainHandler.post { surfaceView.setStatusMessage("Selected .softn file is empty") }
+                    mainHandler.post { reportBundleFailure("Selected .softn file is empty") }
                     return@execute
                 }
                 val meta = inspectBundleMeta(bytes)
@@ -722,9 +722,29 @@ class MainActivity : AppCompatActivity() {
                 }
             } catch (t: Throwable) {
                 mainHandler.post {
-                    surfaceView.setStatusMessage("Failed to open .softn file: ${t.message}")
+                    reportBundleFailure("Failed to open .softn file: ${t.message}")
                 }
             }
+        }
+    }
+
+    /**
+     * A bundle that did not open or boot. Over an app that still runs it is a toast (the
+     * surface draws its status only when no frame is up). With none running, the frame goes:
+     * it is the last picture of an engine since destroyed, which looked alive and answered
+     * nothing. The message then shows, and in Player mode the top bar's Open is there.
+     */
+    private fun reportBundleFailure(message: String) {
+        if (destroyed.get() || isFinishing || isDestroyed) return
+        if (engineHandle != 0L) {
+            Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+            return
+        }
+        surfaceView.clearFrame()
+        surfaceView.setStatusMessage(message)
+        if (isPlayerMode) {
+            playerTitleView.text = "SoftN Player"
+            playerTopBar.visibility = View.VISIBLE
         }
     }
 
@@ -850,7 +870,8 @@ class MainActivity : AppCompatActivity() {
             deviceInfoJson
         )
         if (handle == 0L) {
-            mainHandler.post { surfaceView.setStatusMessage("Failed to load SoftN bundle (see logcat)") }
+            // The previous app's engine was destroyed above, whatever this one does.
+            mainHandler.post { reportBundleFailure("Failed to load SoftN bundle (see logcat)") }
             return
         }
         if (destroyed.get()) {

@@ -98,14 +98,16 @@ const statusColors: Record<string, { bg: string; text: string }> = {
   error: { bg: 'rgba(239, 68, 68, 0.15)', text: '#ef4444' },
 };
 
-// Get initials from name
+// Get initials from name. Whole characters, as Avatar takes them: `n[0]` of a
+// name that starts with an emoji or a letter outside the basic plane is half
+// of a surrogate pair, drawn as the replacement character.
 function getInitials(name: string): string {
-  return name
+  const firsts = name
     .split(' ')
-    .map((n) => n[0])
+    .map((n) => Array.from(n)[0] ?? '')
     .join('')
-    .toUpperCase()
-    .slice(0, 2);
+    .toUpperCase();
+  return Array.from(firsts).slice(0, 2).join('');
 }
 
 /**

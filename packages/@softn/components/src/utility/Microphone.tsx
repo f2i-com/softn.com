@@ -91,6 +91,16 @@ function numberOr(value: unknown, fallback: number): number {
   return typeof value === 'number' && !Number.isNaN(value) ? value : fallback;
 }
 
+/**
+ * `frameSize` as a window: at least one whole sample, or the default. Below
+ * one (0, a negative, a fraction) is no size at all, and it was read as a
+ * window of one sample: the same call into the app's logic for every sample
+ * that `null` made.
+ */
+function windowOr(value: unknown): number {
+  return typeof value === 'number' && value >= 1 ? value : DEFAULT_FRAME_SIZE;
+}
+
 /** Root-mean-square of a block, which is what a level meter is measuring. */
 function blockRms(block: Float32Array): number {
   let sum = 0;
@@ -231,7 +241,7 @@ export function Microphone({
   const settings = useRef({ mode, frameSize, maxSeconds });
   settings.current = {
     mode,
-    frameSize: numberOr(frameSize, DEFAULT_FRAME_SIZE),
+    frameSize: windowOr(frameSize),
     maxSeconds: numberOr(maxSeconds, DEFAULT_MAX_SECONDS),
   };
 

@@ -36,6 +36,9 @@ import { EventCoalescer, coalescePolicyFor } from './event-coalescer';
 import { LogicTimers } from './logic-timers';
 import { failureText, printRuntimeLine, runtimeLineFailure } from './engine-output';
 import { getXDB } from './xdb-registry';
+import { externalCandidates } from './external-values';
+import { inlineLogicImports } from './logic-imports';
+import { moduleSyntaxAsScript } from './module-syntax';
 import { zippEngineForWorker } from './zipp-wasm-loader';
 import { zippGlueForWorker } from './zipp-glue';
 import { LOCAL_STORAGE_BUDGET, StorageBudget } from './storage-budget';
@@ -124,7 +127,7 @@ export interface WorkerRuntimeOptions {
   onConsentChange?: () => void;
 }
 
-/** Host calls resolved per chain before it is judged a runaway. */
+/** Host calls answered one inside another in a chain before it goes on as a chain of its own (runHostCalls). */
 const MAX_HOST_CALL_ROUNDS = 256;
 
 /** The requests that are an entry into the script: each is answered with what the entry did (an EntryResult). */
@@ -446,11 +449,11 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
    * and nothing fills, so a script in a worker saw no records at all, and the
    * delta sent after its own `db.create` took the new record away again.
    */
-  private getDBSnapshot(): Record<string, unknown[]> {
+  private getDBSnapshot(collections?: string[]): Record<string, unknown[]> {
     const store = this.watchStore();
     if (!store) return (this.context.data || {}) as Record<string, unknown[]>;
     const snapshot: Record<string, unknown[]> = Object.create(null);
-    for (const [collection, records] of Object.entries(store.export().collections)) {
+    for (const [collection, records] of Object.entries(store.export(collections).collections)) {
       if (collection === '__proto__' || collection === 'constructor' || collection === 'prototype') continue;
       snapshot[collection] = records.filter((record) => !record.deleted);
     }
@@ -885,9 +888,33 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
   // ScriptRuntimeHandle implementation
   // ==========================================================================
 
+  /**
+   * The logic as the worker will compile it, for which of the host's functions
+   * it names (external-values.ts): its imports are inlined in the worker, so
+   * where it has any and there is a host function it could name, they are
+   * read here too. Nothing is read for a host that hands the logic none, and
+   * then the logic is answered at once, so `init` is posted as `loadScript`
+   * is called, as it always was.
+   */
+  private namedLogic(script: CodeBlock): string | Promise<string> {
+    const code = script.code ?? '';
+    if (!this.importResolver || externalCandidates(this.externalFunctions).length === 0) return code;
+    if (!/^[ \t]*import[ \t]+["']/m.test(code)) return code;
+    const included = new Set<string>(this.preIncludedLogicPaths);
+    if (this.logicBasePath) included.add(this.logicBasePath);
+    return inlineLogicImports(
+      moduleSyntaxAsScript(code),
+      { resolver: this.importResolver, included },
+      new Set(this.logicBasePath ? [this.logicBasePath] : []),
+      this.logicBasePath
+    ).catch(() => code); // What the worker will fail to inline names nothing either.
+  }
+
   async loadScript(script: CodeBlock): Promise<ScriptLoadResult> {
     // A wait a previous script asked for holds a call id this one will reuse.
     this.timers.clear();
+    const named = this.namedLogic(script);
+    const namedLogic = typeof named === 'string' ? named : await named;
     const res = await this.call<{
       state: Record<string, unknown>;
       functionNames: string[];
@@ -909,7 +936,7 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
       observedStateNames: this.observedStateNames ? [...this.observedStateNames] : null,
       drawnNames: this.drawnNames ? [...this.drawnNames] : null,
       preIncludedLogicPaths: this.preIncludedLogicPaths,
-      externalPreamble: buildExternalValuesPreamble(this.externalFunctions),
+      externalPreamble: buildExternalValuesPreamble(this.externalFunctions, namedLogic),
       dbSnapshot: this.getDBSnapshot(),
       lsSnapshot: this.getLocalStorageSnapshot(),
       // The page's key prefix for the app, which the worker's storage budget counts under.
@@ -1075,17 +1102,20 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
   private storagePayload(): Record<string, unknown> {
     const payload: Record<string, unknown> = {};
     if (this.dbDirty) {
-      const fullData = this.getDBSnapshot();
       if (this.dbDirtyCollections !== null && this.dbDirtyCollections.size > 0) {
-        // Send only the changed collections as a delta
+        // Send only the changed collections as a delta, and read only those:
+        // the store reads a collection from storage, whole, each time it is
+        // asked for one, and a delta of one collection read every collection.
+        const dirty = [...this.dbDirtyCollections];
+        const changed = this.getDBSnapshot(dirty);
         const delta: Record<string, unknown[]> = {};
-        for (const col of this.dbDirtyCollections) {
-          delta[col] = fullData[col] || [];
+        for (const col of dirty) {
+          delta[col] = changed[col] || [];
         }
         payload.dbDelta = delta;
       } else {
         // Full snapshot (initial load or unknown which collections changed)
-        payload.dbSnapshot = fullData;
+        payload.dbSnapshot = this.getDBSnapshot();
       }
       this.dbDirty = false;
       this.dbDirtyCollections = new Set();
@@ -1161,7 +1191,18 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
     if (!hasDiff) return;
     // Update tracking so subsequent calls don't re-send
     Object.assign(this.lastKnownWorkerState, diff);
-    void this.call('update_context', { state: diff }).catch(() => {});
+    void this.call('update_context', { state: diff }).catch((error: unknown) => {
+      // A value the page holds that cannot be posted (a function the markup
+      // put in its state) made the whole update fail, and every other value
+      // in it never reached the worker, nor was sent again. The engine on the
+      // page takes such state as plain data and keeps its own value where it
+      // is handed a function; the worker is sent the same.
+      if (this.terminated || (error as { name?: unknown } | null)?.name !== 'DataCloneError') return;
+      const kept: Record<string, unknown> = Object.create(null);
+      for (const key of Object.keys(diff)) if (typeof diff[key] !== 'function') kept[key] = diff[key];
+      const [cloneable] = sanitizeArgs([kept]);
+      void this.call('update_context', { state: cloneable as Record<string, unknown> }).catch(() => {});
+    });
   }
 
   // ==========================================================================
@@ -1208,8 +1249,9 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
    * storage, new listeners — is applied before the first await; the host
    * calls the script queued are then executed here, on this thread, and each
    * result is handed back to the script as another entry, whose own result is
-   * applied in turn. `rounds` is shared down a chain so a callback that queues
-   * a call that queues a call cannot run forever.
+   * applied in turn. `rounds` is shared down a chain so that one of calls made
+   * from each other's callbacks goes on as a chain of its own past
+   * MAX_HOST_CALL_ROUNDS, rather than one entry inside another without end.
    */
   private async applyEntry(out: EntryResult, rounds = { n: 0 }): Promise<void> {
     if (this.disposed) return;
@@ -1227,17 +1269,25 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
     if (this.disposed) return;
     // Timers keep their own clock and are not run one after another with the
     // rest: see LogicTimers.
-    const calls = this.timers.take(Array.isArray(out.hostCalls) ? out.hostCalls : []);
-    for (const call of calls) {
+    await this.runHostCalls(this.timers.take(Array.isArray(out.hostCalls) ? out.hostCalls : []), rounds);
+  }
+
+  /** The host calls an entry queued, each answered as an entry of its own; `rounds` counts down the chain. */
+  private async runHostCalls(calls: PendingHostCall[], rounds: { n: number }): Promise<void> {
+    for (let i = 0; i < calls.length; i++) {
+      const call = calls[i];
       // Asked before each call, not only after one: the entry applied below
       // returns early when the app closes during it, and the next queued call
       // (a sound to loop, a sandbox to start) would then run for an app that
       // has gone, on a host whose cleanup has already run.
       if (this.disposed) return;
       if (++rounds.n > MAX_HOST_CALL_ROUNDS) {
-        console.error(
-          `[SoftN] Host call limit exceeded (${MAX_HOST_CALL_ROUNDS}) — aborting to prevent runaway callback chains`
-        );
+        // A chain this long goes on as a chain of its own, after the page's
+        // turn. It used to stop here, and every call after it went unanswered
+        // for good; each answer is an entry inside the one before, so a chain
+        // that never stops (a long poll) would hold them all.
+        const rest = calls.slice(i);
+        setTimeout(() => void this.runHostCalls(rest, { n: 0 }), 0);
         return;
       }
       let result: unknown;

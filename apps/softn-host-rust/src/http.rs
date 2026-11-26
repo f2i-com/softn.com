@@ -1041,6 +1041,112 @@ fn if_none_match_matches(headers: &axum::http::HeaderMap, etag: &str) -> bool {
     false
 }
 
+/// What a request's `Range` asks of a file of `len` bytes whose ETag is `etag`.
+#[derive(Debug, PartialEq, Eq)]
+enum RangeAsked {
+    /// The whole file: no `Range`, or one this host does not read (a unit other than bytes,
+    /// several ranges, one that does not parse, several `Range` lines), or one an `If-Range`
+    /// says is of another version of the file. A server may always send the whole.
+    Whole,
+    /// Bytes `start..=end`, both within the file.
+    Part { start: u64, end: u64 },
+    /// Bytes the file has none of: 416.
+    Unsatisfiable,
+}
+
+/// Read a request's `Range` as RFC 9110 has it, for one range of bytes. An `If-Range` must be
+/// this file's ETag exactly (a strong comparison): a date names no version this host can tell,
+/// since it sends no `Last-Modified`, and the whole file goes.
+fn range_asked(headers: &axum::http::HeaderMap, len: u64, etag: &str) -> RangeAsked {
+    let mut lines = headers.get_all(axum::http::header::RANGE).iter();
+    let (Some(range), None) = (lines.next(), lines.next()) else { return RangeAsked::Whole };
+    if let Some(if_range) = headers.get(axum::http::header::IF_RANGE) {
+        if if_range.to_str().ok().map(str::trim) != Some(etag) {
+            return RangeAsked::Whole;
+        }
+    }
+    let Some((unit, set)) = range.to_str().ok().and_then(|r| r.split_once('=')) else { return RangeAsked::Whole };
+    if !unit.trim().eq_ignore_ascii_case("bytes") || set.contains(',') {
+        return RangeAsked::Whole;
+    }
+    let Some((first, last)) = set.split_once('-') else { return RangeAsked::Whole };
+    let (first, last) = (first.trim(), last.trim());
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    if first.is_empty() {
+        // The last `last` bytes, or the whole file when it is shorter than that.
+        if !digits(last) {
+            return RangeAsked::Whole;
+        }
+        let suffix = last.parse::<u64>().unwrap_or(u64::MAX);
+        if suffix == 0 || len == 0 {
+            return RangeAsked::Unsatisfiable;
+        }
+        return RangeAsked::Part { start: len.saturating_sub(suffix), end: len - 1 };
+    }
+    if !digits(first) || !(last.is_empty() || digits(last)) {
+        return RangeAsked::Whole;
+    }
+    let start = first.parse::<u64>().unwrap_or(u64::MAX);
+    let end = if last.is_empty() { u64::MAX } else { last.parse::<u64>().unwrap_or(u64::MAX) };
+    if end < start {
+        return RangeAsked::Whole;
+    }
+    if start >= len {
+        return RangeAsked::Unsatisfiable;
+    }
+    RangeAsked::Part { start, end: end.min(len - 1) }
+}
+
+/// The answer to a range of a file that holds none of it.
+fn range_not_satisfiable(len: u64) -> axum::response::Response {
+    let mut response = json_error(StatusCode::RANGE_NOT_SATISFIABLE, "Range not satisfiable.", "range_not_satisfiable");
+    if let Ok(value) = axum::http::HeaderValue::from_str(&format!("bytes */{len}")) {
+        response.headers_mut().insert(axum::http::header::CONTENT_RANGE, value);
+    }
+    response
+}
+
+/// A bundle file this size or smaller is read whole and sent from memory, and its file let go
+/// of at once. A larger one is read a piece of [`STATIC_PIECE_BYTES`] at a time as its client
+/// takes it.
+const STATIC_WHOLE_READ_BYTES: u64 = 256 * 1024;
+const STATIC_PIECE_BYTES: u64 = 64 * 1024;
+
+/// Larger bundle files being sent a piece at a time, each holding its file open until its client
+/// has taken the last piece. Bounded, so that downloads clients are slow to take cannot spend the
+/// descriptors the connections (768) and the databases need out of the 1,024 a process has by
+/// default: past it a file is read whole, as every file used to be.
+static STATIC_STREAMS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(128);
+
+/// What of a bundle file goes in its answer's body.
+enum StaticBody {
+    /// Nothing: a HEAD, or nothing to send.
+    Empty,
+    Bytes(Vec<u8>),
+    /// `count` bytes from where the file stands, read as they leave.
+    File { file: std::fs::File, count: u64, place: tokio::sync::SemaphorePermit<'static> },
+}
+
+/// A body of `count` bytes of `file` from where it stands, read a piece at a time as hyper
+/// writes it to the client, so a client that is slow to take it holds a piece and not the file.
+fn file_pieces(file: std::fs::File, count: u64, place: tokio::sync::SemaphorePermit<'static>) -> axum::body::Body {
+    use tokio::io::AsyncReadExt;
+    let file = tokio::fs::File::from_std(file);
+    let pieces = futures_util::stream::try_unfold((file, count, place), |(mut file, left, place)| async move {
+        if left == 0 {
+            return Ok(None);
+        }
+        let mut piece = vec![0u8; left.min(STATIC_PIECE_BYTES) as usize];
+        let read = file.read(&mut piece).await?;
+        if read == 0 {
+            return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "the file is shorter than it was"));
+        }
+        piece.truncate(read);
+        Ok(Some((axum::body::Bytes::from(piece), (file, left - read as u64, place))))
+    });
+    axum::body::Body::from_stream(pieces)
+}
+
 async fn serve_safe_static_file(
     State(base_dir): State<Arc<std::path::PathBuf>>,
     method: axum::http::Method,
@@ -1073,12 +1179,20 @@ async fn serve_safe_static_file(
     let base_dir_bg = base_dir.clone();
     let rel_owned = trimmed.to_owned();
     let is_head = method == axum::http::Method::HEAD;
-    let if_none_match: Vec<String> = headers
-        .get_all(axum::http::header::IF_NONE_MATCH)
-        .iter()
-        .filter_map(|v| v.to_str().ok().map(str::to_owned))
-        .collect();
-    let read_res = tokio::task::spawn_blocking(move || -> Result<(String, usize, String, bool, Vec<u8>), StatusCode> {
+    // What the answer depends on of the request: whether the client's copy is current, and
+    // which part of the file it asks for.
+    let mut conditions = axum::http::HeaderMap::new();
+    for name in [axum::http::header::IF_NONE_MATCH, axum::http::header::RANGE, axum::http::header::IF_RANGE] {
+        for value in headers.get_all(&name) {
+            conditions.append(name.clone(), value.clone());
+        }
+    }
+    enum Answer {
+        NotModified { etag: String },
+        Unsatisfiable { len: u64 },
+        Serve { mime: String, etag: String, content_length: u64, content_range: Option<String>, body: StaticBody },
+    }
+    let read_res = tokio::task::spawn_blocking(move || -> Result<Answer, StatusCode> {
         let base_meta = std::fs::symlink_metadata(&*base_dir_bg).map_err(|_| StatusCode::NOT_FOUND)?;
         if base_meta.file_type().is_symlink() || !base_meta.is_dir() {
             return Err(StatusCode::FORBIDDEN);
@@ -1126,50 +1240,70 @@ async fn serve_safe_static_file(
             .unwrap_or(0);
         let etag = format!("\"{:x}-{:x}\"", open_meta.len(), mtime_secs);
         let mime = crate::container_backend::mime_type_for(&rel_owned).to_owned();
-        let not_modified = if_none_match.iter().any(|raw| {
-            raw.split(',').any(|t| {
-                let s = t.trim();
-                let unweak = s.strip_prefix("W/").or_else(|| s.strip_prefix("w/")).unwrap_or(s);
-                s == "*" || unweak == etag
-            })
-        });
-        if not_modified {
-            return Ok((mime, open_meta.len() as usize, etag, true, Vec::new()));
+        if if_none_match_matches(&conditions, &etag) {
+            return Ok(Answer::NotModified { etag });
         }
-        if is_head {
-            return Ok((mime, open_meta.len() as usize, etag, false, Vec::new()));
+        let len = open_meta.len();
+        let (start, count, content_range) = match range_asked(&conditions, len, &etag) {
+            RangeAsked::Whole => (0, len, None),
+            RangeAsked::Part { start, end } => (start, end - start + 1, Some(format!("bytes {start}-{end}/{len}"))),
+            RangeAsked::Unsatisfiable => return Ok(Answer::Unsatisfiable { len }),
+        };
+        if is_head || count == 0 {
+            return Ok(Answer::Serve { mime, etag, content_length: count, content_range, body: StaticBody::Empty });
         }
-        use std::io::Read;
-        let mut buf = Vec::with_capacity(open_meta.len().min(MAX_STATIC_FILE_BYTES) as usize);
-        file.take(MAX_STATIC_FILE_BYTES + 1)
-            .read_to_end(&mut buf)
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        use std::io::{Read, Seek};
+        let mut file = file;
+        if start > 0 {
+            file.seek(std::io::SeekFrom::Start(start)).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        }
+        // A large file goes as its client takes it, a piece at a time: read whole, it was held
+        // in memory until the client had taken the last byte, however slowly it took them.
+        if count > STATIC_WHOLE_READ_BYTES {
+            if let Ok(place) = STATIC_STREAMS.try_acquire() {
+                let body = StaticBody::File { file, count, place };
+                return Ok(Answer::Serve { mime, etag, content_length: count, content_range, body });
+            }
+        }
+        let mut buf = Vec::with_capacity(count.min(MAX_STATIC_FILE_BYTES) as usize);
+        // The whole file is read to its end, as it is now (its length is what was read); a range
+        // is read to its length, and a file that no longer holds it is not sent.
+        let limit = if content_range.is_some() { count } else { MAX_STATIC_FILE_BYTES + 1 };
+        file.take(limit).read_to_end(&mut buf).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         if buf.len() as u64 > MAX_STATIC_FILE_BYTES {
             return Err(StatusCode::PAYLOAD_TOO_LARGE);
         }
-        let len = buf.len();
-        Ok((mime, len, etag, false, buf))
+        if content_range.is_some() && buf.len() as u64 != count {
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+        let content_length = buf.len() as u64;
+        Ok(Answer::Serve { mime, etag, content_length, content_range, body: StaticBody::Bytes(buf) })
     })
     .await;
 
     match read_res {
-        Ok(Ok((_mime, _len, etag, true, _))) => axum::http::Response::builder()
+        Ok(Ok(Answer::NotModified { etag })) => axum::http::Response::builder()
             .status(StatusCode::NOT_MODIFIED)
             .header(axum::http::header::ETAG, etag)
             .header(axum::http::header::CACHE_CONTROL, "public, max-age=3600")
             .body(axum::body::Body::empty())
             .unwrap_or_else(|_| not_found_sync()),
-        Ok(Ok((mime, len, etag, false, bytes))) => {
-            let builder = axum::http::Response::builder()
-                .status(StatusCode::OK)
+        Ok(Ok(Answer::Unsatisfiable { len })) => range_not_satisfiable(len),
+        Ok(Ok(Answer::Serve { mime, etag, content_length, content_range, body })) => {
+            let mut builder = axum::http::Response::builder()
+                .status(if content_range.is_some() { StatusCode::PARTIAL_CONTENT } else { StatusCode::OK })
                 .header(axum::http::header::CONTENT_TYPE, mime)
-                .header(axum::http::header::CONTENT_LENGTH, len)
+                .header(axum::http::header::CONTENT_LENGTH, content_length)
                 .header(axum::http::header::ETAG, etag)
-                .header(axum::http::header::CACHE_CONTROL, "public, max-age=3600");
-            let body = if is_head {
-                axum::body::Body::empty()
-            } else {
-                axum::body::Body::from(bytes)
+                .header(axum::http::header::CACHE_CONTROL, "public, max-age=3600")
+                .header(axum::http::header::ACCEPT_RANGES, "bytes");
+            if let Some(range) = content_range {
+                builder = builder.header(axum::http::header::CONTENT_RANGE, range);
+            }
+            let body = match body {
+                StaticBody::Empty => axum::body::Body::empty(),
+                StaticBody::Bytes(bytes) => axum::body::Body::from(bytes),
+                StaticBody::File { file, count, place } => file_pieces(file, count, place),
             };
             builder.body(body).unwrap_or_else(|_| not_found_sync())
         }
@@ -1302,16 +1436,32 @@ async fn serve_container_request(
                         .body(axum::body::Body::empty())
                         .unwrap_or_else(|_| not_found_sync());
                 }
-                let builder = axum::http::Response::builder()
-                    .status(StatusCode::OK)
+                // A player asks for a file in pieces, and Safari plays no video whose server
+                // sends the whole file to every range (the PHP host's Apache answers them).
+                let total = bytes.len() as u64;
+                let (status, bytes, content_range) = match range_asked(&headers, total, &etag) {
+                    RangeAsked::Whole => (StatusCode::OK, bytes, None),
+                    RangeAsked::Part { start, end } => (
+                        StatusCode::PARTIAL_CONTENT,
+                        bytes.slice(start as usize..=end as usize),
+                        Some(format!("bytes {start}-{end}/{total}")),
+                    ),
+                    RangeAsked::Unsatisfiable => return range_not_satisfiable(total),
+                };
+                let mut builder = axum::http::Response::builder()
+                    .status(status)
                     .header(axum::http::header::CONTENT_TYPE, mime)
                     .header(axum::http::header::CONTENT_LENGTH, bytes.len())
                     .header(axum::http::header::ETAG, etag)
                     .header(axum::http::header::CACHE_CONTROL, cache_control)
+                    .header(axum::http::header::ACCEPT_RANGES, "bytes")
                     .header("x-content-type-options", "nosniff")
                     .header("x-frame-options", "SAMEORIGIN")
                     .header("referrer-policy", "no-referrer")
                     .header(axum::http::header::CONTENT_SECURITY_POLICY, CONTAINER_DEFAULT_CSP);
+                if let Some(range) = content_range {
+                    builder = builder.header(axum::http::header::CONTENT_RANGE, range);
+                }
                 return if method == axum::http::Method::HEAD {
                     builder.body(axum::body::Body::empty()).unwrap_or_else(|_| not_found_sync())
                 } else {
@@ -1392,6 +1542,17 @@ async fn serve_container_request(
         .filter_map(|(k, v)| v.to_str().ok().map(|vs| (k.as_str().to_owned(), vs.to_owned())))
         .collect();
 
+    // A PHP script is handed the request as it was asked (decoded, as the rules read it) and
+    // follows the bundle's `.htaccess` itself, as the PHP host and the browser's container do,
+    // so that its `REQUEST_URI` is the address asked for and `QUERY_STRING` the rewritten query.
+    // Handed the rewritten path, a front controller (`RewriteRule ^ index.php`) read
+    // `/index.php` for every page. The rules come to the same answer the second time.
+    let (effective_path, effective_query, htaccess_evaluated) =
+        match (backend.runtime_kind, crate::container_backend::decode_http_path(&req_path)) {
+            (crate::container_backend::BackendRuntimeKind::Php, Ok(asked)) => (asked, query, false),
+            _ => (effective_path, effective_query, true),
+        };
+
     let resp = backend
         .dispatch(crate::container_backend::ContainerHttpRequest {
             method: method_str,
@@ -1402,7 +1563,7 @@ async fn serve_container_request(
             client_ip: client_ip.to_string(),
             host: host_hdr,
             https,
-            htaccess_evaluated: true,
+            htaccess_evaluated,
         })
         .await;
 
@@ -2084,20 +2245,35 @@ fn upgrade_response(
     // Counted against the visitor the rate limits name: the socket peer, or
     // the client a trusted proxy forwards for, an IPv6 /64 counting as one.
     let client_ip = extract_client_ip(headers, peer.ip(), proxy);
-    if sync.has_auth() || params.contains_key("token") || params.contains_key("ticket") {
+    let rate_limited = |wait: std::time::Duration| {
+        let mut response = json_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "Too many sync authentication attempts; retry later.",
+            "rate_limited",
+        );
+        response.headers_mut().insert(axum::http::header::RETRY_AFTER, wait.as_secs().max(1).into());
+        response
+    };
+    // A ticket was spent from the visitor's allowance when it was issued, and redeeming it is
+    // not charged again: charged twice, a connection cost two, and a visitor had half the
+    // reconnects the ticket burst names (the eleventh tab of one address was told to wait).
+    // A ticket that is no ticket is charged, so guessing at them is still held to the allowance.
+    let presents_ticket = params.contains_key("ticket");
+    if !presents_ticket && (sync.has_auth() || params.contains_key("token")) {
         if let Err(wait) = sync.check_auth_rate(client_ip) {
-            let mut response = json_error(
-                StatusCode::TOO_MANY_REQUESTS,
-                "Too many sync authentication attempts; retry later.",
-                "rate_limited",
-            );
-            response.headers_mut().insert(axum::http::header::RETRY_AFTER, wait.as_secs().max(1).into());
-            return response;
+            return rate_limited(wait);
         }
     }
     let cid = match authorize_sync_upgrade(&sync, params, headers, policy, proxy.is_proxy(peer.ip())) {
         Ok(cid) => cid,
-        Err((status, message)) => return json_error(status, message, if status == StatusCode::FORBIDDEN { "origin_not_allowed" } else { "unauthorized" }),
+        Err((status, message)) => {
+            if presents_ticket {
+                if let Err(wait) = sync.check_auth_rate(client_ip) {
+                    return rate_limited(wait);
+                }
+            }
+            return json_error(status, message, if status == StatusCode::FORBIDDEN { "origin_not_allowed" } else { "unauthorized" });
+        }
     };
     // A place among those sync sockets may hold, every app's together, kept
     // with the connection's own for as long as the socket is open.
@@ -2357,20 +2533,27 @@ impl ApiRouteOptions {
 /// `req.headers.authorization.slice(7)` answered its own 401 there and threw
 /// here, into a 500.
 fn script_headers(headers: &axum::http::HeaderMap, host_auth: bool, private_api: bool) -> serde_json::Map<String, serde_json::Value> {
-    let mut seen: serde_json::Map<String, serde_json::Value> = headers
-        .iter()
-        .filter(|(k, _)| {
-            let name = k.as_str();
-            !(name.eq_ignore_ascii_case("cookie")
-                || name.eq_ignore_ascii_case("proxy-authorization")
-                || (host_auth && name.eq_ignore_ascii_case("authorization")))
-        })
-        .filter_map(|(k, v)| {
-            v.to_str().ok().map(|val| {
-                (k.as_str().to_lowercase(), serde_json::Value::String(val.to_string()))
-            })
-        })
-        .collect();
+    let mut seen = serde_json::Map::new();
+    let shown = headers.iter().filter(|(k, _)| {
+        let name = k.as_str();
+        !(name.eq_ignore_ascii_case("cookie")
+            || name.eq_ignore_ascii_case("proxy-authorization")
+            || (host_auth && name.eq_ignore_ascii_case("authorization")))
+    });
+    // A header sent on several lines is one value, its lines joined with ", " in order, as
+    // Apache hands it to the PHP host. Only the last line used to arrive.
+    for (name, value) in shown {
+        let Ok(value) = value.to_str() else { continue };
+        match seen.get_mut(name.as_str()) {
+            Some(serde_json::Value::String(joined)) => {
+                joined.push_str(", ");
+                joined.push_str(value);
+            }
+            _ => {
+                seen.insert(name.as_str().to_lowercase(), serde_json::Value::String(value.to_string()));
+            }
+        }
+    }
     if private_api {
         for name in ["authorization", "idempotency-key"] {
             seen.entry(name).or_insert_with(|| serde_json::Value::String(String::new()));
@@ -3214,6 +3397,35 @@ mod sync_upgrade_tests {
     async fn dev_mode_without_a_list_is_open_like_its_cors() {
         let addr = serve(app(serde_json::json!({})), true).await;
         assert_eq!(upgrade(addr, "", Some("http://localhost:5173")).await.0, 101);
+    }
+
+    /// Every tab of a household behind one address connects again after a restart: each
+    /// connection is one ticket and one upgrade, and a visitor's allowance is the 20 tickets
+    /// the docs name (sixteen tabs, the sockets one visitor may hold). Redeeming a ticket
+    /// spent from the same allowance as issuing it, so a connection cost two and the eleventh
+    /// tab was told to wait. A ticket that is no ticket still spends, and a guesser is told 429.
+    #[tokio::test]
+    async fn every_tab_behind_one_address_reconnects_within_the_ticket_burst() {
+        let addr = serve(app(serde_json::json!({"token":"sync-secret","allowedOrigins":["https://app.example"]})), false).await;
+        let mut sockets = Vec::new();
+        for tab in 0..16 {
+            let (status, issued) = ticket(addr, Some("sync-secret")).await;
+            assert_eq!(status, 200, "tab {tab}'s ticket");
+            let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+            stream.write_all(format!(
+                "GET /sync?ticket={} HTTP/1.1\r\nHost: {addr}\r\nOrigin: https://app.example\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+                issued.unwrap()
+            ).as_bytes()).await.unwrap();
+            let mut status_line = [0u8; 12];
+            stream.read_exact(&mut status_line).await.unwrap();
+            assert_eq!(&status_line, b"HTTP/1.1 101", "tab {tab}'s socket");
+            sockets.push(stream);
+        }
+        let mut answers = Vec::new();
+        for _ in 0..8 {
+            answers.push(upgrade(addr, "?ticket=00000000-0000-4000-8000-000000000000", Some("https://app.example")).await.0);
+        }
+        assert!(answers.starts_with(&[401]) && answers.ends_with(&[429]), "guessed tickets: {answers:?}");
     }
 
     #[test]

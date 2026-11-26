@@ -219,6 +219,52 @@ pub fn normalize_vfs_path(raw: &str) -> String {
     parts.join("/")
 }
 
+/// The file a URL path names, as a server (and the web container) reads it: the query and
+/// fragment dropped and each segment's percent-escapes decoded, so `caf%C3%A9.png` is the
+/// archive's `café.png`. None when an escape decodes to a separator or NUL, which no name in
+/// the archive holds (`%2F` would otherwise smuggle a `..`). A path whose escapes are not
+/// escapes at all (`100%.png`) is taken as written.
+fn url_path_to_vfs(raw: &str) -> Option<String> {
+    let path = raw.split(['?', '#']).next().unwrap_or(raw);
+    if !path.contains('%') {
+        return Some(path.to_string());
+    }
+    let mut out = String::with_capacity(path.len());
+    for (i, seg) in path.split('/').enumerate() {
+        if i > 0 {
+            out.push('/');
+        }
+        let Some(decoded) = percent_decode_segment(seg) else {
+            return Some(path.to_string());
+        };
+        if decoded.contains(['/', '\\', '\0']) {
+            return None;
+        }
+        out.push_str(&decoded);
+    }
+    Some(out)
+}
+
+/// `%XX` escapes as bytes, then UTF-8; None when an escape is malformed or the bytes are not text.
+fn percent_decode_segment(seg: &str) -> Option<String> {
+    let bytes = seg.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hex = bytes.get(i + 1..i + 3)?;
+            let hi = (hex[0] as char).to_digit(16)?;
+            let lo = (hex[1] as char).to_digit(16)?;
+            out.push((hi * 16 + lo) as u8);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
 /// Resolve a relative or root-relative URL against `importer_path` and optional `frontend_root`.
 pub fn resolve_vfs_url(raw: &str, importer_path: &str, frontend_root: &str) -> Option<String> {
     let stripped = raw
@@ -246,6 +292,8 @@ pub fn resolve_vfs_url(raw: &str, importer_path: &str, frontend_root: &str) -> O
     } else {
         stripped
     };
+    let decoded = url_path_to_vfs(rel)?;
+    let rel = decoded.as_str();
 
     if rel.starts_with('/') {
         let clean = normalize_vfs_path(rel);
@@ -719,7 +767,7 @@ impl SoftnBundle {
     }
 
     pub fn read_public_asset(&self, url_path: &str) -> Option<(String, &'static str, Vec<u8>)> {
-        let clean = normalize_vfs_path(url_path.split('?').next().unwrap_or(url_path));
+        let clean = normalize_vfs_path(&url_path_to_vfs(url_path)?);
         let candidates = if !self.frontend_root.is_empty() {
             vec![
                 normalize_vfs_path(&format!("{}/{clean}", self.frontend_root)),
@@ -922,5 +970,53 @@ fn extract_html_title(html: &str) -> Option<String> {
         None
     } else {
         Some(title.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn bundle_of(files: &[(&str, &[u8])]) -> SoftnBundle {
+        let mut buf = Vec::new();
+        {
+            let mut zw = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+            let opts = zip::write::SimpleFileOptions::default();
+            for (name, data) in files {
+                zw.start_file(*name, opts).unwrap();
+                zw.write_all(data).unwrap();
+            }
+            zw.finish().unwrap();
+        }
+        SoftnBundle::from_zip_bytes(&buf).unwrap()
+    }
+
+    #[test]
+    fn asset_urls_are_decoded_and_lose_their_fragment_as_a_server_reads_them() {
+        let bundle = bundle_of(&[
+            ("index.html", b"<html><body></body></html>"),
+            ("images/caf\u{e9}.png", b"png"),
+            ("docs/my file.txt", b"txt"),
+            ("icons.svg", b"<svg/>"),
+            ("backend/index.php", b"<?php echo 1;"),
+        ]);
+        // The page asks for these as a browser writes them: escaped, and with a fragment.
+        assert!(bundle.read_public_asset("/images/caf%C3%A9.png").is_some());
+        assert!(bundle.read_public_asset("/docs/my%20file.txt").is_some());
+        assert!(bundle.read_public_asset("/icons.svg#home").is_some());
+        assert!(bundle.read_public_asset("/icons.svg?v=2#home").is_some());
+        // What worked before still does.
+        assert!(bundle.read_public_asset("/docs/my file.txt").is_some());
+        assert!(bundle.read_public_asset("/icons.svg?v=2").is_some());
+        // An escaped separator or `..` never reaches a private file.
+        assert!(bundle.read_public_asset("/docs%2F..%2Fbackend/index.php").is_none());
+        assert!(bundle.read_public_asset("/docs/%2e%2e/backend/index.php").is_none());
+        // Scripts, stylesheets and imports resolve the same way.
+        assert_eq!(
+            resolve_vfs_url("my%20file.txt", "docs/index.html", "").as_deref(),
+            Some("docs/my file.txt")
+        );
+        assert_eq!(resolve_vfs_url("/images/caf%C3%A9.png", "index.html", "").as_deref(), Some("images/caf\u{e9}.png"));
     }
 }

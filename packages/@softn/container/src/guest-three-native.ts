@@ -299,6 +299,11 @@ export const GUEST_THREE_NATIVE_SOURCE = String.raw`
   }
 
   var __activeRenderers = Object.create(null);
+  // An object no render reached for this many renders is one the app let go of (looked for
+  // every SWEEP_EVERY renders): both sides let go of it, and one the app draws again is sent
+  // again as new. Object3Ds are never disposed; each one drawn was kept for good.
+  var SWEEP_EVERY = 120;
+  var SWEEP_AGE = 240;
 
   function createNativeRendererClass(THREE) {
     var OrigWebGLRenderer = THREE && THREE.WebGLRenderer ? THREE.WebGLRenderer : null;
@@ -361,10 +366,13 @@ export const GUEST_THREE_NATIVE_SOURCE = String.raw`
       this._matState = new WeakMap();
       this._texIds = new WeakMap();
       this._texState = new WeakMap();
+      this._hooked = new WeakMap();
       this._f32 = new Float32Array(2048);
       this._f32Pos = 0;
       this._ops = [];
       this._pendingDeletes = [];
+      this._drawnOps = [];
+      this._renderSeq = 0;
       this._disposed = false;
       this._animCb = null;
       this._animRafId = 0;
@@ -560,6 +568,23 @@ export const GUEST_THREE_NATIVE_SOURCE = String.raw`
       return '';
     };
 
+    // A geometry, material or texture the app disposes: let go of in the Worker, and forgotten
+    // here, so one the app goes on drawing (three.js uploads it again) is sent again as new,
+    // with a new id. (Under its old id, what the app changed after was the Worker's new object,
+    // which no mesh or material drew with.) Heard once for each.
+    NativeWebGLRenderer.prototype._hookDispose = function (res, kind, ids, states) {
+      if (typeof res.addEventListener !== 'function' || this._hooked.get(res)) return;
+      this._hooked.set(res, true);
+      var self = this;
+      res.addEventListener('dispose', function () {
+        var gone = ids.get(res);
+        if (gone === undefined) return;
+        ids.delete(res);
+        states.delete(res);
+        if (!self._disposed) self._pendingDeletes.push(['del', kind, gone]);
+      });
+    };
+
     NativeWebGLRenderer.prototype._syncTexture = function (tex) {
       if (!tex) return 0;
       var id = this._texIds.get(tex);
@@ -578,13 +603,7 @@ export const GUEST_THREE_NATIVE_SOURCE = String.raw`
       if (!id) {
         id = this._nextTexId++;
         this._texIds.set(tex, id);
-        if (typeof tex.addEventListener === 'function') {
-          var selfR = this;
-          var capTid = id;
-          tex.addEventListener('dispose', function () {
-            if (!selfR._disposed) selfR._pendingDeletes.push(['del', 'tex', capTid]);
-          });
-        }
+        this._hookDispose(tex, 'tex', this._texIds, this._texState);
       }
 
       var spec = {
@@ -603,6 +622,15 @@ export const GUEST_THREE_NATIVE_SOURCE = String.raw`
         var pending = [];
         if (img.__ctx2d && img.__ctx2d._cmds && img.__ctx2d._cmds.length > 0) {
           pending = img.__ctx2d._cmds.splice(0, img.__ctx2d._cmds.length);
+          // Drawn on the page's canvas too, which they were taken from (a canvas the app also
+          // shows was blank there); marked as drawn on the Worker's copy once the frame that
+          // draws them there has run (render).
+          if (img.__softnNode && typeof g.__softnPushExtraOp === 'function') {
+            var drawnOp = ['k2d', img.__softnNode, img.width, img.height, pending];
+            g.__softnPushExtraOp(drawnOp);
+            this._drawnOps.push(drawnOp);
+          }
+          if (typeof g.__softnClearCanvas2DDrawing === 'function') g.__softnClearCanvas2DDrawing(img.__ctx2d);
         }
         spec.kind = 'canvas';
         spec.cid = img.__softnNode || 0;
@@ -622,7 +650,11 @@ export const GUEST_THREE_NATIVE_SOURCE = String.raw`
         if (typeof g.__softnMirrorPicture === 'function') g.__softnMirrorPicture(img);
         var src = typeof img.getAttribute === 'function' ? img.getAttribute('src') : null;
         spec.kind = 'img';
-        spec.ref = img.__softnNode && img.isConnected ? 'node:' + img.__softnNode : (src || '');
+        // By the name its picture was decoded under, the one a canvas draws it by: an image
+        // asked for with CORS and on no page (every one TextureLoader makes) is 'cors:' and
+        // its address, and asked for by its address alone it had no picture.
+        var picRef = typeof g.__softnPictureRef === 'function' ? g.__softnPictureRef(img) : null;
+        spec.ref = picRef || (img.__softnNode && img.isConnected ? 'node:' + img.__softnNode : (src || ''));
       } else {
         return 0;
       }
@@ -636,6 +668,8 @@ export const GUEST_THREE_NATIVE_SOURCE = String.raw`
       if (!geo) return 0;
       var id = this._geoIds.get(geo);
       var st = this._geoState.get(geo);
+      // Shared by many meshes: looked at once a render.
+      if (id && st && st.seq === this._renderSeq) return id;
       var attrs = geo.attributes || {};
       var attrNames = Object.keys(attrs);
       var dr = geo.drawRange || { start: 0, count: Infinity };
@@ -647,18 +681,13 @@ export const GUEST_THREE_NATIVE_SOURCE = String.raw`
         sig += '|' + attrNames[i] + ':' + av + ':' + (a ? a.count : 0);
       }
       if (id && st && st.sig === sig) {
+        st.seq = this._renderSeq;
         return id;
       }
       if (!id) {
         id = this._nextGeoId++;
         this._geoIds.set(geo, id);
-        if (typeof geo.addEventListener === 'function') {
-          var selfG = this;
-          var capGid = id;
-          geo.addEventListener('dispose', function () {
-            if (!selfG._disposed) selfG._pendingDeletes.push(['del', 'geo', capGid]);
-          });
-        }
+        this._hookDispose(geo, 'geo', this._geoIds, this._geoState);
       }
 
       var prevVers = st ? st.attrVers : Object.create(null);
@@ -732,7 +761,7 @@ export const GUEST_THREE_NATIVE_SOURCE = String.raw`
       }
 
       this._ops.push(['geo', id, spec]);
-      this._geoState.set(geo, { sig: sig, attrVers: nextVers, idxVer: idxVer });
+      this._geoState.set(geo, { sig: sig, attrVers: nextVers, idxVer: idxVer, seq: this._renderSeq });
       return id;
     };
 
@@ -745,6 +774,8 @@ export const GUEST_THREE_NATIVE_SOURCE = String.raw`
       }
       var id = this._matIds.get(mat);
       var st = this._matState.get(mat);
+      // Shared by many meshes: looked at once a render (its textures and uniforms with it).
+      if (id && st && st.seq === this._renderSeq) return id;
       var isShader = !!mat.isShaderMaterial;
       var mapId = mat.map ? this._syncTexture(mat.map) : 0;
       var alphaMapId = mat.alphaMap ? this._syncTexture(mat.alphaMap) : 0;
@@ -790,19 +821,14 @@ export const GUEST_THREE_NATIVE_SOURCE = String.raw`
           }
           if (changedU) this._ops.push(['mu', id, changedU]);
         }
+        st.seq = this._renderSeq;
         return id;
       }
 
       if (!id) {
         id = this._nextMatId++;
         this._matIds.set(mat, id);
-        if (typeof mat.addEventListener === 'function') {
-          var selfM = this;
-          var capMid = id;
-          mat.addEventListener('dispose', function () {
-            if (!selfM._disposed) selfM._pendingDeletes.push(['del', 'mat', capMid]);
-          });
-        }
+        this._hookDispose(mat, 'mat', this._matIds, this._matState);
       }
 
       var spec = {
@@ -862,7 +888,7 @@ export const GUEST_THREE_NATIVE_SOURCE = String.raw`
       }
 
       this._ops.push(['mat', id, spec]);
-      this._matState.set(mat, { sig: sig, uSigs: uSigs });
+      this._matState.set(mat, { sig: sig, uSigs: uSigs, seq: this._renderSeq });
       return id;
     };
 
@@ -889,6 +915,7 @@ export const GUEST_THREE_NATIVE_SOURCE = String.raw`
         st = { kind: kind, xf: null, ch: null, metaSig: '', camSig: '', sceneSig: '', imSig: '' };
         this._objState.set(obj, st);
       }
+      st.seen = this._renderSeq;
 
       // Build metadata signature (geo, mat, shadows, light params, gltf src)
       var matKey = Array.isArray(matId) ? matId.join(',') : String(matId);
@@ -1097,6 +1124,8 @@ export const GUEST_THREE_NATIVE_SOURCE = String.raw`
       if (this._disposed || !scene || !camera) return;
       this._ops.length = 0;
       this._f32Pos = 0;
+      this._drawnOps.length = 0;
+      this._renderSeq++;
 
       var cid = this.domElement && this.domElement.__softnNode ? this.domElement.__softnNode : 0;
       if (cid > 0 && cid !== this._canvasIdSent) {
@@ -1131,16 +1160,40 @@ export const GUEST_THREE_NATIVE_SOURCE = String.raw`
         for (var di = 0; di < this._pendingDeletes.length; di++) this._ops.push(this._pendingDeletes[di]);
         this._pendingDeletes.length = 0;
       }
+      if (this._renderSeq % SWEEP_EVERY === 0) this._sweepObjects();
 
       var f32B64 = '';
       if (this._f32Pos > 0) {
         var used = this._f32.subarray(0, this._f32Pos);
         f32B64 = bytesToB64(new Uint8Array(used.buffer, used.byteOffset, used.byteLength));
       }
+      var ran = false;
       try {
-        host.callSync('three', 'frame', String(this._rid), JSON.stringify(this._ops), f32B64);
+        ran = host.callSync('three', 'frame', String(this._rid), JSON.stringify(this._ops), f32B64) === true;
       } catch (e) {}
+      // Run: the canvases' drawing that came with it is on the Worker's copies now.
+      for (var dk = 0; dk < this._drawnOps.length; dk++) if (ran) this._drawnOps[dk][5] = 'mirrored';
+      this._drawnOps.length = 0;
       this.info.render.frame++;
+    };
+
+    // The objects no render has reached for SWEEP_AGE renders, let go of here and in the Worker.
+    // (Not of the scene the app draws, nor anything in it: each render reaches all of that.)
+    NativeWebGLRenderer.prototype._sweepObjects = function () {
+      var ids = Object.keys(this._objById);
+      for (var si = 0; si < ids.length; si++) {
+        var oid = Number(ids[si]);
+        var o = this._objById[oid];
+        var ost = o ? this._objState.get(o) : null;
+        if (ost && this._renderSeq - (ost.seen || 0) <= SWEEP_AGE) continue;
+        this._ops.push(['del', 'obj', oid]);
+        delete this._objById[oid];
+        if (o) {
+          this._objIds.delete(o);
+          this._objState.delete(o);
+          if (o._snThreeRid === this._rid) { o._snThreeRid = 0; o._snThreeId = 0; }
+        }
+      }
     };
 
     NativeWebGLRenderer.prototype.dispose = function () {

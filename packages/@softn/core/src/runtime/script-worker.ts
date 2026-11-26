@@ -25,6 +25,7 @@ import { moduleSyntaxAsScript } from './module-syntax';
 import { inlineLogicImports } from './logic-imports';
 import { endLine, logicOrigin, placeEngineSyntaxError } from './logic-origin';
 import { BRIDGE_VARS } from './external-values';
+import { stateForScript } from './vm-args';
 import { setEngineFaultSink } from './engine-output';
 import { readsOfDrawnFunctions } from './drawn-functions';
 import { carryIn, carryOut, markStart, type CarriedState, type StartMark, type StateSlots } from './state-carry';
@@ -51,6 +52,8 @@ const clipboardWrites: string[] = [];
 let symbolMap: Map<string, { index: number; scope: SymbolScope }> | null = null;
 let stateVarNames: string[] = [];
 let stateVarIndices: number[] = [];
+/** Where each slot of `stateVarIndices` is in it, for afterEntry: an `indexOf` per slot was a square of the variables every entry. */
+let stateVarPositions = new Map<number, number>();
 let functionNames: string[] = [];
 const workerState: Record<string, unknown> = {};
 /** Every state variable of the loaded script, mirrored or not, and how each stood at the start (state-carry.ts). */
@@ -87,6 +90,7 @@ function settleObservation(observedNames: unknown, drawnNames: unknown): Record<
     }
   }
   stateVarIndices = stateVarNames.map((name) => symbolMap!.get(name)!.index);
+  stateVarPositions = new Map(stateVarIndices.map((slot, position) => [slot, position]));
   return { ...workerState };
 }
 
@@ -172,7 +176,8 @@ let mainStateDirty = false;
 function syncStateToVM(): void {
   if (!wasmAdapter || stateVarIndices.length === 0 || !mainStateDirty) return;
   mainStateDirty = false;
-  const values = stateVarNames.map(name => workerState[name]);
+  // A Set the page holds as the list of its members, as on the main thread (vm-args.ts).
+  const values = stateVarNames.map(name => stateForScript(workerState[name]));
   wasmAdapter.setGlobalsBatch(stateVarIndices, values);
 }
 
@@ -195,8 +200,8 @@ function afterEntry(): Record<string, unknown> {
   if (dirtyIndices.length > 0) {
     const dirtyValues = adapter.getGlobalsBatch(dirtyIndices) as unknown[];
     for (let i = 0; i < dirtyIndices.length; i++) {
-      const varIdx = stateVarIndices.indexOf(dirtyIndices[i]);
-      if (varIdx === -1) continue;
+      const varIdx = stateVarPositions.get(dirtyIndices[i]);
+      if (varIdx === undefined) continue;
       const varName = stateVarNames[varIdx];
       const value = dirtyValues[i];
       if (deepEqual(value, workerState[varName])) continue;
@@ -272,6 +277,7 @@ self.onmessage = async (evt: MessageEvent) => {
       symbolMap = null;
       stateVarNames = [];
       stateVarIndices = [];
+      stateVarPositions = new Map();
       for (const key of Object.keys(workerState)) delete workerState[key];
       const script = payload.script as CodeBlock;
       const permissions = payload.permissions as AppPermissions | undefined;
@@ -528,6 +534,7 @@ self.onmessage = async (evt: MessageEvent) => {
       symbolMap = null;
       stateVarNames = [];
       stateVarIndices = [];
+      stateVarPositions = new Map();
       functionNames = [];
       mainStateDirty = false;
       carrySlots = null;

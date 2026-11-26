@@ -2791,8 +2791,11 @@ export class Parser {
    */
   private parseIfBlock(head?: SourceLocation): IfBlock {
     const firstHead = head ?? this.currentLoc();
+    let opening = true;
     const parseIfHead = (): IfBlock => {
       const loc = this.currentLoc();
+      const first = opening;
+      opening = false;
       this.nextToken(); // consume 'if' or 'elseif'
 
       const bare = this.openHeader();
@@ -2801,6 +2804,8 @@ export class Parser {
         condition = this.parseExpression();
         this.closeHeader(bare, loc);
       } catch (error) {
+        // An `#if` written bare in the middle of a line is words (proseHeader).
+        if (first && this.proseHeader(bare, loc)) throw error;
         condition = this.abandonHeader(error, bare, loc);
       }
       this.reportPendingOperand();
@@ -2891,6 +2896,46 @@ export class Parser {
    * mistake unwound the block, and the element around it read the branches
    * as its own content, every one of them drawn.
    */
+  /**
+   * An end tag in a block's branch that closes nothing open, passed over as
+   * parseChildren passes one over: a formatting element's ends it, `</p>` and
+   * `</br>` are elements as HTML reads them, and any other is said.
+   */
+  private strayEndInBranch(): ElementNode | null {
+    this.nextToken(); // consume </
+    if (!this.isPropertyName()) return null;
+    const loc = this.currentLoc();
+    const name = normalizeTagName(this.readTagName());
+    if (this.curTokenIs(TokenType.TAG_CLOSE)) this.nextToken(); // consume >
+    if (FORMATTING_ELEMENTS.has(name)) this.deactivateClosed(name);
+    if (name === 'p' || name === 'br') return createElementNode(name, loc, { selfClosing: name === 'br' });
+    if (!VOID_ELEMENTS.has(name) && documentWrapper(name) === null) {
+      const open = this.openTags[this.openTags.length - 1] ?? '';
+      if (open === '') {
+        this.diagnostics.push({ message: `</${name}> closes nothing that is open here, so it was passed over`, severity: 'warning', loc });
+      } else {
+        this.reportStrayEnd(open, name, loc);
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Whether a header that could not be read was words and not a block's: one
+   * written without parentheses after something else on its line, `Rinse
+   * #each day` or `run #each-time`. Kept as a block that draws nothing, it hid
+   * the rest of the element it was written in; it is said and read as the
+   * page around it reads a mistake, as it was before blocks were kept. A
+   * header in parentheses, or one that starts its line, is a block's.
+   */
+  private proseHeader(bare: boolean, loc: SourceLocation): boolean {
+    if (!bare) return false;
+    const hash = this.source.lastIndexOf('#', loc.start);
+    if (hash < 0) return false;
+    const lineStart = this.source.lastIndexOf('\n', hash - 1) + 1;
+    return !/^[ \t]*$/.test(this.source.slice(lineStart, hash));
+  }
+
   private abandonHeader(error: unknown, bare: boolean, loc: SourceLocation): Expression {
     this.addDiagnostic(error);
     let depth = 0;
@@ -2923,7 +2968,17 @@ export class Parser {
       // Comments first, so the `#` of a stop after one is seen.
       this.skipComments();
       if (this.curTokenIs(TokenType.HASH) && stops.includes(this.peekToken.type)) break;
-      if (this.curTokenIs(TokenType.TAG_END_OPEN)) break;
+      if (this.curTokenIs(TokenType.TAG_END_OPEN)) {
+        // The end of an element the block is in ends the block there. One that
+        // closes nothing open (the `</a>` of an `<a>` whose tag could not be
+        // read, a stray `</b>`) is passed over as parseChildren passes it
+        // over: taken for the block's end, it left the `#else` or `#empty`
+        // after it to no block, and that branch was drawn whatever held.
+        if (this.openTagIndex(this.tagNameAhead()) >= 0) break;
+        const stray = this.strayEndInBranch();
+        if (stray) nodes.push(stray);
+        continue;
+      }
       const passStart = this.curToken.start;
       try {
         if (this.curTokenIs(TokenType.TAG_OPEN)) {
@@ -3064,12 +3119,23 @@ export class Parser {
       this.nextToken(); // =
       if (this.curTokenIs(TokenType.EXPR_START)) {
         this.nextToken();
-        keyExpression = this.parseExpression();
-        this.expectToken(TokenType.EXPR_END);
+        // A key that cannot be read is said, and the rows go by their index,
+        // as for a header in parentheses below: thrown to the header's catch,
+        // it took the list with it.
+        try {
+          keyExpression = this.parseExpression();
+          this.expectToken(TokenType.EXPR_END);
+        } catch (error) {
+          this.addDiagnostic(error);
+          this.skipRestOfExpression();
+          keyExpression = undefined;
+        }
       }
     }
     this.closeHeader(bare, loc);
     } catch (error) {
+      // An `#each` written bare in the middle of a line is words (proseHeader).
+      if (this.proseHeader(bare, loc)) throw error;
       iterable = this.abandonHeader(error, bare, loc);
       keyExpression = undefined;
     }

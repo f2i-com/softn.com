@@ -165,6 +165,28 @@ const clampInt = (value: unknown, low: number, high: number, fallback: number): 
   return Math.min(high, Math.max(low, n));
 };
 
+/** How long, at most, a reply that can be cancelled runs before it lets its event loop turn. */
+const TURN_EVERY_MS = 50;
+
+/**
+ * A wait for one turn of the event loop, every {@link TURN_EVERY_MS} at most,
+ * for a reply that can be cancelled: a do-nothing for one that cannot.
+ *
+ * The cancel a page sends is a message, which a Worker reads between tasks.
+ * On the CPU and WebAssembly backends a step is computed where it is awaited
+ * and resolves at once, so a reply went from its first token to its last
+ * inside one task: the cancel was read after it had ended.
+ */
+function turnsForCancel(hooks: GenerateHooks): () => Promise<void> {
+  if (!hooks.cancelled) return async () => {};
+  let turned = performance.now();
+  return async () => {
+    if (performance.now() - turned < TURN_EVERY_MS) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    turned = performance.now();
+  };
+}
+
 export class ZippModelRunner {
   #cached: number[] = [];
   #seed: Record<string, unknown> | null = null;
@@ -405,8 +427,11 @@ export class ZippModelRunner {
         this.#chunkRefused = true;
       }
     }
+    const turn = turnsForCancel(hooks);
     if (!chunked) {
-      for (let position = shared; position < prompt.length && !hooks.cancelled?.(); position++) {
+      for (let position = shared; position < prompt.length; position++) {
+        await turn();
+        if (hooks.cancelled?.()) break;
         logits = await this.#step(prompt[position], position, position === prompt.length - 1);
         written = position + 1;
       }
@@ -421,6 +446,7 @@ export class ZippModelRunner {
     let finishReason: GenerateResult['finishReason'] = written < prompt.length ? 'cancelled' : 'length';
     let text = '';
     while (logits && written === prompt.length) {
+      await turn();
       if (hooks.cancelled?.()) { finishReason = 'cancelled'; break; }
       const next = zippModels.sampleLogits(logits, { ...sample, recent: [...prompt, ...generated].slice(-64) });
       if (stops.has(next)) { finishReason = 'stop'; break; }

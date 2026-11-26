@@ -415,9 +415,23 @@ function applyQuery(records: XDBRecord[], options?: XDBQueryOptions): XDBRecord[
     records = records.filter((record) => matchesFilter(record, filter));
   }
   if (options?.sort) records.sort(byField(options.sort.field, options.sort.order));
-  if (options?.offset !== undefined) records = records.slice(options.offset);
-  if (options?.limit !== undefined) records = records.slice(0, options.limit);
+  const offset = pagingCount(options?.offset);
+  if (offset !== undefined) records = records.slice(offset);
+  const limit = pagingCount(options?.limit);
+  if (limit !== undefined) records = records.slice(0, limit);
   return records;
+}
+
+/**
+ * An `offset` or `limit` as the desktop's SQLite reads one: below 0 it is none (no record
+ * skipped, no bound), and null, or what is no number at all, is not given. Handed to `slice`
+ * as it came, a negative one counted from the end (`offset: -2` answered the last two
+ * records, `limit: -1` all but the last) and `limit: null` answered nothing.
+ */
+function pagingCount(value: unknown): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  const count = Number(value);
+  return Number.isNaN(count) || count < 0 ? undefined : count;
 }
 
 /** Records with the field missing (or null) last, in either order, and in the order stored. */
@@ -1506,6 +1520,21 @@ export class XDBService {
   // --------------------------------------------------------------------------
 
   /**
+   * A desktop create or edit of what the native store cannot read (readableByNative: half of a
+   * surrogate pair, nesting past its limit), refused before anything changes, as an import
+   * refuses it. The IPC turned such a write down after the cache had taken it: a record made
+   * vanished again, with a write-failed notice, and an edit was there until the next start.
+   */
+  private assertNativeReadable(collection: string | undefined, value: unknown): void {
+    if (readableByNative(value, 1)) return;
+    throw new XDBStorageError(
+      'invalid-data',
+      `Not saved: the record holds text the native store cannot read (half of a surrogate pair) or is nested past 100 levels; nothing was changed.`,
+      collection
+    );
+  }
+
+  /**
    * Create a new record in a collection
    * When running in Tauri, uses native backend with P2P broadcast
    */
@@ -1513,6 +1542,7 @@ export class XDBService {
     assertCollectionName(collection);
     data = storedData(data);
     if (this.useTauri) {
+      this.assertNativeReadable(collection, { collection, id: options.id, data });
       this.knownCollections.add(collection);
       // Async create via Tauri - fire and forget, return optimistic result.
       // The optimistic id, generated or the caller's (a worker's snapshot
@@ -1559,11 +1589,18 @@ export class XDBService {
           // the tombstone, and nothing announces a record that was gone
           // before it was acknowledged. (Applying the server record first
           // used to bring the record back to life.)
-          if (currentOptimistic?.deleted || this.abandonedCreates.delete(optimisticRecord.id)) {
+          const abandoned = this.abandonedCreates.delete(optimisticRecord.id);
+          if (currentOptimistic?.deleted || abandoned) {
+            if (abandoned) {
+              // Removed for good while it was being created (hardDelete, a clear, a replacing
+              // import): the row SQLite just wrote goes, with no tombstone to keep its data.
+              this.removeNatively(collection, [serverRecord.id]);
+              return;
+            }
             if (currentOptimistic) {
               c.set(serverRecord.id, { ...serverRecord, data: { ...serverRecord.data, ...currentOptimistic.data }, deleted: true, updated_at: currentOptimistic.updated_at });
             }
-            this.native<boolean>('delete_record', { id: serverRecord.id, collection, updatedAt: currentOptimistic?.updated_at })
+            this.nativeInOrder<boolean>(collection, [serverRecord.id], 'delete_record', { id: serverRecord.id, collection, updatedAt: currentOptimistic?.updated_at })
               .then(() => this.nativeWriteLanded(collection))
               .catch((err) => {
                 // A clear of its collection took the row first: gone, as asked.
@@ -1590,8 +1627,9 @@ export class XDBService {
               ? currentOptimistic.updated_at
               : editStamp(serverRecord.updated_at);
             mergedRecord = { ...serverRecord, data: mergedData, updated_at: stamp };
-            // Push merged data to server so it's persisted
-            this.native('update_record', {
+            // Push merged data to server so it's persisted, ahead of any later write of the
+            // record (nativeInOrder): an edit made now is sent once this has landed.
+            this.nativeInOrder(collection, [serverRecord.id], 'update_record', {
               payload: { id: serverRecord.id, data: mergedData, updated_at: stamp, collection, remove: removed },
             }).catch((err) => this.nativeWriteFailed('update a record', collection, err));
           } else {
@@ -1651,6 +1689,7 @@ export class XDBService {
     assertCollectionName(collection);
     data = storedData(data);
     if (this.useTauri) {
+      this.assertNativeReadable(collection, { collection, data });
       const record = await this.native<XDBRecord>('create_record', {
         payload: { collection, data },
       });
@@ -1695,6 +1734,8 @@ export class XDBService {
     if (this.useTauri) {
       try {
         const record = await tauriInvoke<XDBRecord>('get_record', this.tauriArgs({ id }));
+        // Removed here for good, its native removal not landed: SQLite's copy is on its way out.
+        if (this.isRemovingNatively(record.collection, record.id)) return this.get(collection, id);
         // SQLite's copy only where the cache holds nothing as new (an edit or
         // a deletion whose native write has not landed stands, as getAllAsync
         // weighs it), and a deleted record is none, as in browser storage: the
@@ -1747,6 +1788,8 @@ export class XDBService {
         // (those with IDs not known to the server yet) and don't revive locally deleted records.
         // One new here goes after the rest, in the order made (inOrderMade).
         for (const r of inOrderMade(records)) {
+          // Removed here for good, its native removal not landed: SQLite's copy is on its way out.
+          if (this.isRemovingNatively(collection, r.id)) continue;
           const existing = coll.get(r.id);
           // Not a record deleted here after SQLite's copy (the delete is async, the backend
           // stale); one SQLite holds newer (a peer brought it back) is the cache's again: the
@@ -1804,6 +1847,7 @@ export class XDBService {
   update(id: string, data: Partial<Record<string, unknown>>): XDBRecord | null {
     storableText(data);
     if (this.useTauri) {
+      this.assertNativeReadable(undefined, { id, data });
       // Resolve optimistic ID → server ID if the create callback has already fired
       const resolvedId = this.optimisticIdMap.get(id) || id;
 
@@ -1850,8 +1894,9 @@ export class XDBService {
       if (!this.pendingCreateIds.has(id)) {
         // Async update via Tauri - fire and forget. Named: SQLite finds a record by id alone, and
         // the cache can hold one under an id SQLite keeps in another collection (a peer's record
-        // the native store refused as that collection's), whose record took the edit.
-        this.native<XDBRecord>('update_record', {
+        // the native store refused as that collection's), whose record took the edit. After the
+        // record's write before it (nativeInOrder).
+        this.nativeInOrder<XDBRecord>(touched, [resolvedId], 'update_record', {
           payload: { id: resolvedId, data, updated_at: applied?.updated_at, remove: removedFields(data), collection: touched },
         })
           .then((serverRecord) => {
@@ -1925,6 +1970,7 @@ export class XDBService {
   async updateAsync(id: string, data: Partial<Record<string, unknown>>): Promise<XDBRecord | null> {
     storableText(data);
     if (this.useTauri) {
+      this.assertNativeReadable(undefined, { id, data });
       // A record made here whose native create has not landed has no row to change yet: SQLite
       // refused the change as not found, and it was lost. Made as update() makes it, in the
       // cache, for the create to send once the row exists.
@@ -1932,10 +1978,14 @@ export class XDBService {
       try {
         // Stamped after the cache's copy and a room's, as update() stamps it.
         const held = this.cachedLive(id);
-        // Named, as update() names it: SQLite finds a record by id alone.
-        const record = await this.native<XDBRecord>('update_record', {
+        // Named, as update() names it: SQLite finds a record by id alone. After the record's
+        // write before it, when the cache holds it (nativeInOrder).
+        const request = {
           payload: { id, data, updated_at: held ? this.stampAfter(held) : undefined, remove: removedFields(data), collection: held?.collection },
-        });
+        };
+        const record = await (held
+          ? this.nativeInOrder<XDBRecord>(held.collection, [id], 'update_record', request)
+          : this.native<XDBRecord>('update_record', request));
         // Taken only while the cache holds what this update started from, as
         // update() weighs its answer: a delete() or an edit made meanwhile
         // wins. Set regardless, a record deleted meanwhile was live here again,
@@ -1969,6 +2019,7 @@ export class XDBService {
   ): XDBRecord | null {
     storableText(data);
     if (this.useTauri) {
+      this.assertNativeReadable(collection, { collection, id, data });
       const coll = this.memoryStore.get(collection);
       if (!coll) return null;
       let record = coll.get(id);
@@ -1994,8 +2045,8 @@ export class XDBService {
       // while keeping the optimistic cache change in the requested collection.
       // It names the collection: the native store found the record by id alone,
       // and a peer's record here with the id of one in a private collection had
-      // this edit merged into that one.
-      this.native<XDBRecord>('update_record', {
+      // this edit merged into that one. After the record's write before it (nativeInOrder).
+      this.nativeInOrder<XDBRecord>(collection, [record.id], 'update_record', {
         payload: { id: record.id, data, updated_at: updatedRecord.updated_at, collection, remove: removedFields(data) },
       }).then((serverRecord) => {
         this.nativeWriteLanded(collection);
@@ -2078,8 +2129,9 @@ export class XDBService {
       // the tombstone below stays in the cache and the create callback
       // deletes the row once SQLite has written it.
       if (!this.pendingCreateIds.has(id)) {
-        // Async delete via Tauri - fire and forget. Named, as update() names it.
-        this.native<boolean>('delete_record', { id: resolvedId, updatedAt: tombstone?.record.updated_at, collection: touched })
+        // Async delete via Tauri - fire and forget. Named, as update() names it. After the
+        // record's write before it (nativeInOrder).
+        this.nativeInOrder<boolean>(touched, [resolvedId], 'delete_record', { id: resolvedId, updatedAt: tombstone?.record.updated_at, collection: touched })
           .then(() => {
             this.nativeWriteLanded(touched);
             // Announced once, below, when the cache took the delete: told
@@ -2160,8 +2212,12 @@ export class XDBService {
       try {
         const held = this.cachedLive(id);
         const stamp = held ? this.stampAfter(held) : undefined;
-        // Named, as delete() names it: SQLite finds a record by id alone.
-        await this.native<boolean>('delete_record', { id, updatedAt: stamp, collection: held?.collection });
+        // Named, as delete() names it: SQLite finds a record by id alone. After the record's
+        // write before it, when the cache holds it (nativeInOrder).
+        const request = { id, updatedAt: stamp, collection: held?.collection };
+        await (held
+          ? this.nativeInOrder<boolean>(held.collection, [id], 'delete_record', request)
+          : this.native<boolean>('delete_record', request));
         for (const [collection, coll] of this.memoryStore) {
           if (held !== undefined && collection !== held.collection) continue;
           const record = coll.get(id);
@@ -2200,7 +2256,7 @@ export class XDBService {
       this.notifyMutationLanded('delete', collection, record.id);
       // A row still being created is deleted by the create callback instead.
       if (!this.pendingCreateIds.has(record.id)) {
-        this.native<boolean>('delete_record', { id: record.id, collection, updatedAt: deleted.updated_at })
+        this.nativeInOrder<boolean>(collection, [record.id], 'delete_record', { id: record.id, collection, updatedAt: deleted.updated_at })
           .then(() => this.nativeWriteLanded(collection))
           .catch((err) => this.nativeWriteFailed('delete a record', collection, err));
       }
@@ -2225,6 +2281,68 @@ export class XDBService {
   }
 
   /**
+   * Records removed for good here whose native removal has not landed, by
+   * `collection\0id` (a count, for removals of one record that overlap). SQLite
+   * still holds such a record, and a read answered from it put it back in the
+   * cache: `getAllAsync`, which a desktop <data> block makes after every write,
+   * and `getAsync`. Shown again, it stayed after the removal landed, and peer
+   * sync's next refresh could hand it back to the room.
+   */
+  private removingNatively = new Map<string, number>();
+
+  /** Remove records of `collection` for good in SQLite (remove_records), held out of native reads until it lands. */
+  private removeNatively(collection: string, ids: string[]): void {
+    const keys = ids.map((id) => `${collection}\u0000${id}`);
+    for (const key of keys) this.removingNatively.set(key, (this.removingNatively.get(key) ?? 0) + 1);
+    const settled = () => {
+      for (const key of keys) {
+        const left = (this.removingNatively.get(key) ?? 1) - 1;
+        if (left > 0) this.removingNatively.set(key, left);
+        else this.removingNatively.delete(key);
+      }
+    };
+    this.nativeInOrder<string[]>(collection, ids, 'remove_records', { collection, ids })
+      .then(() => this.nativeWriteLanded(collection))
+      .catch((err) => this.nativeWriteFailed('remove a record', collection, err))
+      .finally(settled);
+  }
+
+  private isRemovingNatively(collection: string, id: string): boolean {
+    return this.removingNatively.size > 0 && this.removingNatively.has(`${collection}\u0000${id}`);
+  }
+
+  /**
+   * The native write of each record sent last, by `collection\0id`, until it has settled. Tauri
+   * runs each command on a thread of its own, so a record's second write, sent before the first
+   * was answered, could take the database first: the first then wrote its older value over it
+   * in SQLite (stamped later, by the native clock) while the page kept the newer one, and the
+   * next start showed the older. A record's writes go one after another instead, as its edits
+   * already wait for its create (pendingCreateIds).
+   */
+  private recordWrites = new Map<string, Promise<void>>();
+
+  /** `native`, for a write of `ids` of `collection`: sent once each one's write before it has settled. */
+  private nativeInOrder<T>(collection: string, ids: readonly string[], cmd: string, args: Record<string, unknown>): Promise<T> {
+    const keys = [...new Set(ids)].map((id) => `${collection}\u0000${id}`);
+    const before = keys.flatMap((key) => this.recordWrites.get(key) ?? []);
+    const request = this.tauriArgs(args);
+    const sent = before.length === 0
+      ? tauriInvoke<T>(cmd, request)
+      : Promise.all(before).then(() => tauriInvoke<T>(cmd, request));
+    // On its way from now, waiting its turn included (the unload guard, `whenIdle`), as `native` counts a write.
+    this.pendingNative.add(sent);
+    this.pendingChanged();
+    const settle = () => { this.pendingNative.delete(sent); this.pendingChanged(); };
+    sent.then(settle, settle);
+    const done = sent.then(() => undefined, () => undefined);
+    for (const key of keys) this.recordWrites.set(key, done);
+    void done.then(() => {
+      for (const key of keys) if (this.recordWrites.get(key) === done) this.recordWrites.delete(key);
+    });
+    return sent;
+  }
+
+  /**
    * Hard delete - permanently remove a record
    *
    * Server sync is told as it is of any delete (`db.prune` and
@@ -2246,9 +2364,11 @@ export class XDBService {
         // create, so there is no delete to announce either.
         this.abandonedCreates.add(id);
       } else {
-        this.native<boolean>('delete_record', { id, collection })
-          .then(() => this.nativeWriteLanded(collection))
-          .catch((err) => this.nativeWriteFailed('remove a record', collection, err));
+        // For good: the row and its entry in the replicated document, with no tombstone. A
+        // tombstone (delete_record) keeps the record's data: the next start loaded it again,
+        // and peer sync put it, data and all, back into the room. An id another collection
+        // holds natively is no record of this one: nothing of it is left to remove.
+        this.removeNatively(collection, [id]);
       }
 
       // `removed`: a record deleted first and then removed is announced as
@@ -2306,9 +2426,10 @@ export class XDBService {
 
   /**
    * `hardDeleteMany` on the desktop: each record removed as `hardDelete` removes one, and what
-   * SQLite holds of them tombstoned in one native call (upsert_records), as delete_record writes
-   * each. A delete_record a record rewrote the collection's whole CRDT document in SQLite every
-   * time, so a prune of thousands of records held the native store for minutes.
+   * SQLite holds of them removed for good in one native call (remove_records). A delete_record a
+   * record rewrote the collection's whole CRDT document in SQLite every time, so a prune of
+   * thousands of records held the native store for minutes; and a tombstone keeps the record's
+   * data, which the next start loaded again and peer sync put back into the room.
    */
   private hardDeleteManyNative(collection: string, ids: Iterable<string>): number {
     const coll = this.memoryStore.get(collection);
@@ -2322,26 +2443,20 @@ export class XDBService {
     // Records still being created have no row yet: their create callbacks delete the rows SQLite
     // writes, never put them back in the cache, and announce nothing (hardDelete).
     const unborn = new Set<string>();
-    const tombstones: XDBRecord[] = [];
+    const stored: string[] = [];
     for (const record of gone) {
       coll!.delete(record.id);
       if (this.pendingCreateIds.has(record.id)) {
         unborn.add(record.id);
         this.abandonedCreates.add(record.id);
       } else {
-        tombstones.push({ ...record, deleted: true, updated_at: editStamp(record.updated_at) });
+        stored.push(record.id);
       }
     }
-    if (tombstones.length > 0) {
-      this.native<string[]>('upsert_records', { records: tombstones })
-        .then((refused) => {
-          if (Array.isArray(refused) && refused.length > 0) {
-            this.nativeWriteFailed('remove a record', collection, new Error(`${refused.length === 1 ? 'a record' : `${refused.length} records`} of another collection here`));
-          } else {
-            this.nativeWriteLanded(collection);
-          }
-        })
-        .catch((err) => this.nativeWriteFailed('remove a record', collection, err));
+    if (stored.length > 0) {
+      // An id another collection holds natively is no record of this one: nothing of it is
+      // left to remove (hardDelete).
+      this.removeNatively(collection, stored);
     }
     // Announced together, as one refresh; `removed`, as hardDelete announces each.
     this.suppressNotifications();
@@ -2472,7 +2587,9 @@ export class XDBService {
       const coll = this.getOrCreateCollection(collection);
       const isUpdate = coll.has(record.id);
       coll.set(record.id, record);
-      this.native<XDBRecord>('upsert_record', { record })
+      // After the record's write before it (nativeInOrder): an edit of it still on its way
+      // would land after this copy, over it, and SQLite kept what the page no longer held.
+      this.nativeInOrder<XDBRecord>(collection, [record.id], 'upsert_record', { record })
         .then(() => this.nativeWriteLanded(collection))
         .catch((err) => this.nativeWriteFailed('save a record', collection, err));
       this.emit({ type: isUpdate ? 'update' : 'create', collection, record });
@@ -2530,7 +2647,8 @@ export class XDBService {
         coll.set(record.id, record);
         return event;
       });
-      this.native<string[]>('upsert_records', { records: list })
+      // After each record's write before it (nativeInOrder), as writeRecord sends one.
+      this.nativeInOrder<string[]>(collection, list.map((record) => record.id), 'upsert_records', { records: list })
         .then((refused) => {
           // Not written, as upsert_record refuses one: a record another
           // collection holds under the same id.
@@ -2656,10 +2774,11 @@ export class XDBService {
         coll!.delete(id);
         this.emit({ type: 'delete', collection, record: removed, removed: true });
       }
-      // Named, so an id another collection holds is not deleted from it.
-      this.native<boolean>('delete_record', { id, collection })
-        .then(() => this.nativeWriteLanded(collection))
-        .catch((err) => this.nativeWriteFailed('remove a record', collection, err));
+      // For good, as hardDelete removes one (remove_records): a tombstone kept the record's data,
+      // which the next start loaded again and peer sync put back into the room that had removed
+      // it. Named, so an id another collection holds is not removed from it; one SQLite never had
+      // is nothing to remove, where delete_record answered "Record not found", a failed write.
+      this.removeNatively(collection, [id]);
       return;
     }
     const records = this.getAllCollectionData(collection);
@@ -2674,10 +2793,10 @@ export class XDBService {
 
   /**
    * `removeRecord` for many records of one collection: in browser storage the collection is
-   * read and written once, and on the desktop the records the cache holds go to the native
-   * store as tombstones in one call (upsert_records), as delete_record writes each. A pull's
-   * deletions were removed a record at a time, each re-reading and rewriting the collection,
-   * and on the desktop each a native call that rewrote its stored document.
+   * read and written once, and on the desktop they are removed from the native store in one
+   * call (remove_records), held here or not. A pull's deletions were removed a record at a time,
+   * each re-reading and rewriting the collection, and on the desktop each a native call that
+   * rewrote its stored document.
    * `fromPeer` as for `removeRecord`: what a room's peers removed, which peer sync
    * removed a record at a time, each read and write of the collection again.
    */
@@ -2689,30 +2808,15 @@ export class XDBService {
     this.assertWritable(collection, options.fromPeer !== true);
     if (this.useTauri) {
       const coll = this.memoryStore.get(collection);
-      const tombstones: XDBRecord[] = [];
       const events: XDBEvent[] = [];
       for (const id of ids) {
         const removed = coll?.get(id);
-        if (!removed) {
-          // Not held here: the native store is asked by id, as before.
-          this.removeRecord(collection, id, options);
-          continue;
-        }
+        if (!removed) continue;
         coll!.delete(id);
-        tombstones.push({ ...removed, deleted: true, updated_at: editStamp(removed.updated_at) });
         events.push({ type: 'delete', collection, record: removed, removed: true });
       }
-      if (tombstones.length > 0) {
-        this.native<string[]>('upsert_records', { records: tombstones })
-          .then((refused) => {
-            if (Array.isArray(refused) && refused.length > 0) {
-              this.nativeWriteFailed('remove a record', collection, new Error(`${refused.length === 1 ? 'a record' : `${refused.length} records`} of another collection here`));
-            } else {
-              this.nativeWriteLanded(collection);
-            }
-          })
-          .catch((err) => this.nativeWriteFailed('remove a record', collection, err));
-      }
+      // For good, as removeRecord removes one: the native store is asked by id, held here or not.
+      this.removeNatively(collection, [...new Set(ids)]);
       for (const event of events) this.emit(event);
       return;
     }

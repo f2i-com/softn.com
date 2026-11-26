@@ -77,11 +77,12 @@ function formatValue(value: number | string, prefix?: string, suffix?: string): 
   let formatted: string;
   // By its size, so that a loss is shortened as a gain is (-1,500,000 was
   // drawn in full). From 999,950 a figure is in millions: in thousands it
-  // rounded up to "1000.0K".
+  // rounded up to "1000.0K". So from 999.95 it is in thousands: to a tenth
+  // it rounded up to "1000.0".
   const size = Math.abs(value);
   if (size >= 999950) {
     formatted = (value / 1000000).toFixed(1) + 'M';
-  } else if (size >= 1000) {
+  } else if (size >= 999.95) {
     formatted = (value / 1000).toFixed(1) + 'K';
   } else if (value % 1 !== 0) {
     formatted = value.toFixed(1);

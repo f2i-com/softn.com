@@ -171,7 +171,9 @@ export function validateForm(
     // output to `string | null` so untrusted templates cannot invoke `Function`.
     if (!error && typeof field.validate === 'function' && !isBlockedFunction(field.validate)) {
       const result = field.validate(value);
-      error = typeof result === 'string' ? result : null;
+      // The empty string says nothing is wrong: kept as the error, the form could never pass
+      // and no message was shown (getFieldError reads '' as none).
+      error = typeof result === 'string' && result !== '' ? result : null;
     }
 
     errors[field.name] = error;
@@ -203,8 +205,9 @@ export function formValuesToRecord(values: Record<string, unknown>): Record<stri
   const cleaned: Record<string, unknown> = {};
 
   for (const [key, value] of Object.entries(values)) {
-    // Skip undefined values
-    if (value === undefined) continue;
+    // Skip undefined values, and a key that is no field's (an own `__proto__` from parsed JSON
+    // set the record's prototype when written here), as the rest of this module does.
+    if (value === undefined || BLOCKED_FORM_KEYS.has(key)) continue;
 
     // Convert empty strings to null for optional fields
     if (value === '') {

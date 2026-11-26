@@ -76,6 +76,14 @@ fn jstr(env: &mut JNIEnv, s: &str) -> jstring {
         .unwrap_or(std::ptr::null_mut())
 }
 
+/// A Java string's text. `JavaStr` holds Java's modified UTF-8 (a character past the BMP as
+/// two encoded surrogates, U+0000 as `C0 80`); `String::from` decodes it. Its
+/// `to_string_lossy()` is `CStr`'s, which reads those bytes as UTF-8 and made every emoji
+/// typed or pasted, and in a file name or clipboard text, into replacement characters.
+fn java_string(env: &mut JNIEnv, s: &JString) -> Option<String> {
+    env.get_string(s).ok().map(String::from)
+}
+
 fn result_to_json(res: &InteractionResult) -> String {
     serde_json::to_string(res).unwrap_or_else(|_| "{}".to_string())
 }
@@ -97,16 +105,14 @@ pub extern "system" fn Java_com_softn_android_SoftnNative_nativeCreate(
         log::error!("nativeCreate: failed to read bundle bytes");
         return 0;
     };
-    let Ok(data_dir_str) = env.get_string(&data_dir) else {
+    let Some(data_dir_str) = java_string(&mut env, &data_dir) else {
         log::error!("nativeCreate: failed to read dataDir");
         return 0;
     };
-    let data_dir_path = PathBuf::from(data_dir_str.to_string_lossy().into_owned());
+    let data_dir_path = PathBuf::from(data_dir_str);
 
-    let host_info: HostDeviceInfo = env
-        .get_string(&device_info_json)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s.to_string_lossy()).ok())
+    let host_info: HostDeviceInfo = java_string(&mut env, &device_info_json)
+        .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default();
 
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -276,10 +282,7 @@ pub extern "system" fn Java_com_softn_android_SoftnNative_nativeTextInput(
     handle: jlong,
     text: JString,
 ) -> jstring {
-    let txt = env
-        .get_string(&text)
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    let txt = java_string(&mut env, &text).unwrap_or_default();
     let out = with_engine(handle, "{}".to_string(), |eng| {
         result_to_json(&eng.on_text_input(&txt))
     });
@@ -307,10 +310,7 @@ pub extern "system" fn Java_com_softn_android_SoftnNative_nativeResolveDeviceCal
     ok: jboolean,
     payload_json: JString,
 ) -> jstring {
-    let payload = env
-        .get_string(&payload_json)
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    let payload = java_string(&mut env, &payload_json).unwrap_or_default();
     let out = with_engine(handle, "{}".to_string(), |eng| {
         result_to_json(&eng.resolve_device_call(request_id as u64, ok == JNI_TRUE, &payload))
     });

@@ -676,7 +676,7 @@ class DeviceBridge(
         } else {
             emptyArray()
         }
-        ensurePermissions(gen, perms) { granted ->
+        ensurePermissions(gen, id, perms) { granted ->
             if (!granted) {
                 fail(gen, id, "Notification permission denied")
                 return@ensurePermissions
@@ -726,7 +726,7 @@ class DeviceBridge(
     private fun handleCamera(gen: Long, id: Long, method: String, params: JSONObject) {
         when (method) {
             "takePhoto" -> {
-                ensurePermissions(gen, arrayOf(Manifest.permission.CAMERA)) { granted ->
+                ensurePermissions(gen, id, arrayOf(Manifest.permission.CAMERA)) { granted ->
                     if (!granted) {
                         fail(gen, id, "Android CAMERA permission denied")
                         return@ensurePermissions
@@ -980,7 +980,7 @@ class DeviceBridge(
         } else {
             arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.ACCESS_FINE_LOCATION)
         }
-        ensurePermissions(gen, needed, requireAny = true) { granted ->
+        ensurePermissions(gen, id, needed, requireAny = true) { granted ->
             if (!granted) {
                 fail(gen, id, "Android location permission denied")
                 return@ensurePermissions
@@ -1136,7 +1136,7 @@ class DeviceBridge(
             return
         }
 
-        ensurePermissions(gen, blePermissions()) { granted ->
+        ensurePermissions(gen, id, blePermissions()) { granted ->
             if (!granted) {
                 fail(gen, id, "Android Bluetooth permission denied")
                 return@ensurePermissions
@@ -1616,11 +1616,24 @@ class DeviceBridge(
 
     private fun ensurePermissions(
         gen: Long,
+        id: Long,
         permissions: Array<String>,
         requireAny: Boolean = false,
-        onResult: (Boolean) -> Unit
+        continuation: (Boolean) -> Unit
     ) {
         if (closed.get() || activeGeneration.get() != gen) return
+        // After a permission dialog this runs from an ActivityResult callback, outside
+        // `dispatch`'s try: what it threw there (startScan with Bluetooth since switched
+        // off, say) crashed the app and left the call unanswered. It is answered with the
+        // failure instead; a second answer to a call is ignored by the engine.
+        val onResult: (Boolean) -> Unit = { granted ->
+            try {
+                continuation(granted)
+            } catch (t: Throwable) {
+                Log.e("SoftN", "DeviceBridge call $id failed after the permission request", t)
+                fail(gen, id, t.message ?: "Native bridge failure")
+            }
+        }
         if (permissions.isEmpty()) {
             onResult(true)
             return

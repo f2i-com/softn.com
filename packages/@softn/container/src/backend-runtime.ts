@@ -475,27 +475,115 @@ function encodeUtf8(text: string): Uint8Array {
   return UTF8_ENCODER.encode(text);
 }
 
-function parseUrlEncodedBody(raw: string): Record<string, string> {
-  const out: Record<string, string> = Object.create(null) as Record<string, string>;
-  if (!raw) return out;
-  for (const part of raw.split('&')) {
-    if (!part) continue;
-    const eq = part.indexOf('=');
-    const k = eq >= 0 ? part.slice(0, eq) : part;
-    const v = eq >= 0 ? part.slice(eq + 1) : '';
-    let key: string;
-    let val: string;
-    try {
-      key = decodeURIComponent(k.replace(/\+/g, ' '));
-      val = decodeURIComponent(v.replace(/\+/g, ' '));
-    } catch {
-      key = k;
-      val = v;
-    }
-    if (!key || key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
-    out[key] = val;
+/**
+ * Bytes as zipp-php takes the text of a request: one character per byte (0x00..0xFF), which
+ * `json_decode()` and `mb_*()` read back as UTF-8.
+ */
+function latin1Packed(bytes: Uint8Array): string {
+  const parts: string[] = [];
+  for (let i = 0; i < bytes.byteLength; i += 8192) {
+    parts.push(String.fromCharCode(...bytes.subarray(i, i + 8192)));
+  }
+  return parts.join('');
+}
+
+/** Text for zipp-php as its UTF-8 bytes (ASCII as it is). */
+function phpText(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  return /[^\u0000-\u007f]/.test(text) ? latin1Packed(UTF8_ENCODER.encode(text)) : text;
+}
+
+const MAX_RESPONSE_HEADERS = 128;
+const MAX_RESPONSE_HEADER_BYTES = 8192;
+const HEADER_NAME_RE = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+
+/**
+ * A backend's status as both native hosts read it (`backend_status` in apps/softn-host-rust,
+ * `clampContainerStatus` in apps/softn-host-php): a whole number from 200 to 599, else 500.
+ */
+function backendStatus(raw: unknown): number {
+  return typeof raw === 'number' && Number.isInteger(raw) && raw >= 200 && raw <= 599 ? raw : 500;
+}
+
+/**
+ * A backend's headers as the native hosts send them (`parse_headers_json`): pairs of a header
+ * name and a value without CR, LF or NUL, at most 128, a number or boolean value as its text.
+ * Any other pair is dropped: it reached the cookie jar and the page's fetch, threw there, and
+ * the request was never answered.
+ */
+function backendHeaders(raw: unknown): Array<[string, string]> {
+  const out: Array<[string, string]> = [];
+  if (!Array.isArray(raw)) return out;
+  for (const item of raw) {
+    if (out.length >= MAX_RESPONSE_HEADERS) break;
+    if (!Array.isArray(item) || item.length < 2) continue;
+    const name: unknown = item[0];
+    const given: unknown = item[1];
+    const value =
+      typeof given === 'string'
+        ? given
+        : (typeof given === 'number' && Number.isFinite(given)) || typeof given === 'boolean'
+          ? String(given)
+          : null;
+    if (typeof name !== 'string' || value === null) continue;
+    if (name.length > 256 || !HEADER_NAME_RE.test(name)) continue;
+    if (value.length > MAX_RESPONSE_HEADER_BYTES || /[\r\n\0]/.test(value)) continue;
+    out.push([name, value]);
   }
   return out;
+}
+
+/**
+ * Whether a request header reaches a backend, as on the native hosts (`backend_request_header`
+ * in apps/softn-host-rust): a name of lower-case letters, digits and `-` alone (PHP spells `-`
+ * and `_` alike in `$_SERVER`, so an `X_Forwarded_For` stood in for `X-Forwarded-For`), and
+ * none of the `x-formlogic-*` names FormLogic's runner keeps for itself. `LocalBackendTransport`
+ * already sends no others; this holds the session to it too.
+ */
+function backendRequestHeader(lowerName: string): boolean {
+  return /^[a-z0-9-]+$/.test(lowerName) && lowerName !== 'x-formlogic' && !lowerName.startsWith('x-formlogic-');
+}
+
+/**
+ * `SERVER_NAME` as the hosts give it (`server_host_name`), and Apache: the host a request named
+ * without its port (an IPv6 address keeps its brackets); the port is `SERVER_PORT`'s.
+ */
+function serverHostName(host: string): string {
+  const h = host.trim();
+  let name: string;
+  if (h.startsWith('[')) {
+    const end = h.indexOf(']');
+    name = end >= 0 ? h.slice(0, end + 1) : '';
+  } else {
+    name = h.split(':')[0];
+  }
+  return name || 'localhost';
+}
+
+/**
+ * A request's path as both native hosts take it where it comes in (`decode_http_path` in
+ * apps/softn-host-rust, `softn_decode_path` in apps/softn-host-php/runtime/request.php): decoded
+ * once, so `.htaccess`, the files and the backend all read the same path, with empty and `.`
+ * segments gone and a trailing `/` kept. Null (answered 400) for a `%` without two hex digits,
+ * an encoded separator, control character, `?` or `#`, a raw control character or backslash, a
+ * `..` segment, or bytes that are not UTF-8. Handed on encoded, `/%61dmin` passed a rule
+ * written for `/admin` that the app's router, which decodes, then served.
+ */
+function decodeRequestPath(raw: string): string | null {
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f\\]/.test(raw) || /%(?![0-9A-Fa-f]{2})/.test(raw)) return null;
+  if (/%(?:[01][0-9A-Fa-f]|7[Ff]|2[Ff]|5[Cc]|3[Ff]|23)/.test(raw)) return null;
+  let text: string;
+  try {
+    text = decodeURIComponent(raw);
+  } catch {
+    return null;
+  }
+  const segments = text.split('/');
+  if (segments.includes('..')) return null;
+  const trailing = text.length > 1 && text.endsWith('/');
+  const parts = segments.filter((s) => s !== '' && s !== '.');
+  return parts.length === 0 ? '/' : `/${parts.join('/')}${trailing ? '/' : ''}`;
 }
 
 function normalizeBackendRequestPath(rawPath: string): string {
@@ -536,6 +624,11 @@ export class BackendWorkerSession {
   private instructionBudget = 200_000_000;
   private rustTimerHandle: ReturnType<typeof setTimeout> | null = null;
   private sqlFlushTimer: ReturnType<typeof setTimeout> | null = null;
+  private rustOverlayTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The SQL bridge the backend's engine was started with, to start it again with. */
+  private engineSqlBridge: { call: (kind: string, args: string[]) => unknown } | null = null;
+  /** The Rust backend's open WebSockets, closed when its engine is started again. */
+  private readonly rustWsIds = new Set<string>();
   private disposed = false;
 
   constructor(postToHost: (msg: BackendToHostMsg) => void) {
@@ -719,6 +812,7 @@ export class BackendWorkerSession {
           hostChargeSteps: this.zippBindings.hostChargeSteps,
         };
         const sqlBridge = this.sqlManager.createZippSqlBridge(budgetHooks);
+        this.engineSqlBridge = sqlBridge;
 
         this.emitStatus({
           phase: 'booting-backend',
@@ -808,25 +902,33 @@ export class BackendWorkerSession {
     return false;
   }
 
+  /**
+   * Keep the Rust overlay soon, once for a burst. The engine exports it whole, everything the
+   * app has written, so exported after every request, WebSocket message and timer it cost the
+   * size of that each time (28 ms a request for 8 MB written). A request that may write keeps it
+   * at once, and a flush (the page hidden or closed) and dispose do too.
+   */
+  private scheduleRustOverlayPersist(): void {
+    if (this.disposed || !this.rustEngine || this.rustOverlayTimer !== null) return;
+    this.rustOverlayTimer = setTimeout(() => {
+      this.rustOverlayTimer = null;
+      if (!this.disposed) this.persistRustOverlayIfChanged();
+    }, 250);
+  }
+
   private persistRustOverlayIfChanged(): void {
+    if (this.rustOverlayTimer !== null) {
+      clearTimeout(this.rustOverlayTimer);
+      this.rustOverlayTimer = null;
+    }
     if (!this.rustEngine || typeof this.rustEngine.exportRustOverlayJson !== 'function') return;
     try {
       const raw = this.rustEngine.exportRustOverlayJson();
-      if (!raw || raw.length > MAX_OVERLAY_TOTAL_BYTES) return;
-      if (raw === '{"writes":{},"deleted":[],"dirs":[]}') {
-        if (
-          Object.keys(this.rustOverlayWrites).length > 0 ||
-          this.rustOverlayDeleted.size > 0 ||
-          this.rustOverlayDirs.size > 0
-        ) {
-          this.rustOverlayWrites = Object.create(null);
-          this.rustOverlayDeleted.clear();
-          this.rustOverlayDirs.clear();
-          this.lastRustOverlaySnapshot = raw;
-          this.postToHost({ type: 'rust-overlay-persist', overlayJson: raw });
-        }
-        return;
-      }
+      // The engine's overlay is what changed since it started, on top of the files restored
+      // then; a file removed is listed in `deleted`. Empty is nothing changed. It was read as
+      // everything removed: the boot after a visit that wrote files kept an empty overlay, and
+      // the visit after that had none of them (a generated secret, an upload).
+      if (!raw || raw.length > MAX_OVERLAY_TOTAL_BYTES || raw === '{"writes":{},"deleted":[],"dirs":[]}') return;
       const delta = JSON.parse(raw) as {
         writes?: Record<string, string>;
         deleted?: string[];
@@ -1134,7 +1236,89 @@ export class BackendWorkerSession {
     return null;
   }
 
+  /**
+   * Start the backend's engine again when a request left it gone (`disposed`, the engine's own
+   * word for it: an instruction budget run out, another ceiling hit). The native hosts start each
+   * request's program afresh, and the Rust host rebuilds its worker; here every request after it
+   * was answered "zipp: engine is disposed" until the page was reloaded. A Rust backend's open
+   * WebSockets went with its engine, and are closed.
+   */
+  private restartDisposedEngine(): void {
+    const bridge = this.engineSqlBridge;
+    const backend = this.backend;
+    if (this.disposed || !bridge || !backend || !this.zippBindings) return;
+    const gone = (engine: ZippEngineInstance | null) => {
+      if (!engine?.disposed) return false;
+      try {
+        engine.free?.();
+      } catch {
+        // ignore
+      }
+      return true;
+    };
+    try {
+      if (gone(this.rustEngine)) {
+        this.rustEngine = null;
+        if (this.rustTimerHandle !== null) {
+          clearTimeout(this.rustTimerHandle);
+          this.rustTimerHandle = null;
+        }
+        for (const wsId of this.rustWsIds) {
+          this.postToHost({
+            type: 'ws-event',
+            wsId,
+            event: { type: 'close', code: 1011, reason: 'Backend restarted', wasClean: false },
+          });
+        }
+        this.rustWsIds.clear();
+        this.bootRustBackend(bridge, this.lastRustOverlaySnapshot || undefined);
+      } else if (gone(this.jsEngine)) {
+        this.jsEngine = null;
+        this.bootJsBackend(bridge, backend.runtime === 'typescript' ? 'typescript' : 'javascript');
+      } else if (gone(this.pythonEngine)) {
+        this.pythonEngine = null;
+        this.bootPythonBackend(bridge);
+      } else if (gone(this.phpWorkerEngine)) {
+        this.phpWorkerEngine = null;
+        this.bootPhpBackend(bridge);
+      } else {
+        return;
+      }
+      this.postToHost({ type: 'console', level: 'warn', text: '[backend] started again after a request used up its engine' });
+    } catch (err) {
+      const text = err instanceof Error ? err.message : String(err);
+      this.postToHost({ type: 'console', level: 'error', text: `[backend] could not be started again: ${text}` });
+    }
+  }
+
   private async handleFetch(msg: Extract<HostToBackendMsg, { type: 'fetch' }>): Promise<void> {
+    this.restartDisposedEngine();
+    const decodedPath = decodeRequestPath(msg.path);
+    if (decodedPath === null) {
+      this.postToHost({
+        type: 'response',
+        reqId: msg.reqId,
+        status: 400,
+        statusText: statusTextFor(400),
+        headers: [['Content-Type', 'text/plain; charset=utf-8']],
+        bodyBytes: encodeUtf8('Bad Request'),
+      });
+      return;
+    }
+    if (decodedPath !== msg.path) msg = { ...msg, path: decodedPath };
+    const given = msg.headers ?? {};
+    if (Object.keys(given).some((k) => !backendRequestHeader(k.toLowerCase()))) {
+      const kept: Record<string, string> = Object.create(null) as Record<string, string>;
+      for (const [k, v] of Object.entries(given)) {
+        if (backendRequestHeader(k.toLowerCase())) kept[k] = v;
+      }
+      msg = { ...msg, headers: kept };
+    }
+    // Each request's SQL ends with it, as on the native hosts (a PHP worker keeps its objects).
+    const sqlScope = this.sqlManager && !this.phpWorkerEngine ? this.sqlManager.beginRequestScope() : null;
+    const endSqlScope = () => {
+      if (sqlScope) this.sqlManager?.endRequestScope(sqlScope, this.phpApp !== null);
+    };
     try {
       let status = 404;
       let headers: Array<[string, string]> = [['Content-Type', 'text/plain; charset=utf-8']];
@@ -1201,7 +1385,10 @@ export class BackendWorkerSession {
           headers: msg.headers,
           body: decodeBodyText(msg.bodyBytes),
         });
-        const sqlCache: unknown[] = [];
+        // Each result as its JSON, made once: the whole cache was made again for every step of
+        // the replay, so a request's SQL results were serialized once per later statement.
+        const sqlCacheParts: string[] = [];
+        const toCacheJson = (v: unknown) => JSON.stringify(v, (_k, x) => (typeof x === 'bigint' ? Number(x) : x)) ?? 'null';
         let parsed: {
           status?: number;
           headers?: Array<[string, string]>;
@@ -1214,7 +1401,7 @@ export class BackendWorkerSession {
         // amplify the per-request budget by up to 512x).
         this.pythonEngine.renewInstructionBudget();
         for (let step = 0; step <= MAX_SQL_STEPS; step++) {
-          const cacheJson = JSON.stringify(sqlCache, (_k, v) => (typeof v === 'bigint' ? Number(v) : v));
+          const cacheJson = `[${sqlCacheParts.join(',')}]`;
           if (cacheJson.length > MAX_PYTHON_SQL_CACHE_BYTES) {
             throw new Error('Python backend exceeded maximum SQL cache size per request');
           }
@@ -1230,9 +1417,9 @@ export class BackendWorkerSession {
             const [op, a, b, c] = parsed.__softn_sql_need;
             try {
               const rawSql = this.sqlBridge.call(`sql.${op}`, [a ?? '', b ?? '', c ?? '']);
-              sqlCache.push(typeof rawSql === 'string' ? (rawSql ? JSON.parse(rawSql) : null) : (rawSql ?? null));
+              sqlCacheParts.push(toCacheJson(typeof rawSql === 'string' ? (rawSql ? JSON.parse(rawSql) : null) : (rawSql ?? null)));
             } catch (sqlErr) {
-              sqlCache.push({ __sql_err: sqlErr instanceof Error ? sqlErr.message : String(sqlErr) });
+              sqlCacheParts.push(toCacheJson({ __sql_err: sqlErr instanceof Error ? sqlErr.message : String(sqlErr) }));
             }
             continue;
           }
@@ -1242,10 +1429,13 @@ export class BackendWorkerSession {
         headers = Array.isArray(parsed.headers) ? parsed.headers : [];
         bodyBytes = encodeUtf8(parsed.body ?? '');
       }
+      endSqlScope();
 
       // Persist Rust / PHP VFS overlays if modified (JWT keyfiles, sessions, compiled templates, uploads)
       if (this.rustEngine) {
-        this.persistRustOverlayIfChanged();
+        const methodUpper = msg.method.toUpperCase();
+        if (methodUpper !== 'GET' && methodUpper !== 'HEAD') this.persistRustOverlayIfChanged();
+        else this.scheduleRustOverlayPersist();
       }
       if (this.phpApp) {
         try {
@@ -1262,6 +1452,14 @@ export class BackendWorkerSession {
         } catch {
           // ignore
         }
+      }
+
+      // As the native hosts answer: a status that is no HTTP status is a 500, the pairs that are
+      // no header dropped, and a HEAD, 204, 205 or 304 answer has no body, as the browser gives it.
+      status = backendStatus(status);
+      headers = backendHeaders(headers);
+      if (msg.method.toUpperCase() === 'HEAD' || status === 204 || status === 205 || status === 304) {
+        bodyBytes = new Uint8Array(0);
       }
 
       // Deliver the HTTP response to the frontend immediately so mutating requests never stall
@@ -1281,6 +1479,7 @@ export class BackendWorkerSession {
         this.scheduleSqlFlush();
       }
     } catch (err) {
+      endSqlScope();
       const text = err instanceof Error ? err.message : String(err);
       this.postToHost({
         type: 'response',
@@ -1290,6 +1489,14 @@ export class BackendWorkerSession {
         headers: [['Content-Type', 'text/plain; charset=utf-8']],
         bodyBytes: encodeUtf8(`Backend Error: ${text}`),
       });
+      // What the handler wrote before it failed stays written, and is saved like any write.
+      try {
+        if (msg.method !== 'GET' && msg.method !== 'HEAD') this.flushSqlNow();
+        else this.scheduleSqlFlush();
+      } catch {
+        // ignore
+      }
+      this.restartDisposedEngine();
     }
   }
 
@@ -1299,7 +1506,9 @@ export class BackendWorkerSession {
     bodyBytes: Uint8Array;
   } {
     const vfsProbe = this.createVfsProbe();
-    let targetPath = normalizeBackendRequestPath(msg.path);
+    // Decoded and normalized at `handleFetch`, its trailing `/` kept for `.htaccess` (`^blog/$`)
+    // and `REQUEST_URI`, as the hosts keep it.
+    let targetPath = msg.path.startsWith('/') ? msg.path : normalizeBackendRequestPath(msg.path);
     let targetQuery = msg.query ?? '';
     const originalUri = msg.query ? `${targetPath}?${msg.query}` : targetPath;
 
@@ -1451,29 +1660,27 @@ export class BackendWorkerSession {
     // `json_decode()` / `mb_*()` decode via `bytesToUtf8()`. Passing raw body bytes packed
     // 1:1 into Latin-1 preserves non-ASCII UTF-8 characters (e.g. em-dashes, accents, emojis)
     // and binary payloads verbatim in `file_get_contents('php://input')`.
-    let bodyPhpBytes = '';
-    if (msg.bodyBytes && msg.bodyBytes.byteLength > 0) {
-      const parts: string[] = [];
-      for (let i = 0; i < msg.bodyBytes.byteLength; i += 8192) {
-        parts.push(String.fromCharCode(...msg.bodyBytes.subarray(i, i + 8192)));
-      }
-      bodyPhpBytes = parts.join('');
+    const bodyPhpBytes = msg.bodyBytes && msg.bodyBytes.byteLength > 0 ? latin1Packed(msg.bodyBytes) : '';
+    // Text the host decoded (a cookie, the path, a query a rewrite filled from the path) goes as
+    // its UTF-8 bytes too: given as it was, "José" reached PHP as Latin-1. A form body is read by
+    // the engine itself, as PHP reads it (`a[]=1&a[]=2` an array, its text UTF-8); the map of
+    // it the host also sent had neither, and took the place of the engine's.
+    const cookies: Record<string, string> = Object.create(null) as Record<string, string>;
+    for (const [k, v] of Object.entries(parseCookieHeader(lowerHeaders['cookie']))) {
+      cookies[phpText(k)] = phpText(v);
     }
-    const cookies = parseCookieHeader(lowerHeaders['cookie']);
-    const post = contentType.toLowerCase().includes('application/x-www-form-urlencoded')
-      ? parseUrlEncodedBody(decodeBodyText(msg.bodyBytes))
-      : undefined;
+    const scriptPath = phpText(`/${scriptToRun}`);
 
     const server: Record<string, string> = {
       REQUEST_METHOD: msg.method.toUpperCase(),
-      REQUEST_URI: originalUri,
-      QUERY_STRING: targetQuery,
-      SCRIPT_NAME: `/${scriptToRun}`,
-      PHP_SELF: `/${scriptToRun}`,
-      SCRIPT_FILENAME: `/${scriptToRun}`,
+      REQUEST_URI: phpText(originalUri),
+      QUERY_STRING: phpText(targetQuery),
+      SCRIPT_NAME: scriptPath,
+      PHP_SELF: scriptPath,
+      SCRIPT_FILENAME: scriptPath,
       DOCUMENT_ROOT: '/',
       SERVER_PROTOCOL: 'HTTP/1.1',
-      SERVER_NAME: lowerHeaders['host'] || 'app.softn.local',
+      SERVER_NAME: serverHostName(lowerHeaders['host'] || 'app.softn.local'),
       HTTP_HOST: lowerHeaders['host'] || 'app.softn.local',
       SERVER_PORT: '443',
       HTTPS: 'on',
@@ -1490,11 +1697,10 @@ export class BackendWorkerSession {
     const sapiReqJson = JSON.stringify({
       sapi: 'zipp-server',
       server,
-      query: targetQuery,
+      query: phpText(targetQuery),
       cookies,
       contentType,
       body: bodyPhpBytes,
-      post,
     });
 
     if (this.phpWorkerEngine) {
@@ -1623,6 +1829,7 @@ export class BackendWorkerSession {
       } else if (f.type === 'binary') {
         this.postToHost({ type: 'ws-event', wsId, event: { type: 'message', data: hexToUint8(String(f.data ?? '')) } });
       } else if (f.type === 'close') {
+        this.rustWsIds.delete(wsId);
         this.postToHost({
           type: 'ws-event',
           wsId,
@@ -1659,15 +1866,17 @@ export class BackendWorkerSession {
       this.drainRustConsole();
       this.forwardRustWsFrames(parsed.wsFrames);
       this.scheduleRustTimerPoll(parsed.nextTimerMs);
-      this.persistRustOverlayIfChanged();
+      this.scheduleRustOverlayPersist();
       this.scheduleSqlFlush();
     } catch (err) {
       const text = err instanceof Error ? err.message : String(err);
       this.postToHost({ type: 'console', level: 'error', text: `[backend timer] ${text}` });
+      this.restartDisposedEngine();
     }
   }
 
   private handleWsOpen(msg: Extract<HostToBackendMsg, { type: 'ws-open' }>): void {
+    this.restartDisposedEngine();
     if (!this.rustEngine) {
       this.postToHost({
         type: 'ws-event',
@@ -1697,6 +1906,7 @@ export class BackendWorkerSession {
       this.drainRustConsole();
       this.scheduleSqlFlush();
       if (parsed.accepted) {
+        this.rustWsIds.add(msg.wsId);
         this.postToHost({
           type: 'ws-event',
           wsId: msg.wsId,
@@ -1743,15 +1953,17 @@ export class BackendWorkerSession {
       this.drainRustConsole();
       this.forwardRustWsFrames(parsed.wsFrames);
       this.scheduleRustTimerPoll(parsed.nextTimerMs);
-      this.persistRustOverlayIfChanged();
+      this.scheduleRustOverlayPersist();
       this.scheduleSqlFlush();
     } catch (err) {
       const text = err instanceof Error ? err.message : String(err);
       this.postToHost({ type: 'console', level: 'error', text: `[backend ws-send] ${text}` });
+      this.restartDisposedEngine();
     }
   }
 
   private handleWsClose(msg: Extract<HostToBackendMsg, { type: 'ws-close' }>): void {
+    this.rustWsIds.delete(msg.wsId);
     if (!this.rustEngine) return;
     try {
       this.rustEngine.renewInstructionBudget();
@@ -1770,7 +1982,7 @@ export class BackendWorkerSession {
       this.drainRustConsole();
       this.forwardRustWsFrames(parsed.wsFrames);
       this.scheduleRustTimerPoll(parsed.nextTimerMs);
-      this.persistRustOverlayIfChanged();
+      this.scheduleRustOverlayPersist();
       this.scheduleSqlFlush();
     } catch {
       // ignore close errors

@@ -44,7 +44,9 @@ export function needsFullEngine(
   if (NEEDS_FULL_JS_ENGINE.test(source.source)) return true;
   for (const path of textFiles.keys()) {
     if (/\.py$/i.test(path)) return true;
-    if (/\.(?:logic|ui|m?js|jsx|ts|tsx)$/i.test(path) && NEEDS_FULL_JS_ENGINE.test(textFiles.get(path) ?? '')) return true;
+    // HTML pages too: they are a project's pages as `.ui` files are (`index.html`, `pages/`),
+    // their markup and scripts call the same functions, and a link opens one in this engine.
+    if (/\.(?:html?|logic|ui|m?js|jsx|ts|tsx)$/i.test(path) && NEEDS_FULL_JS_ENGINE.test(textFiles.get(path) ?? '')) return true;
   }
   return false;
 }

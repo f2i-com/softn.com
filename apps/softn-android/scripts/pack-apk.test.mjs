@@ -49,6 +49,20 @@ test('mic, accel, and files capabilities generate least-privilege manifest entri
   assert.doesNotMatch(xml, /android\.permission\.INTERNET/);
 });
 
+test('a resize, fold or keyboard attach does not recreate the activity (and restart the app)', () => {
+  // Activity recreation boots the bundle again from scratch: nothing in memory survives.
+  const configChanges = (xml) => xml.match(/android:configChanges="([^"]*)"/)?.[1].split('|') ?? [];
+  const packed = configChanges(generateLeastPrivilegeManifest(['net']));
+  const player = configChanges(
+    fs.readFileSync(new URL('../android/app/src/main/AndroidManifest.xml', import.meta.url), 'utf8')
+  );
+  for (const handled of [packed, player]) {
+    for (const change of ['orientation', 'screenSize', 'smallestScreenSize', 'screenLayout', 'keyboard', 'keyboardHidden', 'uiMode']) {
+      assert.ok(handled.includes(change), `${change} missing from configChanges: ${handled.join('|')}`);
+    }
+  }
+});
+
 test('parseArgs supports prebuilt webview flags and --build-local opt-in', () => {
   const def = parseArgs(['app.softn']);
   assert.equal(def.buildLocal, false);

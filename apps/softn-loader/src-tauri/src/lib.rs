@@ -177,8 +177,25 @@ fn open_handed_over(app: &tauri::AppHandle, path: &str) {
     }
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.emit("file-opened", FileOpenedEvent { path: path.to_string() });
-        let _ = window.set_focus();
+        bring_forward(&window);
     }
+}
+
+/// The running window, brought to the front. Restored first when it is minimized: focus alone
+/// leaves a minimized window where it is (tao's `set_focus` does nothing for one on Windows).
+#[cfg(desktop)]
+fn bring_forward(window: &tauri::WebviewWindow) {
+    if window.is_minimized().unwrap_or(false) {
+        let _ = window.unminimize();
+    }
+    let _ = window.set_focus();
+}
+
+/// What a second launch hands this running instance: the `.softn` file it was given, read from
+/// the folder it was started in, or nothing (the Start menu, a shortcut, another argument).
+#[cfg(desktop)]
+fn launch_file(argv: &[String], cwd: &str) -> Option<String> {
+    argv.get(1).map(|arg| path_from_launch(arg, cwd)).filter(|path| is_softn_path(path))
 }
 
 /// Whether `path` is an Android content URI, which is what the system picker returns there.
@@ -681,9 +698,16 @@ pub fn run() {
         builder = builder
             .plugin(tauri_plugin_cli::init())
             .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
-            // When another instance tries to open, check for file argument
-            if argv.len() > 1 {
-                open_handed_over(app, &path_from_launch(&argv[1], &cwd));
+            // When another instance tries to open, check for file argument. With none to open,
+            // the window already running comes to the front, as it does for a file: the second
+            // launch ended and the person saw nothing happen.
+            match launch_file(&argv, &cwd) {
+                Some(path) => open_handed_over(app, &path),
+                None => {
+                    if let Some(window) = app.get_webview_window("main") {
+                        bring_forward(&window);
+                    }
+                }
             }
         }));
     }
@@ -730,6 +754,7 @@ pub fn run() {
                     scoped_xdb::update_record,
                     scoped_xdb::update_records,
                     scoped_xdb::delete_record,
+                    scoped_xdb::remove_records,
                     scoped_xdb::upsert_record,
                     scoped_xdb::upsert_records,
                     scoped_xdb::get_record,
@@ -769,6 +794,7 @@ pub fn run() {
                     scoped_xdb::update_record,
                     scoped_xdb::update_records,
                     scoped_xdb::delete_record,
+                    scoped_xdb::remove_records,
                     scoped_xdb::upsert_record,
                     scoped_xdb::upsert_records,
                     scoped_xdb::get_record,
@@ -935,6 +961,17 @@ mod tests {
         assert_eq!(path_from_launch("../other/app.softn", cwd), Path::new(cwd).join("../other/app.softn").to_string_lossy());
         assert_eq!(path_from_launch(absolute, cwd), absolute, "an absolute path is kept as given");
         assert_eq!(path_from_launch("app.softn", ""), "app.softn", "no folder given: as it came");
+    }
+
+    /// A second launch hands over a `.softn` file, or nothing; with nothing, the window that is
+    /// running is brought forward (the single-instance callback), which no test here can watch.
+    #[test]
+    fn a_second_launch_hands_over_only_a_softn_file() {
+        let cwd = if cfg!(windows) { r"D:\projects" } else { "/home/someone/projects" };
+        let argv = |args: &[&str]| -> Vec<String> { std::iter::once("softn").chain(args.iter().copied()).map(String::from).collect() };
+        assert_eq!(launch_file(&argv(&["clock.softn"]), cwd), Some(Path::new(cwd).join("clock.softn").to_string_lossy().into_owned()));
+        assert_eq!(launch_file(&argv(&[]), cwd), None);
+        assert_eq!(launch_file(&argv(&["notes.txt"]), cwd), None);
     }
 
     #[test]

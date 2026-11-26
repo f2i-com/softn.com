@@ -376,14 +376,20 @@ export function SmartForm({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   if (!Object.is(initialData, seededFrom) && !sameRecord(initialData, seededFrom)) {
+    const seeded = seedForm(initialData);
     setSeededFrom(initialData);
-    setFormData(seedForm(initialData));
+    setFormData(seeded);
     // What was said of the last record is not said of this one: its "This
     // field is required" stayed under a field the new record had filled,
-    // and its failed save above the buttons.
-    setErrors({});
-    setTouched({});
-    setSubmitError(null);
+    // and its failed save above the buttons. A page that hands back what the
+    // form told it (`data={draft}`, `onChange` keeping `draft`) is still on
+    // the same record, and what was said of it stays: cleared, the first key
+    // typed after a refused submit took every other field's error away.
+    if (!sameRecord(seeded, formData)) {
+      setErrors({});
+      setTouched({});
+      setSubmitError(null);
+    }
   }
   const formDataRef = useRef(formData);
   formDataRef.current = formData;

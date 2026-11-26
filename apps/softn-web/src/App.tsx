@@ -421,8 +421,11 @@ function App(): React.ReactElement {
   // request for one already in flight joins it rather than starting its own —
   // the tab-reuse check below cannot help, because it can only recognise a tab
   // that has finished loading, and the whole point here is that this one has not.
-  // Each with the placeholder it fills and the navigation its latest press claimed.
-  const inFlightRef = useRef(new Map<string, { load: Promise<string | null>; tabId: string; claim: { isForeground: () => boolean } }>());
+  // Each with the placeholder it fills, the navigation its latest press claimed,
+  // and what "Try again" asks for should it fail (urlOpen).
+  const inFlightRef = useRef(
+    new Map<string, { load: Promise<string | null>; tabId: string; claim: { isForeground: () => boolean }; retry: { value: string; initialPage?: string } }>()
+  );
   /** Downloads still running, by the placeholder tab they belong to. */
   const loadAbortsRef = useRef(new Map<string, AbortController>());
   /** Offline installs still running, by the tab whose open started them. */
@@ -725,10 +728,16 @@ function App(): React.ReactElement {
       const joined = inFlightRef.current.get(url.href);
       if (joined) {
         joined.claim.isForeground = isForeground;
-        if (isForeground() && openTabsRef.current.some((t) => t.id === joined.tabId)) {
-          setError(null);
-          activeTabIdRef.current = joined.tabId;
-          setActiveTabId(joined.tabId);
+        if (isForeground()) {
+          // And the card its failure shows offers this app again, as a press
+          // that starts a download does: it kept the address of whatever was
+          // asked for before, and "Try again" downloaded that one.
+          setUrlOpen(joined.retry);
+          if (openTabsRef.current.some((t) => t.id === joined.tabId)) {
+            setError(null);
+            activeTabIdRef.current = joined.tabId;
+            setActiveTabId(joined.tabId);
+          }
         }
         return joined.load;
       }
@@ -738,12 +747,13 @@ function App(): React.ReactElement {
       // processBundleData adopts it once the real name is known.
       const skeletonTabId = randomUUID();
       const claim = { isForeground };
+      const retry = { value, initialPage };
       // Asked of whichever press now owns the load.
       const run = async (isForeground: () => boolean): Promise<string | null> => {
         if (isForeground()) setError(null);
         // What the error card's "Try again" asks for again, should this open
         // fail: the address as it was given. Forgotten once the app is open.
-        if (isForeground()) setUrlOpen({ value, initialPage });
+        if (isForeground()) setUrlOpen(retry);
         const placeholder: OpenTab = { id: skeletonTabId, name: displayName, source: '', directorySlug };
         // In the list now, ahead of the draw, for the two that ask below whether
         // this tab is still open (here, after the download, and openBundle after
@@ -879,7 +889,7 @@ function App(): React.ReactElement {
         // the same bundle owns the slot by then.
         if (inFlightRef.current.get(url.href)?.load === load) inFlightRef.current.delete(url.href);
       });
-      inFlightRef.current.set(url.href, { load, tabId: skeletonTabId, claim });
+      inFlightRef.current.set(url.href, { load, tabId: skeletonTabId, claim, retry });
       return load;
     },
     [processBundleData, discardPlaceholder]

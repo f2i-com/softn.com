@@ -340,4 +340,36 @@ mod tests {
         assert!(small["error"].as_str().unwrap_or("").contains("script exceeded its memory budget"), "{small}");
         assert_eq!(validate(&guest, source, 512 << 20), serde_json::json!({ "ok": true }));
     }
+
+    /// A guest still running when the deadline's epoch ticks is stopped, and the run is
+    /// answered as one that ran until the deadline. The trap is read from its code alone:
+    /// the engine records no backtrace and keeps no address map (engine_config.rs), and an
+    /// interrupt must still be told from the other traps.
+    #[test]
+    fn a_guest_still_running_at_the_deadline_is_stopped_and_said_so() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let guest = Guest::load_copied().expect("the guest copied");
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let ticker = {
+            let (engine, stop) = (guest.engine.clone(), stop.clone());
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                while !stop.load(Ordering::Relaxed) {
+                    engine.increment_epoch();
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            })
+        };
+        // A budget the loop would take far longer than the test to spend.
+        let job = serde_json::json!({ "mode": "validate", "source": "while (true) {}\nfunction ping(req) { return { status: 200 }; }", "config": "{}", "handlers": ["ping"], "steps": 2_000_000_000u64, "heap": 64u64 << 20, "grant": false });
+        let started = std::time::Instant::now();
+        let outcome = guest.run(&job, Box::new(|_, _, _| "null".into()));
+        stop.store(true, Ordering::Relaxed);
+        ticker.join().unwrap();
+        match outcome {
+            Err(HostError::Library(reason)) => assert_eq!(reason, "the logic ran until the deadline"),
+            other => panic!("{other:?}"),
+        }
+        assert!(started.elapsed() < std::time::Duration::from_secs(10), "{:?}", started.elapsed());
+    }
 }

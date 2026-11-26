@@ -12,9 +12,9 @@
  *   and enforces `net.allowed_hosts` egress policy on external URLs
  */
 
-import { ContainerArchive, readRunnableModule, RUNTIME_BLOB_URL, VIRTUAL_ORIGIN } from './archive';
-import { collectFontFaceFamilies, extractFontFaces, namespaceContainerFonts, rewriteCss, transformContainerCss } from './css-policy';
-import { MATH_NS, SVG_NS, createHostElement, hostAttributeValue, hostElementName, isExternalHref, isLinkElement, type EmbedAllowance, type FontScopeContext } from './host-policy';
+import { ContainerArchive, addressOfName, readRunnableModule, RUNTIME_BLOB_URL, VIRTUAL_ORIGIN } from './archive';
+import { closeOpenCss, collectFontFaceFamilies, extractFontFaces, namespaceContainerFonts, rewriteCss, transformContainerCss } from './css-policy';
+import { MATH_NS, ROOT_ATTRIBUTE, SVG_NS, createHostElement, hostAttributeValue, hostElementName, isExternalHref, isLinkElement, type EmbedAllowance, type FontScopeContext } from './host-policy';
 import { findInlineScriptStartLines } from './source-map';
 import { SOFTN_UI_CSS } from './ui-css';
 import type {
@@ -393,6 +393,21 @@ function drawsAPicture(tag: string, attr: string): boolean {
   return (attr === 'href' || attr === 'xlink:href') && (tag === 'image' || tag === 'feimage');
 }
 
+/**
+ * The fragment of an address of a file of the app's (`#t=0.5`, `#icon-home`), for the address
+ * the page is handed for that file: what part of it to show (a video's first frame, one view
+ * of a sprite), which is never fetched and was lost, so a video started at its beginning and
+ * a sprite showed every icon at once.
+ */
+function fragmentOf(address: string, basePath: string): string {
+  if (!address.includes('#')) return '';
+  try {
+    return new URL(address, `${VIRTUAL_ORIGIN}/${basePath.replace(/^\/+/, '')}`).hash;
+  } catch {
+    return '';
+  }
+}
+
 export function sanitizeHostAssetUrl(
   attrName: string,
   rawValue: string,
@@ -428,7 +443,7 @@ export function sanitizeHostAssetUrl(
 
   // Safe inline data: images/audio/svg-free media
   if (/^data:/i.test(trimmed)) {
-    if (/^data:(?:image\/(?:png|jpeg|gif|webp|avif|bmp|x-icon)|audio\/(?:wav|mpeg|ogg)|font\/)/i.test(trimmed)) {
+    if (/^data:(?:image\/(?:png|jpe?g|gif|webp|avif|bmp|x-icon)|audio\/(?:wav|mpeg|ogg)|font\/)/i.test(trimmed)) {
       return originalTrimmed;
     }
     // A drawing written into the address, where the page draws it as a picture. A bundler
@@ -501,7 +516,8 @@ export function sanitizeHostAssetUrl(
     // address: one made by this page is this page's origin, and a link the person opens in
     // a new tab would show the app's file there as a document of the embedding site.
     if (isLink) {
-      const feLinkPath = archive.toFrontendVfsPath(vfsPath);
+      // As an address that reads back as the file (`100%.html` is `100%25.html`).
+      const feLinkPath = addressOfName(archive.toFrontendVfsPath(vfsPath));
       try {
         const baseUrl = `${VIRTUAL_ORIGIN}/${basePath.replace(/^\/+/, '')}`;
         const parsed = new URL(originalTrimmed, baseUrl);
@@ -513,7 +529,8 @@ export function sanitizeHostAssetUrl(
       }
       return feLinkPath;
     }
-    return archive.getBlobUrl(vfsPath) ?? '';
+    const minted = archive.getBlobUrl(vfsPath);
+    return minted ? minted + fragmentOf(originalTrimmed, basePath) : '';
   }
 
   // External network resource (`<img src="https://...">`) -> enforce `net` permission.
@@ -531,6 +548,16 @@ export function sanitizeHostAssetUrl(
 
   return null;
 }
+
+/**
+ * What a stylesheet may load written into its address: a picture or a font, which draws and
+ * runs nothing (an SVG has a rule of its own). A font is written with the type of whichever
+ * tool wrote it: `font/woff2`, and before that `application/font-woff`, `application/x-font-ttf`
+ * (IcoMoon) and `application/octet-stream` (Fontello); a JPEG as often `image/jpg` as not. Only
+ * the first two were kept, and an icon font of the others drew nothing.
+ */
+const CSS_DATA_TYPES =
+  /^data:(?:image\/(?:png|jpe?g|gif|webp|avif|bmp|x-icon)[;,]|font\/|application\/(?:x-)?font|application\/(?:x-woff|vnd\.ms-opentype|octet-stream)[;,])/i;
 
 /**
  * A stylesheet of the app's, or a `style` attribute's value, for the page: every address by
@@ -553,7 +580,7 @@ export function sanitizeContainerCss(
     if (!target) return null;
     // A fragment alone names something in this document (an SVG filter, clip or gradient).
     if (target.startsWith('#')) return target;
-    if (/^data:(?:image\/(?:png|jpeg|gif|webp|avif)|font\/|application\/font)/i.test(target)) return target;
+    if (CSS_DATA_TYPES.test(target)) return target;
     // A drawing in the address: a stylesheet draws it as a picture (a background, a mask, a
     // list's marker), where it runs nothing. The arrows and ticks of every CSS framework's
     // form controls are written this way.
@@ -561,7 +588,10 @@ export function sanitizeContainerCss(
     const runtimeBlob = RUNTIME_BLOB_URL.exec(target);
     if (runtimeBlob) return archive.getRuntimeBlobUrl(runtimeBlob[1]);
     const vfs = archive.resolveFrontendExistingPath(target, basePath);
-    if (vfs) return archive.getBlobUrl(vfs);
+    if (vfs) {
+      const minted = archive.getBlobUrl(vfs);
+      return minted ? minted + fragmentOf(target, basePath) : null;
+    }
     if (/^https?:/i.test(target) && !targetsEmbeddingHost(target) && isExternalUrlAllowed(target, permissions.permissions?.net, netGranted)) return target;
     return null;
   }, { keepHost: scope === 'shadow' });
@@ -571,9 +601,11 @@ export function sanitizeContainerCss(
     rewriteViewportUnits: true,
     inline: scope === 'inline',
   });
-  return fontScope
+  const scoped = fontScope
     ? namespaceContainerFonts(transformed, fontScope.prefix, fontScope.families, scope === 'inline')
     : transformed;
+  // A sheet ends here with nothing left open: the page's sheets share one `<style>` (closeOpenCss).
+  return scope === 'inline' ? scoped : closeOpenCss(scoped);
 }
 
 export { extractFontFaces as extractSanitizedFontFaces };
@@ -658,6 +690,28 @@ function currentViewport(): ViewportTuple {
   ];
 }
 
+/**
+ * The media a stylesheet of the page's (`<link media>`, `<style media>`) applies to, or '' for
+ * all of them. A print sheet (`media="print"`, which so often hides all but the article) and a
+ * sheet for small screens were applied to every screen, as if written for it.
+ *
+ * Two things keep a sheet for all media, as before. A list with anything in it a media query
+ * is not written with: it is put into the sheet, and no more than a query is let in. And a
+ * sheet with an `onload`, which is the page's own to turn on: `media="print"
+ * onload="this.media='all'"` loads a sheet without holding the page up, and no script of the
+ * page's runs on a stylesheet here.
+ */
+function stylesheetMedia(el: Element): string {
+  const media = (el.getAttribute('media') ?? '').trim();
+  if (!media || /^all$/i.test(media) || el.hasAttribute('onload')) return '';
+  return /^[\w\s(),:./<>=+-]+$/.test(media) ? media : '';
+}
+
+/** `css` applied only to `media` ('' for all media). */
+function forMedia(css: string, media: string): string {
+  return media ? `@media ${media}{\n${css}\n}` : css;
+}
+
 /** The most of the page's scripts placed in the app's document, and the most text one of them carries (a template, JSON). */
 const MAX_PLACED_SCRIPTS = 512;
 const MAX_PLACED_SCRIPT_TEXT = 2 * 1024 * 1024;
@@ -703,6 +757,11 @@ export function prepareHtmlDocument(
 ): PreparedDocument {
   const parser = new DOMParser();
   const parsed = parser.parseFromString(htmlSource, 'text/html');
+  // The app runs with scripting on, so its `<noscript>` holds nothing it gets, as in a browser
+  // that runs scripts. DOMParser reads with scripting off and builds what a `<noscript>` holds:
+  // its scripts were run and its stylesheets applied, and every later inline script was given
+  // the start line of the one before (findInlineScriptStartLines passes a `<noscript>` over).
+  for (const el of Array.from(parsed.querySelectorAll('noscript'))) el.remove();
 
   // Extract safe per-page SEO metadata before removing <head> elements.
   const pageMeta: PreparedDocument['meta'] = {};
@@ -748,10 +807,12 @@ export function prepareHtmlDocument(
   for (const el of allElements) {
     const tag = el.tagName.toLowerCase();
     if (tag === 'link') {
-      const rel = (el.getAttribute('rel') ?? '').toLowerCase();
+      // `rel` is a list of words, as a browser reads it: `rel="stylesheet "` is a stylesheet,
+      // and an alternate one is not applied until it is chosen.
+      const rel = (el.getAttribute('rel') ?? '').toLowerCase().split(/[\t\n\f\r ]+/);
       const href = (el.getAttribute('href') ?? '').trim();
       afterRemoved.set(el, el.nextSibling);
-      if (rel === 'stylesheet' && href) {
+      if (rel.includes('stylesheet') && !rel.includes('alternate') && href) {
         if (href === 'softn:ui.css' || href === '/runtime/ui.css') {
           usesSoftnUiCss = true;
           styles.push(SOFTN_UI_CSS);
@@ -761,13 +822,13 @@ export function prepareHtmlDocument(
             const cacheKey = `${cssPath}|${netGranted ? '1' : '0'}`;
             const cachedCss = archive.getCachedCss(cacheKey);
             if (cachedCss !== undefined) {
-              styles.push(cachedCss);
+              styles.push(forMedia(cachedCss, stylesheetMedia(el)));
             } else {
               const cssText = archive.readText(cssPath);
               if (cssText !== null) {
                 const sanitizedCss = sanitizeContainerCss(cssText, cssPath, archive, permissions, netGranted);
                 archive.setCachedCss(cacheKey, sanitizedCss);
-                styles.push(sanitizedCss);
+                styles.push(forMedia(sanitizedCss, stylesheetMedia(el)));
               }
             }
           }
@@ -781,7 +842,7 @@ export function prepareHtmlDocument(
       afterRemoved.set(el, el.nextSibling);
       const rawCss = el.textContent ?? '';
       if (rawCss.trim()) {
-        styles.push(sanitizeContainerCss(rawCss, entryPath, archive, permissions, netGranted));
+        styles.push(forMedia(sanitizeContainerCss(rawCss, entryPath, archive, permissions, netGranted), stylesheetMedia(el)));
       }
       el.remove();
       continue;
@@ -1130,18 +1191,20 @@ export function prepareHtmlDocument(
     nodeMap.set(0, docRootEl);
     nodeMap.set(1, viewportEl);
 
+    // By the rule the app's script is held to for these two (ROOT_ATTRIBUTE), and `style` on
+    // the body, which is the viewport's own.
     for (const [k, v] of Object.entries(htmlAttrs)) {
       const lowerK = k.toLowerCase();
       if (lowerK.startsWith('data-softn-')) continue;
-      if (k === 'class') docRootEl.classList.add(...v.split(/\s+/).filter(Boolean));
-      else if (k.startsWith('data-') || k === 'lang' || k === 'dir') docRootEl.setAttribute(k, v);
+      if (lowerK === 'class') docRootEl.classList.add(...v.split(/\s+/).filter(Boolean));
+      else if (ROOT_ATTRIBUTE.test(lowerK)) docRootEl.setAttribute(lowerK, v);
     }
     for (const [k, v] of Object.entries(bodyAttrs)) {
       const lowerK = k.toLowerCase();
       if (lowerK.startsWith('data-softn-')) continue;
-      if (k === 'class') viewportEl.classList.add(...v.split(/\s+/).filter(Boolean));
-      else if (k === 'style') viewportEl.setAttribute('style', v);
-      else if (k.startsWith('data-') || k.startsWith('aria-') || k === 'role') viewportEl.setAttribute(k, v);
+      if (lowerK === 'class') viewportEl.classList.add(...v.split(/\s+/).filter(Boolean));
+      else if (lowerK === 'style') viewportEl.setAttribute('style', v);
+      else if (ROOT_ATTRIBUTE.test(lowerK)) viewportEl.setAttribute(lowerK, v);
     }
     viewportEl.setAttribute(NODE_ID_ATTR, '1');
 
@@ -1171,6 +1234,10 @@ export function prepareHtmlDocument(
           }
         }
       }
+      // A media element the parser makes is muted by its `muted`; one made by script and given
+      // the attribute is not (the attribute is only its default), and a browser plays no
+      // unmuted video of itself: `<video autoplay muted loop>` stood still.
+      if (!bp.ns && (bp.tag === 'video' || bp.tag === 'audio') && el.hasAttribute('muted')) (el as HTMLMediaElement).muted = true;
       el.setAttribute(NODE_ID_ATTR, String(bp.id));
       nodeMap.set(bp.id, el);
       if (bp.children) {

@@ -186,6 +186,13 @@ export function Camera({
     setError(null);
 
     try {
+      // No camera to ask for (a page that is not a secure context, such as
+      // one served over plain http, has no `mediaDevices`): said as the
+      // Microphone says it, where the box and `onError` showed the TypeError
+      // of reading `getUserMedia` off nothing.
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw new Error('This browser has no camera support');
+      }
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
           facingMode: facing,

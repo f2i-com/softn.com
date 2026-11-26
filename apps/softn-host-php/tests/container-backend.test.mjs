@@ -1110,3 +1110,130 @@ test('a <Files> wildcard is matched in time its length bounds, not by backtracki
   assert.equal(htaccessDenies(slow, '/' + 'a'.repeat(400) + 'b'), true);
   assert.ok(Date.now() - started < 1000, `answered in ${Date.now() - started} ms`);
 });
+
+// ZIPP's PHP takes each character of a string it is handed as one byte, and hands each byte of
+// one back as a character. A script reads what was sent as it was sent, and its headers go out as
+// it wrote them, on both hosts (the Rust host's `a_php_script_reads_text_and_bytes_as_they_were_sent`
+// and `a_php_scripts_headers_are_sent_as_it_wrote_them`, and the browser's container): handed as
+// text, "José" reached a script as "Jos\xE9", a JSON body with any character past ASCII did not
+// decode, U+672C became a comma, a binary upload was mangled, and a download named café.txt was
+// saved as cafÃ©.txt. A form body is read by the engine, as PHP reads one (`tags[]` an array).
+test('a PHP script reads text and bytes as they were sent, and its headers go out as it wrote them', {skip: (!hasCoreWasm || !hasPhpWasm) && 'ZIPP WASM engines not built'}, t => {
+  const root = makeBackendFixture(t, {
+    'manifest.json': JSON.stringify({
+      engine: 2,
+      id: 'php-bytes',
+      name: 'PHP bytes',
+      version: '1.0.0',
+      main: 'public/index.html',
+      frontendRoot: 'public',
+      backend: {runtime: 'php', entry: 'index.php', mode: 'api', routes: ['/api/']},
+    }),
+    'public/index.html': '<!doctype html><h1>ok</h1>',
+    'index.php': `<?php
+header('Content-Type: application/json');
+header('X-Name: Zoë');
+header('Content-Disposition: attachment; filename="café.txt"');
+$raw = file_get_contents('php://input');
+$type = $_SERVER['CONTENT_TYPE'] ?? '';
+echo json_encode([
+  'raw' => bin2hex($raw),
+  'json' => str_starts_with($type, 'application/json') ? json_decode($raw, true) : null,
+  'post' => $_POST,
+  'get' => $_GET,
+  'cookie' => $_COOKIE['c'] ?? null,
+  'uri' => $_SERVER['REQUEST_URI'],
+  'named' => $_SERVER['HTTP_X_NAME'] ?? null,
+]);
+`,
+  }, 'php-bytes');
+  const ask = (path, queryString, headers, body) =>
+    runRunner(root, {path, method: 'POST', queryString, headers, bodyBase64: Buffer.from(body).toString('base64'), client_ip: '127.0.0.1'});
+  const header = (answer, name) => answer.headers.find(([k]) => k.toLowerCase() === name)?.[1];
+
+  const text = '{"name":"José — 日本"}';
+  const sent = ask('/api/café', 'q=Jos%C3%A9', {'content-type': 'application/json', cookie: 'c=José', 'x-name': 'Zoë'}, text);
+  assert.equal(sent.status, 200, sent.bodyText);
+  const seen = JSON.parse(sent.bodyText);
+  assert.equal(seen.raw, Buffer.from(text).toString('hex'));
+  assert.deepEqual(seen.json, {name: 'José — 日本'});
+  assert.deepEqual(seen.get, {q: 'José'});
+  assert.equal(seen.cookie, 'José');
+  assert.equal(seen.uri, '/api/café?q=Jos%C3%A9');
+  assert.equal(seen.named, 'Zoë');
+  assert.equal(header(sent, 'x-name'), 'Zoë');
+  assert.equal(header(sent, 'content-disposition'), 'attachment; filename="café.txt"');
+
+  // Bytes that are no text arrive as they are.
+  const binary = Buffer.from(Array.from({length: 256}, (_, i) => i));
+  const upload = ask('/api/upload', '', {'content-type': 'application/octet-stream'}, binary);
+  assert.equal(JSON.parse(upload.bodyText).raw, binary.toString('hex'));
+
+  // A form, as PHP reads one.
+  const form = ask('/api/form', '', {'content-type': 'application/x-www-form-urlencoded'}, 'name=Jos%C3%A9&tags%5B%5D=a&tags%5B%5D=b&plain=x+y');
+  assert.deepEqual(JSON.parse(form.bodyText).post, {name: 'José', tags: ['a', 'b'], plain: 'x y'});
+});
+
+/** A PHP app whose one database is seeded by SQL and by JSON, and whose script lists both and adds to one. */
+function seededApp(t, seedJson) {
+  const root = makeBackendFixture(t, {
+    'manifest.json': JSON.stringify({
+      engine: 2,
+      id: 'php-seeded',
+      name: 'PHP seeded',
+      version: '1.0.0',
+      main: 'public/index.html',
+      frontendRoot: 'public',
+      backend: {runtime: 'php', entry: 'index.php', mode: 'api', routes: ['/api/']},
+      databases: [{name: 'app', engine: 'sqlite', file: 'app.db', seedSql: 'seed.sql', seedJson: 'seed.json'}],
+    }),
+    'public/index.html': '<!doctype html><h1>ok</h1>',
+    'seed.sql': "CREATE TABLE IF NOT EXISTS items (name TEXT NOT NULL); INSERT INTO items (name) VALUES ('from-seed');",
+    'seed.json': seedJson,
+    'index.php': `<?php
+header('Content-Type: application/json');
+$pdo = new PDO('sqlite:app.db');
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') $pdo->exec("INSERT INTO items (name) VALUES ('mine')");
+echo json_encode([
+  'items' => $pdo->query('SELECT name FROM items ORDER BY rowid')->fetchAll(PDO::FETCH_COLUMN),
+  'tags' => $pdo->query('SELECT label FROM tags ORDER BY rowid')->fetchAll(PDO::FETCH_COLUMN),
+]);
+`,
+  }, 'php-seeded');
+  const ask = (method = 'GET') => runRunner(root, {path: '/api/items', method, queryString: '', headers: {}, bodyBase64: '', client_ip: '127.0.0.1'});
+  const database = join(root, 'private/data/databases/app.db');
+  return {root, ask, database, marker: `${database}.softn_seeded`};
+}
+
+// A database is seeded once: one that has the app's tables and has lost its mark (restored from a
+// backup without it, or the process stopped between seeding and writing it) is not seeded again.
+// The check meant to see that (`NOT LIKE '_%'`) named no table at all, since `_` is a LIKE wildcard,
+// so the seed SQL ran over the records again (twice the seed rows, or a failed start where it
+// inserts a key), as it did on the Rust host, which had no such check.
+test('a database that lost its seed mark is not seeded again', {skip: (!hasCoreWasm || !hasPhpWasm) && 'ZIPP WASM engines not built'}, t => {
+  const app = seededApp(t, '{"tags":[{"label":"seeded"}]}');
+  const first = app.ask();
+  assert.equal(first.status, 200, first.bodyText);
+  assert.deepEqual(JSON.parse(first.bodyText), {items: ['from-seed'], tags: ['seeded']});
+  assert.deepEqual(JSON.parse(app.ask('POST').bodyText).items, ['from-seed', 'mine']);
+  rmSync(app.marker);
+  const restored = app.ask();
+  assert.equal(restored.status, 200, restored.bodyText);
+  assert.deepEqual(JSON.parse(restored.bodyText), {items: ['from-seed', 'mine'], tags: ['seeded']});
+  assert.ok(existsSync(app.marker), 'the mark is written again');
+});
+
+// A seed that fails on a new database leaves no database behind, for seedJson as for seedSql: the
+// next attempt starts from nothing and seeds it whole. A database the failed seedJson left with the
+// seed SQL's rows was seeded by that SQL again on the next attempt.
+test('a seed that fails on a new database leaves no database behind', {skip: (!hasCoreWasm || !hasPhpWasm) && 'ZIPP WASM engines not built'}, t => {
+  const app = seededApp(t, '{"tags":[{"label":"seeded"}]');
+  const failed = app.ask();
+  assert.equal(failed.status, 503, failed.bodyText ?? JSON.stringify(failed.body));
+  assert.ok(!existsSync(app.database), 'the database the failed seed made is gone');
+  assert.ok(!existsSync(app.marker));
+  writeFileSync(join(app.root, 'app/seed.json'), '{"tags":[{"label":"seeded"}]}');
+  const fixed = app.ask();
+  assert.equal(fixed.status, 200, fixed.bodyText);
+  assert.deepEqual(JSON.parse(fixed.bodyText), {items: ['from-seed'], tags: ['seeded']});
+});

@@ -979,11 +979,14 @@ class NodeSqlManager {
         }
       }
       const db = this.openConfigured(path);
+      let seeded = false;
       try {
         // If a database file already existed (for example from a FormLogic backup restore)
         // and already contains user tables, do not re-run seed inserts over restored data.
+        // By the names' first characters: `_` is LIKE's wildcard for one character, so
+        // `NOT LIKE '_%'` named no table at all and the seeds ran over the records again.
         const existingTables = existedBefore
-          ? db.prepare("SELECT count(*) AS cnt FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_%'").get()
+          ? db.prepare("SELECT count(*) AS cnt FROM sqlite_master WHERE type='table' AND substr(name, 1, 7) <> 'sqlite_' AND substr(name, 1, 1) <> '_'").get()
           : {cnt: 0};
         const alreadyPopulated = Number(existingTables?.cnt || 0) > 0;
         if (!alreadyPopulated && typeof cfg.seedSql === 'string' && cfg.seedSql.trim()) {
@@ -1041,8 +1044,17 @@ class NodeSqlManager {
             applySeedJson(db, payload);
           }
         }
+        seeded = true;
       } finally {
         db.close();
+        // A seed that failed on a database it made (seedSql or seedJson) leaves none behind, as
+        // the Rust host does: the next attempt starts from nothing. Left, the database had the
+        // seed SQL's rows and no mark, and would be taken for one restored from a backup.
+        if (!seeded && !existedBefore) {
+          for (const file of [path, `${path}-wal`, `${path}-shm`, `${path}-journal`]) {
+            try { rmSync(file, {force: true}); } catch {}
+          }
+        }
       }
       writeFileSync(marker, '1', {mode: 0o600});
     }
@@ -1557,13 +1569,36 @@ function parseCookieHeader(cookieStr) {
   return out;
 }
 
-function parseUrlEncoded(bodyText) {
-  const out = Object.create(null);
-  if (!bodyText) return out;
-  for (const [k, v] of new URLSearchParams(bodyText).entries()) {
-    if (k && k !== '__proto__' && k !== 'constructor' && k !== 'prototype') out[k] = v;
+/**
+ * `bytes` as ZIPP's PHP takes a string: each character it is handed is one byte of the PHP string
+ * (Latin-1), as the Rust host (`php_bytes`) and the browser's container (`latin1Packed`) hand one.
+ * Handed as text, a character past ASCII lost its high bits: "é" became the byte 0xE9, which is no
+ * UTF-8, and U+672C a comma.
+ */
+function phpBytes(bytes) {
+  return Buffer.from(bytes).toString('latin1');
+}
+
+/** Text for ZIPP's PHP as its UTF-8 bytes (`phpBytes`); ASCII is the same either way. */
+function phpText(text) {
+  const value = String(text);
+  return /[^\u0000-\u007f]/.test(value) ? Buffer.from(value, 'utf8').toString('latin1') : value;
+}
+
+const UTF8_STRICT = new TextDecoder('utf-8', {fatal: true});
+
+/**
+ * A string ZIPP's PHP hands back (a header it set) as the text of its bytes: the reverse of
+ * `phpText`, as the Rust host's `php_string_text`. One whose bytes are not UTF-8, or that holds a
+ * character no byte is, is left as it came.
+ */
+function phpStringText(text) {
+  if (!/[^\x00-\x7f]/.test(text) || /[^\x00-\xff]/.test(text)) return text;
+  try {
+    return UTF8_STRICT.decode(Buffer.from(text, 'latin1'));
+  } catch {
+    return text;
   }
-  return out;
 }
 
 function atomicWriteJson(filePath, content) {
@@ -2417,36 +2452,42 @@ export async function handleContainerRequest({root, bundle, data, manifest, conf
 
       const contentType = headers['content-type'] || '';
       const originalUri = queryString ? `${path}?${queryString}` : path;
+      // Every string the script is handed goes as its bytes (`phpBytes`, `phpText`): the body as
+      // the bytes it is, and text as its UTF-8, as the Rust host and the browser's container hand
+      // them. A form body is read by the engine itself, as PHP reads one (`a[]=1&a[]=2` an
+      // array); the map of it this host also sent (with `a[]` as a key, and its values as text
+      // the engine cut down to a byte a character) took the place of the engine's.
       const server = {
         REQUEST_METHOD: method,
-        REQUEST_URI: originalUri,
-        QUERY_STRING: queryString,
-        SCRIPT_NAME: `/${scriptToRun}`,
-        PHP_SELF: `/${scriptToRun}`,
-        SCRIPT_FILENAME: `/${scriptToRun}`,
+        REQUEST_URI: phpText(originalUri),
+        QUERY_STRING: phpText(queryString),
+        SCRIPT_NAME: phpText(`/${scriptToRun}`),
+        PHP_SELF: phpText(`/${scriptToRun}`),
+        SCRIPT_FILENAME: phpText(`/${scriptToRun}`),
         DOCUMENT_ROOT: '/',
         SERVER_PROTOCOL: 'HTTP/1.1',
-        SERVER_NAME: parseServerHostName(host),
-        HTTP_HOST: host,
+        SERVER_NAME: phpText(parseServerHostName(host)),
+        HTTP_HOST: phpText(host),
         SERVER_PORT: https ? '443' : '80',
         HTTPS: https ? 'on' : '',
         REQUEST_SCHEME: https ? 'https' : 'http',
-        REMOTE_ADDR: String(request.client_ip || '127.0.0.1'),
-        CONTENT_TYPE: contentType,
+        REMOTE_ADDR: phpText(String(request.client_ip || '127.0.0.1')),
+        CONTENT_TYPE: phpText(contentType),
         CONTENT_LENGTH: String(bodyBytes.byteLength),
       };
       for (const [k, v] of Object.entries(headers)) {
         if (k === 'host') continue;
-        server[`HTTP_${k.toUpperCase().replace(/-/g, '_')}`] = v;
+        server[`HTTP_${k.toUpperCase().replace(/-/g, '_')}`] = phpText(v);
       }
+      const cookies = Object.create(null);
+      for (const [k, v] of Object.entries(parseCookieHeader(headers['cookie'] || ''))) cookies[phpText(k)] = phpText(v);
       const sapiReqJson = JSON.stringify({
         sapi: 'zipp-server',
         server,
-        query: queryString,
-        cookies: parseCookieHeader(headers['cookie'] || ''),
-        contentType,
-        body: bodyText,
-        post: contentType.toLowerCase().includes('application/x-www-form-urlencoded') ? parseUrlEncoded(bodyText) : undefined,
+        query: phpText(queryString),
+        cookies,
+        contentType: phpText(contentType),
+        body: phpBytes(bodyBytes),
       });
 
       if (!engineMod.PhpApp) throw new Error('Loaded ZIPP PHP engine does not export PhpApp');
@@ -2463,7 +2504,11 @@ export async function handleContainerRequest({root, bundle, data, manifest, conf
         }
         const raw = app.handleRequest(scriptToRun, sapiReqJson);
         const meta = JSON.parse(raw.metaJson || '{}');
-        const outHeaders = Array.isArray(meta.headers) ? meta.headers : [['Content-Type', 'text/html; charset=UTF-8']];
+        // A header the script set comes back a byte a character: sent as those characters,
+        // `Zoë` went out as `ZoÃ«` and a download named café.txt was saved as cafÃ©.txt.
+        const outHeaders = Array.isArray(meta.headers)
+          ? meta.headers.map(pair => (Array.isArray(pair) ? pair.map(part => (typeof part === 'string' ? phpStringText(part) : part)) : pair))
+          : [['Content-Type', 'text/html; charset=UTF-8']];
         const status = clampContainerStatus(meta.status);
         const bodyBase64 =
           method === 'HEAD' || status === 204 || status === 304

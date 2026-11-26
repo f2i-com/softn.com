@@ -46,7 +46,9 @@ export type XDBEventListener = (event: XDBEvent) => void;
 export interface XDBQueryOptions {
   filter?: Record<string, unknown>;
   sort?: { field: string; order: 'asc' | 'desc' };
+  /** At most this many records; below 0, or null, no bound (as SQLite reads a LIMIT). */
   limit?: number;
+  /** Records passed over first; below 0, or null, none. */
   offset?: number;
 }
 

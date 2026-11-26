@@ -8,7 +8,8 @@
 // sent.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { FRAME_MEDIA_TYPES, FRAME_TEXT_TYPES, mediaBytes, mediaUrl, releaseMedia, sameMedia, svgTextOf, textFileUrl } from '../src/media.ts';
+import * as media from '../src/media.ts';
+const { FRAME_MEDIA_TYPES, FRAME_TEXT_TYPES, mediaBytes, mediaUrl, releaseMedia, sameMedia, svgTextOf, textFileUrl } = media;
 import { ASSET_CLASSIFICATIONS } from '../../../packages/@softn/core/src/bundle/asset-classification.ts';
 
 /** What an address serves as a page's fetch reads it: its type and its bytes, or null where it serves nothing. */
@@ -186,4 +187,26 @@ test('an address let go of serves nothing, and no other address is let go of', a
   releaseMedia(url);
   assert.deepEqual((await served(foreign)).bytes, new Uint8Array([120]));
   URL.revokeObjectURL(foreign);
+});
+
+test('when the frame ends every address made is let go of, and with it its file', async () => {
+  // A frame its parent ends may stay on the parent's page (FormLogic keeps one with its error over
+  // it): an ended app held all its media, up to 128 MB a version, for as long as that page was open.
+  assert.equal(typeof media.releaseAllMedia, 'function');
+  const picture = mediaUrl('assets/a.png', 'AAAA');
+  const icon = mediaUrl('assets/icon.svg', Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><a href="https://x.example/"/></svg>').toString('base64'));
+  assert.ok(svgTextOf(icon));
+  const foreign = URL.createObjectURL(new Blob(['x']));
+  media.releaseAllMedia();
+  assert.equal(await served(picture), null);
+  assert.equal(await served(icon), null);
+  assert.equal(svgTextOf(icon), undefined);
+  assert.equal(mediaBytes(picture), 0);
+  assert.equal(await sameMedia(picture, 'assets/a.png', 'AAAA'), false);
+  // One this module did not make is left alone, and a file made after is served as ever.
+  assert.deepEqual((await served(foreign)).bytes, new Uint8Array([120]));
+  URL.revokeObjectURL(foreign);
+  const after = mediaUrl('assets/b.png', 'AAAA');
+  assert.deepEqual(await served(after), { type: 'image/png', bytes: new Uint8Array(3) });
+  releaseMedia(after);
 });

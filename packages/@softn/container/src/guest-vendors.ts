@@ -10,8 +10,10 @@
 
 const VENDOR_MARKED = String.raw`
 var inlineCodeRe = new RegExp('\\x60([^\\x60]+)\\x60', 'g');
+// Quotes too, as marked escapes them: a link's address is written into an attribute, and a
+// quote in it ended the attribute ([x](https://site/"onclick="...) wrote a handler of its own).
 function escapeMd(s) {
-  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 function inlineMd(s) {
   return escapeMd(s)

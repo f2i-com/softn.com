@@ -19,6 +19,7 @@ import {
   type SqliteColumnInfo,
   type SqliteExecResult,
   type SqliteNewColumnSpec,
+  type SqliteRowid,
   type SqliteTableStructure,
   type SqliteTableSummary,
 } from './sqliteDatabase';
@@ -399,7 +400,7 @@ export function SqliteDatabaseAdmin({ host, modeSwitch }: SqliteDatabaseAdminPro
 
   // Inline Edit Row modal state
   const [editingRow, setEditingRow] = useState<{
-    rowid: number | null;
+    rowid: SqliteRowid | null;
     pkValues: Record<string, unknown>;
     draft: Record<string, { value: string; isNull: boolean }>;
     /** The draft as the row opened, so Save writes only the fields that changed. */
@@ -673,7 +674,7 @@ export function SqliteDatabaseAdmin({ host, modeSwitch }: SqliteDatabaseAdminPro
     }
   };
 
-  const openEditRow = (row: { rowid: number | null; values: unknown[] }) => {
+  const openEditRow = (row: { rowid: SqliteRowid | null; values: unknown[] }) => {
     if (!structure || readOnly) return;
     const pkValues: Record<string, unknown> = {};
     const draft: Record<string, { value: string; isNull: boolean }> = {};
@@ -721,7 +722,7 @@ export function SqliteDatabaseAdmin({ host, modeSwitch }: SqliteDatabaseAdminPro
     }
   };
 
-  const handleDeleteRow = (row: { rowid: number | null; values: unknown[] }) => {
+  const handleDeleteRow = (row: { rowid: SqliteRowid | null; values: unknown[] }) => {
     const session = sessionRef.current;
     if (!session || !selectedTable || !structure || readOnly) return;
     setActionError(null);

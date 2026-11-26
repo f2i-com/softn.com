@@ -590,6 +590,65 @@ interface FunctionDef {
   isAsync: boolean;
 }
 
+interface ScriptShape {
+  /** The brace depth at the start of each line (as `split('\n')` cuts them). */
+  lineDepths: number[];
+  /** For each `{` of code, the index of the `}` that closes it. */
+  closeOf: Map<number, number>;
+}
+
+/**
+ * Where the script's braces open and close, counting only braces of code:
+ * those inside strings, template text and comments are passed over. A quote
+ * string ends at its line's end, so a stray quote (one in a regex literal, say)
+ * cannot hide the rest of the script.
+ */
+function scanScript(code: string): ScriptShape {
+  const lineDepths = [0];
+  const closeOf = new Map<number, number>();
+  const opens: number[] = [];
+  let quote = '';
+  let lineComment = false;
+  let blockComment = false;
+  for (let i = 0; i < code.length; i++) {
+    const c = code[i];
+    if (c === '\n') {
+      lineComment = false;
+      if (quote !== '`') quote = '';
+      lineDepths.push(opens.length);
+      continue;
+    }
+    if (lineComment) continue;
+    if (blockComment) {
+      if (c === '*' && code[i + 1] === '/') {
+        blockComment = false;
+        i++;
+      }
+      continue;
+    }
+    if (quote) {
+      if (c === '\\') {
+        if (code[i + 1] === '\n') lineDepths.push(opens.length);
+        i++;
+      } else if (c === quote) {
+        quote = '';
+      }
+      continue;
+    }
+    if (c === '"' || c === "'" || c === '`') quote = c;
+    else if (c === '/' && code[i + 1] === '/') lineComment = true;
+    else if (c === '/' && code[i + 1] === '*') {
+      blockComment = true;
+      i++;
+    } else if (c === '{') opens.push(i);
+    else if (c === '}') {
+      const open = opens.pop();
+      if (open !== undefined) closeOf.set(open, i);
+    }
+  }
+  return { lineDepths, closeOf };
+}
+
 function analyzeScript(code: string): {
   stateVars: StateVar[];
   functions: FunctionDef[];
@@ -600,29 +659,44 @@ function analyzeScript(code: string): {
   // Simple regex-based parsing for now
   // TODO: Use FormLogic parser for proper AST analysis
 
-  // Match let/const declarations: let foo = value;
-  const varRegex = /^\s*let\s+(\w+)\s*=\s*(.+?);?\s*$/gm;
-  let match;
-
-  while ((match = varRegex.exec(code)) !== null) {
-    const [, name, value] = match;
+  // Only the script's own declarations count: a `let` or a function inside a
+  // function body (or any other block) belongs to that body. Taken for state,
+  // `let next = count + 1;` in a function got a hook of its own and was then
+  // rewritten into `let setNext(count + 1);`.
+  const { lineDepths, closeOf } = scanScript(code);
+  const lineStarts = new Map<number, number>();
+  let offset = 0;
+  code.split('\n').forEach((line, index) => {
+    lineStarts.set(offset, index);
+    offset += line.length + 1;
+    if (lineDepths[index] !== 0) return;
+    // State: let foo = value;
+    const match = /^\s*let\s+(\w+)\s*=\s*(.+?);?\s*$/.exec(line);
     // Skip if it looks like a computed value ($:)
-    if (!name.startsWith('$')) {
-      stateVars.push({ name, initialValue: value.trim() });
+    if (match && !match[1].startsWith('$')) {
+      stateVars.push({ name: match[1], initialValue: match[2].trim() });
     }
-  }
+  });
 
-  // Match function declarations: function foo(params) { body }
-  const funcRegex = /^\s*(async\s+)?function\s+(\w+)\s*\(([^)]*)\)\s*\{([\s\S]*?)\n\s*\}/gm;
-
-  while ((match = funcRegex.exec(code)) !== null) {
-    const [, asyncKeyword, name, params, body] = match;
+  // Function declarations: function foo(params) { body }. The body runs to the
+  // brace that closes it, not to the first line that starts with `}` (which cut
+  // a function at the end of a multi-line object literal or an inner block).
+  const header = /^[ \t]*(async\s+)?function\s+(\w+)\s*\(([^)]*)\)\s*\{/gm;
+  let match;
+  while ((match = header.exec(code)) !== null) {
+    const line = lineStarts.get(match.index);
+    if (line === undefined || lineDepths[line] !== 0) continue;
+    const open = match.index + match[0].length - 1;
+    const close = closeOf.get(open);
+    if (close === undefined) continue;
+    const [, asyncKeyword, name, params] = match;
     functions.push({
       name,
       params: params.trim(),
-      body: body.trim(),
+      body: code.slice(open + 1, close).trim(),
       isAsync: !!asyncKeyword,
     });
+    header.lastIndex = close + 1;
   }
 
   return { stateVars, functions };
@@ -668,9 +742,14 @@ function generateFunctions(functions: FunctionDef[], stateVars: StateVar[]): str
       // must be an assignment's: not the first of `==` or `===`, which made
       // `if (foo === 0) { foo = 1; }` into `setFoo(== 0) { foo = 1);`, and
       // not the `=>` of an arrow function whose parameter has the same name.
-      // The name must stand alone, so `other.foo = 1` is left to `other`.
+      // The name must stand alone, so `other.foo = 1` is left to `other`, and
+      // `let foo = 1` in a function declares a local, which is not rewritten
+      // (into `let setFoo(1);`, which is not JavaScript).
       for (const v of stateVars) {
-        const assignRegex = new RegExp(`(?<![\\w$.])${v.name}\\s*=(?![=>])\\s*(.+?)(?:;|$)`, 'g');
+        const assignRegex = new RegExp(
+          `(?<![\\w$.])(?<!\\b(?:let|const|var)\\s+)${v.name}\\s*=(?![=>])\\s*(.+?)(?:;|$)`,
+          'g'
+        );
         body = body.replace(assignRegex, (_, value) => {
           return `set${capitalize(v.name)}(${value.trim()});`;
         });

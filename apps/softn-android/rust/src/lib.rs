@@ -256,6 +256,18 @@ init();
 
     #[test]
     fn loads_real_mining_system_rust_sqlite_fullstack_bundle_if_present() {
+        // On the thread size the app gives its engine (MainActivity's 8 MiB `softn-engine`):
+        // a test thread's 2 MiB overflowed during this app's sign-in tap in debug builds,
+        // under load, and took every other test's result down with the process.
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(mining_system_rust_sqlite_fullstack_bundle)
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    fn mining_system_rust_sqlite_fullstack_bundle() {
         let pit_path = PathBuf::from(r"E:\repos\mining_projects\mining_system\dist\pit-management.softn");
         if !pit_path.exists() {
             return;
@@ -735,6 +747,318 @@ echo json_encode(['error' => 'not found']);
         assert_eq!(cc["ok"], true);
         let csd: serde_json::Value = serde_json::from_str(&eng.clear_site_data()).unwrap();
         assert_eq!(csd["ok"], true);
+    }
+
+    #[test]
+    fn response_bytes_are_the_responses_own_not_a_second_get() {
+        let bundle = make_zip(&[
+            (
+                "manifest.json",
+                r#"{ "id": "test.respbytes", "main": "index.html",
+                     "backend": { "runtime": "php", "entry": "backend/index.php", "mode": "api", "routes": ["/api/"] } }"#,
+            ),
+            (
+                "backend/index.php",
+                r#"<?php
+$method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
+$uri = $_SERVER['REQUEST_URI'] ?? '/';
+if (str_starts_with($uri, '/api/report')) {
+    if ($method === 'POST') {
+        header('Content-Type: application/octet-stream');
+        echo 'POST:' . chr(255) . chr(0) . chr(128);
+    } else {
+        header('Content-Type: text/plain');
+        echo 'GET';
+    }
+    exit;
+}
+header('Content-Type: text/plain; charset=utf-8');
+echo 'héllo';
+"#,
+            ),
+            (
+                "index.html",
+                r#"<!doctype html><html><body><pre id="out"></pre><script>
+(async function () {
+  var out = {};
+  try {
+    var r = await fetch('/api/report', { method: 'POST', body: 'q=1' });
+    out.post = Array.prototype.join.call(new Uint8Array(await r.arrayBuffer()), ',');
+    var b = await (await fetch('/api/report', { method: 'POST', body: 'q=2' })).blob();
+    out.blobSize = b.size;
+    var g = await fetch('/api/greet');
+    out.greet = Array.prototype.join.call(new Uint8Array(await g.arrayBuffer()), ',');
+    out.greetText = await (await fetch('/api/greet')).text();
+  } catch (e) { out.err = String((e && e.message) || e); }
+  document.getElementById('out').textContent = JSON.stringify(out);
+})();
+</script></body></html>"#,
+            ),
+        ]);
+        let dir = temp_dir("response_bytes");
+        let mut eng =
+            SoftnMobileEngine::load_bundle(&bundle, &dir, 400, 600, 1.0, HostDeviceInfo::default())
+                .expect("load bundle");
+        let _ = eng.tick();
+        let html = eng.current_rendered_html();
+        // A POST answered with bytes: those bytes, not the body of a GET to the same URL.
+        assert!(html.contains("\"post\":\"80,79,83,84,58,255,0,128\""), "{html}");
+        assert!(html.contains("\"blobSize\":8"), "{html}");
+        // A text answer's bytes are its UTF-8.
+        assert!(html.contains("\"greet\":\"104,195,169,108,108,111\""), "{html}");
+        assert!(html.contains("\"greetText\":\"h\u{e9}llo\""), "{html}");
+    }
+
+    /// The `data-flid` of the rendered element whose start tag carries `id="{id}"`.
+    fn flid_of(html: &str, id: &str) -> u32 {
+        let at = html.find(&format!("id=\"{id}\"")).unwrap_or_else(|| panic!("no #{id} in {html}"));
+        let start = html[..at].rfind('<').unwrap();
+        let end = at + html[at..].find('>').unwrap();
+        let tag = &html[start..end];
+        let k = "data-flid=\"";
+        let s = tag.find(k).unwrap_or_else(|| panic!("no data-flid in {tag}")) + k.len();
+        tag[s..s + tag[s..].find('"').unwrap()].parse().unwrap()
+    }
+
+    #[test]
+    fn a_tap_is_the_browsers_pointer_and_mouse_sequence_through_to_the_window() {
+        let bundle = make_zip(&[
+            ("manifest.json", r#"{ "id": "test.tapevents", "main": "index.html" }"#),
+            (
+                "index.html",
+                r#"<!doctype html><html><head><style>
+body { margin: 0; }
+#outer { padding: 20px; height: 300px; }
+button { display: block; width: 200px; height: 60px; margin-bottom: 20px; }
+</style></head><body>
+<div id="outer"><button id="stop">Stop</button><button id="go">Go</button></div>
+<pre id="log"></pre>
+<script>
+var log = [];
+function rec(s) { log.push(s); document.getElementById('log').textContent = log.join(','); }
+document.getElementById('outer').addEventListener('click', function () { rec('outer-click'); });
+document.getElementById('stop').addEventListener('click', function (e) { e.stopPropagation(); rec('stop-click'); });
+document.getElementById('go').addEventListener('click', function () { rec('go-click'); });
+document.addEventListener('mousedown', function (e) { rec('doc-mousedown:' + (e.target && e.target.id)); });
+document.addEventListener('click', function () { rec('doc-click'); });
+document.body.addEventListener('mouseup', function () { rec('body-mouseup'); });
+window.addEventListener('pointerdown', function (e) { rec('win-pointerdown:' + e.pointerType); });
+</script></body></html>"#,
+            ),
+        ]);
+        let dir = temp_dir("tap_events");
+        let mut eng =
+            SoftnMobileEngine::load_bundle(&bundle, &dir, 400, 800, 1.0, HostDeviceInfo::default())
+                .expect("load bundle");
+        let html = eng.current_rendered_html();
+        let (sx, sy) = eng.find_flid_physical_center(flid_of(&html, "stop")).expect("#stop on screen");
+        let (gx, gy) = eng.find_flid_physical_center(flid_of(&html, "go")).expect("#go on screen");
+
+        let _ = eng.on_tap(sx, sy);
+        let after_stop = eng.current_rendered_html();
+        // What a browser does with a tap on #stop: pointer and mouse events reach the
+        // document and the window, and the click stops at the button.
+        assert!(after_stop.contains("win-pointerdown:touch,doc-mousedown:stop,body-mouseup,stop-click</pre>"), "{after_stop}");
+
+        let _ = eng.on_tap(gx, gy);
+        let after_go = eng.current_rendered_html();
+        assert!(
+            after_go.contains("stop-click,win-pointerdown:touch,doc-mousedown:go,body-mouseup,go-click,outer-click,doc-click</pre>"),
+            "{after_go}"
+        );
+    }
+
+    #[test]
+    fn web_bluetooth_takes_numeric_uuids_and_scans_by_its_filters_only() {
+        let bundle = make_zip(&[
+            ("manifest.json", r#"{ "id": "test.webble", "main": "index.html" }"#),
+            (
+                "permission.json",
+                r#"{ "permissions": { "bluetooth": { "enabled": true, "services": ["180d", "180f"] } } }"#,
+            ),
+            (
+                "index.html",
+                r#"<!doctype html><html><body><pre id="out">waiting</pre><script>
+(async function () {
+  var out = document.getElementById('out');
+  try {
+    var dev = await navigator.bluetooth.requestDevice({ filters: [{ services: [0x180D] }], optionalServices: [0x180F] });
+    var server = await dev.gatt.connect();
+    var svc = await server.getPrimaryService(0x180D);
+    var ch = await svc.getCharacteristic(0x2A37);
+    var v = await ch.readValue();
+    out.textContent = 'read:' + v.getUint8(0);
+  } catch (e) { out.textContent = 'err:' + e.message; }
+})();
+</script></body></html>"#,
+            ),
+        ]);
+        let dir = temp_dir("web_ble");
+        let mut eng =
+            SoftnMobileEngine::load_bundle(&bundle, &dir, 400, 600, 1.0, HostDeviceInfo::default())
+                .expect("load bundle");
+        let heart_rate = "0000180d-0000-1000-8000-00805f9b34fb";
+
+        // `0x180D` is the heart rate service, and only the filters' services narrow the scan.
+        let scan = eng.drain_pending_calls();
+        assert_eq!(scan.len(), 1, "{scan:?} html={}", eng.current_rendered_html());
+        assert_eq!((scan[0].namespace.as_str(), scan[0].method.as_str()), ("bluetooth", "scan"));
+        assert_eq!(scan[0].params["services"], serde_json::json!([heart_rate]), "{scan:?}");
+
+        let connect = eng
+            .resolve_device_call(scan[0].id, true, r#"{"devices":[{"id":"AA:BB:CC:DD:EE:FF","name":"HR"}]}"#)
+            .pending_calls;
+        assert_eq!(connect.len(), 1, "{connect:?}");
+        assert_eq!(connect[0].method, "connect");
+
+        let read = eng
+            .resolve_device_call(connect[0].id, true, r#"{"connected":true,"services":[]}"#)
+            .pending_calls;
+        assert_eq!(read.len(), 1, "{read:?} html={}", eng.current_rendered_html());
+        assert_eq!(read[0].method, "read");
+        assert_eq!(read[0].params["serviceUuid"], heart_rate);
+        assert_eq!(read[0].params["characteristicUuid"], "2a37");
+
+        let _ = eng.resolve_device_call(read[0].id, true, r#"{"base64":"Kg=="}"#);
+        assert!(eng.current_rendered_html().contains(">read:42<"), "{}", eng.current_rendered_html());
+    }
+
+    #[test]
+    fn a_tapped_radio_is_checked_and_its_group_unchecked() {
+        let bundle = make_zip(&[
+            ("manifest.json", r#"{ "id": "test.radios", "main": "index.html" }"#),
+            (
+                "index.html",
+                r#"<!doctype html><html><head><style>
+body { margin: 0; } input { display: block; width: 60px; height: 60px; margin: 0 0 20px 0; }
+</style></head><body>
+<form id="f"><input type="radio" name="size" id="s" value="s" checked><input type="radio" name="size" id="m" value="m"><input type="radio" name="size" id="l" value="l"></form>
+<input type="radio" name="other" id="o" checked>
+<pre id="log"></pre>
+<script>
+var log = [];
+var ids = ['s', 'm', 'l', 'o'];
+document.getElementById('s').checked = true;
+document.getElementById('o').checked = true;
+function show() {
+  document.getElementById('log').textContent = log.join(',') + '|' + ids.filter(function (id) { return document.getElementById(id).checked; }).join(',');
+}
+document.getElementById('f').addEventListener('change', function (e) { log.push('change:' + e.target.id); show(); });
+show();
+</script></body></html>"#,
+            ),
+        ]);
+        let dir = temp_dir("radios");
+        let mut eng =
+            SoftnMobileEngine::load_bundle(&bundle, &dir, 400, 800, 1.0, HostDeviceInfo::default())
+                .expect("load bundle");
+        let html = eng.current_rendered_html();
+        let (mx, my) = eng.find_flid_physical_center(flid_of(&html, "m")).expect("#m on screen");
+        let (lx, ly) = eng.find_flid_physical_center(flid_of(&html, "l")).expect("#l on screen");
+
+        let _ = eng.on_tap(mx, my);
+        assert!(eng.current_rendered_html().contains(">change:m|m,o</pre>"), "{}", eng.current_rendered_html());
+        // Tapping a checked radio changes nothing.
+        let _ = eng.on_tap(mx, my);
+        assert!(eng.current_rendered_html().contains(">change:m|m,o</pre>"), "{}", eng.current_rendered_html());
+        // Another of the group: the group follows, a radio of another name does not.
+        let _ = eng.on_tap(lx, ly);
+        assert!(eng.current_rendered_html().contains(">change:m,change:l|l,o</pre>"), "{}", eng.current_rendered_html());
+    }
+
+    #[test]
+    fn a_tap_on_a_labels_text_activates_its_control() {
+        let bundle = make_zip(&[
+            ("manifest.json", r#"{ "id": "test.labels", "main": "index.html" }"#),
+            (
+                "index.html",
+                r#"<!doctype html><html><head><style>
+body { margin: 0; } label, #name { display: block; width: 300px; height: 60px; margin: 0 0 20px 0; }
+#c { width: 20px; height: 20px; } span { display: inline-block; width: 200px; height: 50px; }
+</style></head><body>
+<label id="lab1"><input type="checkbox" id="c"><span id="ctext">Remember me</span></label>
+<label id="lab2" for="name"><span id="ntext">Your name</span></label>
+<input id="name" type="text">
+<label id="lab3"><input type="checkbox" id="c2"><a id="terms" href="/terms">the terms</a></label>
+<pre id="log"></pre>
+<script>
+var log = [];
+function show() { document.getElementById('log').textContent = log.join(','); }
+document.getElementById('c').addEventListener('change', function (e) { log.push('change:' + e.target.checked); show(); });
+document.getElementById('c').addEventListener('click', function () { log.push('c-click'); show(); });
+document.getElementById('lab1').addEventListener('click', function (e) { log.push('lab1-click:' + e.target.id); show(); });
+document.getElementById('c2').addEventListener('change', function () { log.push('c2-change'); show(); });
+</script></body></html>"#,
+            ),
+        ]);
+        let dir = temp_dir("labels");
+        let mut eng =
+            SoftnMobileEngine::load_bundle(&bundle, &dir, 400, 800, 1.0, HostDeviceInfo::default())
+                .expect("load bundle");
+        let html = eng.current_rendered_html();
+        let (cx, cy) = eng.find_flid_physical_center(flid_of(&html, "ctext")).expect("#ctext on screen");
+        let (nx, ny) = eng.find_flid_physical_center(flid_of(&html, "ntext")).expect("#ntext on screen");
+        let (tx, ty) = eng.find_flid_physical_center(flid_of(&html, "terms")).expect("#terms on screen");
+
+        // The label's text: the label's click, then the checkbox toggles and is clicked
+        // (its change comes before that click, as for a checkbox tapped itself).
+        let tap = eng.on_tap(cx, cy);
+        assert!(!tap.wants_ime);
+        assert!(
+            eng.current_rendered_html().contains(">lab1-click:ctext,change:true,c-click,lab1-click:c</pre>"),
+            "{}",
+            eng.current_rendered_html()
+        );
+        // A label `for` a text field: the field takes the keyboard.
+        let tap = eng.on_tap(nx, ny);
+        assert!(tap.wants_ime, "{tap:?}");
+        let _ = eng.on_text_input("Ada");
+        assert!(eng.current_rendered_html().contains("Ada"), "{}", eng.current_rendered_html());
+        // A link inside a label takes the tap itself.
+        let _ = eng.on_tap(tx, ty);
+        assert!(!eng.current_rendered_html().contains("c2-change"), "{}", eng.current_rendered_html());
+    }
+
+    #[test]
+    fn done_on_a_textarea_does_not_submit_its_form() {
+        let bundle = make_zip(&[
+            ("manifest.json", r#"{ "id": "test.textareadone", "main": "index.html" }"#),
+            (
+                "index.html",
+                r#"<!doctype html><html><head><style>
+body { margin: 0; } textarea, input { display: block; width: 300px; height: 80px; margin: 0 0 20px 0; }
+</style></head><body>
+<form id="f"><textarea id="t"></textarea><input type="text" id="i"></form>
+<pre id="log"></pre>
+<script>
+var log = [];
+document.getElementById('f').addEventListener('submit', function (e) {
+  e.preventDefault();
+  log.push('submit');
+  document.getElementById('log').textContent = log.join(',');
+});
+</script></body></html>"#,
+            ),
+        ]);
+        let dir = temp_dir("textarea_done");
+        let mut eng =
+            SoftnMobileEngine::load_bundle(&bundle, &dir, 400, 800, 1.0, HostDeviceInfo::default())
+                .expect("load bundle");
+        let html = eng.current_rendered_html();
+        let (tx, ty) = eng.find_flid_physical_center(flid_of(&html, "t")).expect("#t on screen");
+        let (ix, iy) = eng.find_flid_physical_center(flid_of(&html, "i")).expect("#i on screen");
+
+        assert!(eng.on_tap(tx, ty).wants_ime);
+        let _ = eng.on_text_input("first line");
+        let done = eng.on_submit_ime();
+        assert!(done.ime_changed && !done.wants_ime);
+        // A textarea's Enter is a new line, and finishing with it submits nothing.
+        assert!(!eng.current_rendered_html().contains("submit"), "{}", eng.current_rendered_html());
+
+        // A text input's Done submits its form, as Enter does in a browser.
+        assert!(eng.on_tap(ix, iy).wants_ime);
+        let _ = eng.on_submit_ime();
+        assert!(eng.current_rendered_html().contains(">submit</pre>"), "{}", eng.current_rendered_html());
     }
 
     #[test]

@@ -70,6 +70,11 @@ written to it.
   object replaces `data`.
 - `delete_record` writes a tombstone. `get_collection` hides deleted
   records; the lower-level `get_record` can return a tombstone.
+- `remove_records` removes records of one collection for good: their rows and
+  their entries in the collection's Yrs map, with no tombstone (the page's
+  `hardDelete`, `db.prune`, `db.clearCollection`). A tombstone keeps the
+  record's data. A peer that applies the removal deletes its rows of that
+  collection too.
 - `clear_collection` is a LOCAL hard reset, not a replicated deletion: peers
   repopulate this node on the next reconciliation. A replicated deletion is
   a tombstone (`delete_record`, or `import_records` with `replace`). An
@@ -144,6 +149,7 @@ fn save_notes() -> DbResult<()> {
 | Method | Purpose |
 | --- | --- |
 | `create_record`, `update_record`, `delete_record`, `upsert_record` | Write a record and return its CRDT update. |
+| `remove_records` | Remove records of one collection for good (no tombstone); returns the update and the ids another collection holds. |
 | `get_record`, `get_collection`, `get_collections` | Read persisted records and collection names. |
 | `with_transaction` | Run a group of operations in one transaction. |
 | `with_batch` | The same, saving each touched collection's CRDT document once at the end. |
@@ -186,7 +192,8 @@ part in native peer sync; a named app's writes stay local, and
 Commands take an optional `appId` (the Rust parameter is `app_id`):
 
 - CRUD: `create_record`, `update_record`, `delete_record`, `upsert_record`;
-  `update_records` batches updates in one transaction.
+  `update_records` batches updates in one transaction; `remove_records`
+  (`collection`, `ids`) removes records for good.
 - Reads: `get_record`, `get_collection`, `get_collections`, `get_db_stats`,
   `get_db_path`, `get_db_base_dir`.
 - Maintenance: `clear_collection` (local), `reset_collection` (`scope`:

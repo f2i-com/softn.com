@@ -10,3 +10,14 @@ export function textOf(node: React.ReactNode): string {
   }
   return '';
 }
+
+/**
+ * A key as part of an element's id. `aria-controls` and `aria-labelledby`
+ * are lists split at spaces, so a space in the key is escaped, and `%` with
+ * it so that two keys never share an id. Nothing else is: `encodeURIComponent`
+ * of the whole key threw on half of a surrogate pair (a name cut short in the
+ * middle of an emoji), and the tabs or accordion became the error box.
+ */
+export function idPart(key: unknown): string {
+  return String(key).replace(/[\s%]/g, encodeURIComponent);
+}

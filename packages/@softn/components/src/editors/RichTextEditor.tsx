@@ -243,8 +243,14 @@ export function RichTextEditor({
   const inputsHandled = useRef(0);
   /** The markup last handed to `onChange`, and the judge it was read under. */
   const reported = useRef<{ markup: string; judge: MarkupUrlJudge | undefined } | null>(null);
-  /** A drag began in this editor: what it drops is the editor's own markup, moved. */
-  const draggingOwn = useRef(false);
+  /**
+   * Where a drag in this editor began: while that is still in it, what the
+   * drag drops is the editor's own markup, moved. A flag was left set when
+   * the value replaced the markup under the drag, since the drag's end is
+   * told to the node it began on, no longer in the editor, and the next
+   * drop from outside went in as it came.
+   */
+  const dragSource = useRef<Node | null>(null);
 
   const refreshPressed = useCallback(() => {
     const next: Record<string, boolean> = {};
@@ -375,9 +381,10 @@ export function RichTextEditor({
    */
   const handleDrop = useCallback(
     (e: React.DragEvent<HTMLDivElement>) => {
-      const own = draggingOwn.current;
-      draggingOwn.current = false;
+      const source = dragSource.current;
+      dragSource.current = null;
       const editor = editorRef.current;
+      const own = source !== null && !!editor?.contains(source);
       const html = e.dataTransfer?.getData('text/html');
       if (own || !editor || !html || disabled || readOnly) return;
       e.preventDefault();
@@ -773,11 +780,11 @@ export function RichTextEditor({
           style={editorStyle}
           onInput={handleInput}
           onPaste={handlePaste}
-          onDragStart={() => {
-            draggingOwn.current = true;
+          onDragStart={(e) => {
+            dragSource.current = e.target as Node;
           }}
           onDragEnd={() => {
-            draggingOwn.current = false;
+            dragSource.current = null;
           }}
           onDrop={handleDrop}
           onKeyDown={handleKeyDown}

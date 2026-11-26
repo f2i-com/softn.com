@@ -88,6 +88,14 @@ only to an app whose files mention `currentPage`: an app that keeps its page und
 keeps none, would have its NavItems set a variable it never reads. A parent that sends no `place`
 and reads none sees an app whose links to its own pages work, and nothing else different.
 
+A parent that keeps each place as a step of its history (FormLogic does) posts Back and Forward on
+the port as `{ type: 'formlogic:navigate', to: place }`, read as `init.place` is. The app is shown
+there as a run of that page of its own, as a page a link goes to is: another page file, or another
+named page of the page on screen. A place with no named page on the page on screen leaves the app
+as it is: an app whose logic starts on a named page tells `/` and then `/#home`, and run again it
+would tell `/#home` again, a step such a parent keeps, so that Back came back to it. One that
+comes while the app is still opening is taken once it is open, as in the web frame.
+
 ## Links out of the app
 
 The frame may open no window, and an address it goes to in place of the app is one of the

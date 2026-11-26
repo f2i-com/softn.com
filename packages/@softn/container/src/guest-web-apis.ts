@@ -125,6 +125,84 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
   }
 
   // ---------------------------------------------------------------------------
+  // 0c. localStorage, as a browser's Storage
+  // ---------------------------------------------------------------------------
+  // The engine's localStorage has getItem, setItem, removeItem and clear, and nothing more:
+  // key(i) and length were undefined (a loop over the keys threw, localforage's driver with it),
+  // a value set as a property (localStorage.token = 'x') was kept by nothing and gone at the
+  // next visit, and Object.keys(localStorage) named its four methods. Here it is a Storage: its
+  // keys read from the Worker's copy (and kept until something writes to it), each a property.
+  var engineStorage = g.localStorage;
+  if (engineStorage && typeof engineStorage === 'object' && typeof engineStorage.getItem === 'function' && typeof engineStorage.key !== 'function' &&
+      typeof Proxy === 'function' && bridge && typeof bridge.callSync === 'function' && !g.__softnWorkerSpec) {
+    (function () {
+      var known = null;
+      var keys = function () {
+        if (known) return known;
+        var listed = null;
+        try { listed = bridge.callSync('session', 'lskeys'); } catch (e) { listed = null; }
+        known = Array.isArray(listed) ? listed.map(String) : [];
+        return known;
+      };
+      var changed = function () { known = null; };
+      var StorageClass = function Storage() { throw new TypeError('Illegal constructor'); };
+      var proto = StorageClass.prototype;
+      var needs = function (method, count, given) {
+        if (given < count) throw new TypeError("Failed to execute '" + method + "' on 'Storage': " + count + ' argument' + (count > 1 ? 's' : '') + ' required, but only ' + given + ' present.');
+      };
+      var method = function (name, fn) { Object.defineProperty(proto, name, { configurable: true, enumerable: true, writable: true, value: fn }); };
+      method('getItem', function (key) { needs('getItem', 1, arguments.length); return engineStorage.getItem(String(key)); });
+      method('setItem', function (key, value) { needs('setItem', 2, arguments.length); changed(); engineStorage.setItem(String(key), String(value)); });
+      method('removeItem', function (key) { needs('removeItem', 1, arguments.length); changed(); engineStorage.removeItem(String(key)); });
+      method('clear', function () { changed(); engineStorage.clear(); });
+      // An unsigned long, as the web reads one: -1 is past every key.
+      method('key', function (index) { needs('key', 1, arguments.length); var all = keys(); var at = Number(index) >>> 0; return at < all.length ? all[at] : null; });
+      Object.defineProperty(proto, 'length', { configurable: true, enumerable: true, get: function () { return keys().length; } });
+      try { Object.defineProperty(proto, Symbol.toStringTag, { configurable: true, value: 'Storage' }); } catch (e) {}
+      // A stored key is a property where it is not one of Storage's own (getItem, length).
+      var stored = function (name) { return typeof name === 'string' && !(name in proto) ? engineStorage.getItem(name) : null; };
+      var storage = new Proxy(Object.create(proto), {
+        get: function (target, name, receiver) {
+          if (typeof name !== 'string' || name in proto) return Reflect.get(target, name, receiver);
+          var value = engineStorage.getItem(name);
+          return value === null ? undefined : value;
+        },
+        set: function (target, name, value, receiver) {
+          if (typeof name !== 'string') return Reflect.set(target, name, value, receiver);
+          changed();
+          engineStorage.setItem(name, String(value));
+          return true;
+        },
+        has: function (target, name) { return name in target || stored(name) !== null; },
+        deleteProperty: function (target, name) {
+          if (typeof name !== 'string' || name in proto) return Reflect.deleteProperty(target, name);
+          changed();
+          engineStorage.removeItem(name);
+          return true;
+        },
+        ownKeys: function () { return keys().slice(); },
+        getOwnPropertyDescriptor: function (target, name) {
+          var value = stored(name);
+          return value === null ? undefined : { value: value, writable: true, enumerable: true, configurable: true };
+        },
+        defineProperty: function (target, name, descriptor) {
+          if (typeof name !== 'string' || name in proto) return Reflect.defineProperty(target, name, descriptor);
+          changed();
+          engineStorage.setItem(name, String(descriptor && descriptor.value));
+          return true;
+        },
+      });
+      // What another tab (or another app of the page) changed: the keys are read again.
+      var heard = g.__softnStorageChanged;
+      g.__softnStorageChanged = function () { changed(); if (typeof heard === 'function') return heard.apply(this, arguments); };
+      // The global's own property is writable and not configurable: set, not defined again.
+      try { g.localStorage = storage; } catch (e) {}
+      if (g.localStorage !== storage) { try { Object.defineProperty(g, 'localStorage', { configurable: true, enumerable: true, writable: true, value: storage }); } catch (e) {} }
+      if (g.localStorage === storage) define('Storage', StorageClass);
+    })();
+  }
+
+  // ---------------------------------------------------------------------------
   // 1. Bytes
   // ---------------------------------------------------------------------------
   function utf8(text) { return new g.TextEncoder().encode(String(text)); }
@@ -340,10 +418,23 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
     // As a browser keeps it: lower case, and nothing at all if it is not plain text.
     this.type = /^[\x20-\x7e]*$/.test(type) ? type.toLowerCase() : '';
   }
+  // Where slice starts or ends, read as the web reads it ([Clamp] long long): a whole number, the
+  // nearest (a half to the even one), and 0 for one that is not a number. (Taken as it was, a
+  // half of a file kept as text was a blob of 2.5 bytes.)
+  function clampIndex(value) {
+    var n = Number(value);
+    if (n !== n) return 0;
+    if (n === Infinity || n === -Infinity) return n;
+    var whole = Math.round(n);
+    if (whole - n === 0.5 && whole % 2 !== 0) whole -= 1;
+    return whole;
+  }
   Blob.prototype.slice = function (start, end, type) {
     var size = this.size;
-    var from = start === undefined ? 0 : start < 0 ? Math.max(size + start, 0) : Math.min(start, size);
-    var to = Math.max(from, end === undefined ? size : end < 0 ? Math.max(size + end, 0) : Math.min(end, size));
+    var first = start === undefined ? 0 : clampIndex(start);
+    var last = end === undefined ? size : clampIndex(end);
+    var from = first < 0 ? Math.max(size + first, 0) : Math.min(first, size);
+    var to = Math.max(from, last < 0 ? Math.max(size + last, 0) : Math.min(last, size));
     var kind = type === undefined ? '' : String(type);
     var segs = lazySegments(this);
     if (!segs) return new Blob([this._softnBytes.subarray(from, to)], { type: kind });
@@ -848,6 +939,11 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
     }
     return encoded.bytes ? { bodyBase64: toBase64(encoded.bytes) } : { body: encoded.text };
   };
+  // A form's data as the body of new Response (guest-canvas-and-ext.ts): a blob of its parts, and its type.
+  g.__softnFormBlob = function (form) {
+    var encoded = encodeBody(form);
+    return { blob: new BlobClass(encoded.parts), type: encoded.type };
+  };
   // A body's bytes, for code that reads a request back: a file kept as text, a part a turn.
   function bodyBytesLater(encoded) {
     if (!encoded) return Promise.resolve(new Uint8Array(0));
@@ -889,6 +985,9 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
     define('Request', Request);
   }
 
+  // A response the container makes for a request (new Response is the app's, with the web's arguments).
+  var makeResponse = typeof g.__softnResponse === 'function' ? g.__softnResponse : function (payload, url) { return new g.Response(payload, url); };
+
   // fetch as the app calls it: a Request for an address, a blob's own address, a signal.
   var plainFetch = g.fetch;
   if (typeof plainFetch === 'function' && !plainFetch._softnWeb) {
@@ -906,16 +1005,20 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
       if (signal && signal.aborted) return Promise.reject(signal.reason !== undefined ? signal.reason : failure('The operation was aborted.', 'AbortError'));
       var blob = blobAt(address);
       var sent = blob
-        ? Promise.resolve(new g.Response({ ok: true, status: 200, statusText: 'OK', headers: { 'content-type': blob.type || 'application/octet-stream', 'content-length': String(blob.size) }, base64: base64Of(blob) }, String(address)))
+        ? Promise.resolve(makeResponse({ ok: true, status: 200, statusText: 'OK', headers: { 'content-type': blob.type || 'application/octet-stream', 'content-length': String(blob.size) }, base64: base64Of(blob) }, String(address)))
         : String(address).indexOf('blob:') === 0
           ? Promise.reject(new TypeError('Failed to fetch'))
           // The network is read as it arrives; a file of the app's own, where it is.
           : (typeof g.__softnReadNetwork === 'function' && g.__softnReadNetwork(address, options)) || plainFetch(address, options);
       if (!signal || typeof signal.addEventListener !== 'function') return sent;
-      // The wait ends when the app says so; what was asked of the network is let finish.
+      // The wait ends when the app says so; what was asked of the network is let finish. Its
+      // listener goes with the answer: kept, one signal used for every request an app makes
+      // held each answer's response for as long as the signal lived.
       return new Promise(function (resolve, reject) {
-        signal.addEventListener('abort', function () { reject(signal.reason !== undefined ? signal.reason : failure('The operation was aborted.', 'AbortError')); });
-        sent.then(resolve, reject);
+        var stopped = function () { reject(signal.reason !== undefined ? signal.reason : failure('The operation was aborted.', 'AbortError')); };
+        var over = function () { if (typeof signal.removeEventListener === 'function') { try { signal.removeEventListener('abort', stopped); } catch (e) {} } };
+        signal.addEventListener('abort', stopped);
+        sent.then(function (value) { over(); resolve(value); }, function (error) { over(); reject(error); });
       });
     };
     webFetch._softnWeb = true;
@@ -963,6 +1066,8 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
       this._softnSize = 0;
       this._softnRead = false;
       this._softnOnTake = null;
+      // The readers' closed promises, settled when it is over (closed and read to the end, or errored).
+      this._closedWaiters = [];
       this._controller = {
         enqueue: function (chunk) {
           if (self._state !== 'readable') return;
@@ -973,16 +1078,28 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
           if (self._state !== 'readable') return;
           self._state = 'closed';
           while (self._waiting.length) self._waiting.shift()[0]({ value: undefined, done: true });
+          settleClosed(self);
         },
         error: function (reason) {
           if (self._state !== 'readable') return;
           self._state = 'errored';
           self._error = reason;
           while (self._waiting.length) self._waiting.shift()[1](reason);
+          settleClosed(self);
         },
         get desiredSize() { return 1 - self._queue.length; },
       };
       if (typeof this._source.start === 'function') { try { this._source.start(this._controller); } catch (e) { this._controller.error(e); } }
+    };
+    // A reader's closed promise, as a browser settles it: once the stream is closed and what was in
+    // it has been read, or once it errors. (It never settled: code that waited on it waited for good.)
+    var settleClosed = function (stream) {
+      if (stream._state === 'readable' || (stream._state === 'closed' && stream._queue.length)) return;
+      var list = stream._closedWaiters.splice(0);
+      for (var i = 0; i < list.length; i++) {
+        if (stream._state === 'errored') list[i][1](stream._error);
+        else list[i][0](undefined);
+      }
     };
     Stream.prototype._read = function () {
       var self = this;
@@ -991,6 +1108,7 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
         var piece = this._queue.shift();
         this._softnSize -= sizeOfPiece(piece);
         if (typeof this._softnOnTake === 'function') this._softnOnTake();
+        if (this._state === 'closed' && !this._queue.length) settleClosed(this);
         return Promise.resolve({ value: piece, done: false });
       }
       if (this._state === 'closed') return Promise.resolve({ value: undefined, done: true });
@@ -1015,6 +1133,7 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
         this._queue.length = 0;
         this._softnSize = 0;
         while (this._waiting.length) this._waiting.shift()[0]({ value: undefined, done: true });
+        settleClosed(this);
         if (typeof this._source.cancel === 'function') { try { this._source.cancel(reason); } catch (e) {} }
       }
       return Promise.resolve();
@@ -1024,11 +1143,26 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
       var stream = this;
       var held = true;
       this.locked = true;
+      var waiter = null;
+      var closed = new Promise(function (resolve, reject) {
+        waiter = [resolve, reject];
+        stream._closedWaiters.push(waiter);
+      });
+      settleClosed(stream);
+      // Handled, as a browser marks it: a reader nobody asks about is no error nobody caught.
+      closed.then(undefined, function () {});
       return {
         read: function () { return held ? stream._read() : Promise.reject(new TypeError('This reader has let the stream go.')); },
         cancel: function (reason) { return stream.cancel(reason); },
-        releaseLock: function () { held = false; stream.locked = false; },
-        get closed() { return new Promise(function () {}); },
+        releaseLock: function () {
+          if (!held) return;
+          held = false;
+          stream.locked = false;
+          // Let go of before the stream was over: its closed is rejected, as a browser rejects it.
+          var at = stream._closedWaiters.indexOf(waiter);
+          if (at >= 0) { stream._closedWaiters.splice(at, 1); waiter[1](new TypeError('The reader has let the stream go.')); }
+        },
+        get closed() { return closed; },
       };
     };
     // Through a decoder: bytes in, text out.
@@ -1257,7 +1391,7 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
         return b;
       };
       var respond = function (b) {
-        var response = new g.Response({ ok: !!head.ok, status: head.status, statusText: head.statusText, headers: head.headers || {} }, String(address));
+        var response = makeResponse({ ok: !!head.ok, status: head.status, statusText: head.statusText, headers: head.headers || {} }, String(address));
         var taken = false;
         var used = function () { return taken || !!b.body.locked || !!b.body._softnRead; };
         try { Object.defineProperty(response, 'bodyUsed', { configurable: true, enumerable: true, get: used, set: function (value) { taken = !!value; } }); } catch (e) {}
@@ -1409,11 +1543,18 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
             else if (field === 'id') { if (value.indexOf('\u0000') < 0) self._last = value; }
             else if (field === 'retry' && /^\d+$/.test(value)) self._wait = Math.max(100, Number(value));
           };
+          // A piece that ended with a CR ended its line there: an LF that begins the next is that
+          // line's end too, not a blank line of its own. (Taken for one, a CRLF the network cut
+          // in two ended the message early, and the rest of it was another.)
+          var afterCr = false;
           var read = function () {
             return reader.read().then(function (step) {
               if (self.readyState === 2) return;
               if (step.done) throw new Error('ended');
-              buffer += step.value;
+              var text = String(step.value);
+              if (afterCr && text.charAt(0) === '\n') text = text.slice(1);
+              afterCr = text.length > 0 && text.charAt(text.length - 1) === '\r';
+              buffer += text;
               var lines = buffer.split(/\r\n|\n|\r/);
               buffer = lines.pop();
               for (var i = 0; i < lines.length; i++) line(lines[i]);
@@ -2698,6 +2839,11 @@ export const GUEST_WEB_APIS_SOURCE = String.raw`
       _ended() {
         if (this.playState === 'idle' || this.playState === 'finished') return;
         this.playState = 'finished';
+        // Over, and not holding its last frame (fill forwards or both): no longer the element's,
+        // as getAnimations() tells it. (Kept, every animation an app ever ran stayed, with its
+        // element and its keyframes, for as long as the app.)
+        var fill = String(this.effect.getTiming().fill || '');
+        if (fill !== 'forwards' && fill !== 'both') delete animations[this._key];
         this._resolve(this);
         tell(this, 'finish', {});
       }

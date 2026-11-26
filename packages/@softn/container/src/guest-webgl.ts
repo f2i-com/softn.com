@@ -119,8 +119,13 @@ export const GUEST_WEBGL_SOURCE = String.raw`
         pending = v.__ctx2d._cmds.slice();
         // Flush those commands to the host 2D canvas too instead of stealing them from it.
         var c2dId = v.__softnNode || 0;
-        if (c2dId && typeof g.__softnPushExtraOp === 'function') g.__softnPushExtraOp(['k2d', c2dId, v.width, v.height, v.__ctx2d._cmds.splice(0, v.__ctx2d._cmds.length)]);
-        else v.__ctx2d._cmds.length = 0;
+        if (c2dId && typeof g.__softnPushExtraOp === 'function') {
+          var drawnOp = ['k2d', c2dId, v.width, v.height, v.__ctx2d._cmds.splice(0, v.__ctx2d._cmds.length)];
+          g.__softnPushExtraOp(drawnOp);
+          // The Worker draws them on its copy of the canvas when this call runs (pending):
+          // marked as drawn there once it has, or the turn's end drew them on it again.
+          est.drawn = drawnOp;
+        } else v.__ctx2d._cmds.length = 0;
         if (typeof g.__softnClearCanvas2DDrawing === 'function') g.__softnClearCanvas2DDrawing(v.__ctx2d);
       }
       est.n += pending.length * 40;
@@ -268,6 +273,7 @@ export const GUEST_WEBGL_SOURCE = String.raw`
     for (var mi = 0; mi < methods.length; mi++) {
       (function (mname) {
         var isSyncExt = /^(?:get|is|check|create)/.test(mname);
+        var isDeleteExt = /^delete/.test(mname);
         extObj[mname] = function () {
           var est = { n: 24 };
           var encoded = [];
@@ -277,6 +283,8 @@ export const GUEST_WEBGL_SOURCE = String.raw`
           if (isSyncExt) {
             return decodeGlReturn(self._flush(['ext', key, mname].concat(encoded)), self, false);
           }
+          // An object the extension made, deleted: let go of here too (the Worker lets go of its own).
+          if (isDeleteExt && arguments[0] && typeof arguments[0].__glId === 'number') delete self._handles[arguments[0].__glId];
           self._ensureCanvasId();
           self._q.push(['x', key, mname].concat(encoded));
           self._qBytes += est.n;
@@ -375,7 +383,11 @@ export const GUEST_WEBGL_SOURCE = String.raw`
             this._ensureCanvasId();
             this._q.push(cmd);
             this._qBytes += est.n;
-            if (this._q.length >= 2000 || this._qBytes >= 400000) this._flush();
+            if (est.drawn) {
+              // Run now, while the Worker's copy of that canvas is as the app drew it: its
+              // drawing is the copy's once the Worker says it ran this (true).
+              if (this._flush() === true) est.drawn[5] = 'mirrored';
+            } else if (this._q.length >= 2000 || this._qBytes >= 400000) this._flush();
           };
         }
         if (!WebGLRenderingContext.prototype[mname]) WebGLRenderingContext.prototype[mname] = fn;

@@ -29,15 +29,25 @@ export function useXDBStorageStatus(xdb?: XDBService): XDBStorageStatus {
 /**
  * What a query option says, as a value equal from one render to the next while
  * it says the same: an object as its JSON, anything else (or an object JSON
- * cannot hold) as itself.
+ * cannot hold) as itself. JSON leaves out a field that is undefined and writes
+ * NaN and the infinities as null, and those are other queries: `{ kind:
+ * undefined }` matches no record and `{}` every one, and with one key the first
+ * was kept for the second. They are written as what they are (`optionValue`).
  */
 function optionKey(value: unknown): unknown {
   if (typeof value !== 'object' || value === null) return value;
   try {
-    return JSON.stringify(value);
+    return JSON.stringify(value, optionValue);
   } catch {
     return value;
   }
+}
+
+/** The replacer of `optionKey`: undefined and a number JSON cannot write, each as text of its own. */
+function optionValue(_key: string, value: unknown): unknown {
+  if (value === undefined) return '\u0000undefined';
+  if (typeof value === 'number' && !Number.isFinite(value)) return `\u0000${value}`;
+  return value;
 }
 
 /**

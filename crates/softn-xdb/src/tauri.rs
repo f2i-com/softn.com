@@ -1014,6 +1014,37 @@ pub async fn delete_record(
     Ok(true)
 }
 
+/// Remove records of one collection for good (the page's `hardDelete`, `db.prune` and
+/// `db.clearCollection`): their rows and their entries in the collection's replicated
+/// document, with no tombstone (db.rs `remove_records`). `delete_record` keeps a tombstone
+/// with the record's data in it, which the page loaded again at its next start and its peer
+/// sync put back in the room. Answers the ids left alone because another collection holds them.
+#[tauri::command]
+pub async fn remove_records(
+    db_manager: State<'_, SharedDbManager>,
+    network: State<'_, SharedNetwork>,
+    app_id: Option<String>,
+    collection: String,
+    ids: Vec<String>,
+) -> Result<Vec<String>, String> {
+    let app_id = app_id.unwrap_or_default();
+    let db = db_manager.get_db(&app_id)?;
+    let (update, refused, epoch) = {
+        let mut db_lock = db.lock().map_err(|e| e.to_string())?;
+        let (update, refused) = db_lock.remove_records(&collection, &ids).map_err(|e| e.to_string())?;
+        let epoch = db_lock.get_epoch(&collection).unwrap_or(0);
+        (update, refused, epoch)
+    };
+
+    db_manager.emit_change(&app_id, "delete", Some(&collection));
+    if let Some(update) = update {
+        broadcast_scoped_update(&network, &app_id, &collection, epoch, update).await;
+    }
+
+    info!("Removed {} records from collection {}", ids.len() - refused.len(), collection);
+    Ok(refused)
+}
+
 /// Upsert a record with a specific ID (for external sync sources)
 #[tauri::command]
 pub async fn upsert_record(
@@ -1805,6 +1836,7 @@ macro_rules! xdb_commands {
             $crate::tauri::update_record,
             $crate::tauri::update_records,
             $crate::tauri::delete_record,
+            $crate::tauri::remove_records,
             $crate::tauri::upsert_record,
             $crate::tauri::get_record,
             $crate::tauri::get_collection,

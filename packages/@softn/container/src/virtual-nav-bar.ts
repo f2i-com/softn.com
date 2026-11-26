@@ -86,8 +86,16 @@ export function renderVirtualNavBar(options: {
   input.className = 'vnav-input';
   input.setAttribute('aria-label', `${options.appName} virtual path`);
   input.value = options.initialPath;
+  // Whether the person has typed in the address since it last said where the app is. Gone to,
+  // what they typed is theirs no more: the address shows where it led (a redirect, `/docs` made
+  // `/docs/`), as a browser's does. Kept while the field had the focus, it showed what was typed.
+  let editing = false;
+  input.addEventListener('input', () => {
+    editing = true;
+  });
   form.addEventListener('submit', (e) => {
     e.preventDefault();
+    editing = false;
     const next = input.value.trim() || '/';
     options.onNavigate(next.startsWith('/') ? next : `/${next}`);
   });
@@ -189,7 +197,8 @@ export function renderVirtualNavBar(options: {
         inputRoot instanceof ShadowRoot || inputRoot instanceof Document
           ? inputRoot.activeElement
           : null;
-      if (active === input) return;
+      if (active === input && editing) return;
+      editing = false;
       input.value = urlPath;
     },
     setHistoryState(canBack: boolean, canForward: boolean) {

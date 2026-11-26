@@ -508,8 +508,11 @@ export const GUEST_BROWSER_GLOBALS_SOURCE = String.raw`
   // ---------------------------------------------------------------------------
   if (typeof g.requestIdleCallback !== 'function') {
     g.requestIdleCallback = function (callback) {
-      var started = Date.now();
       return g.setTimeout(function () {
+        // The idle time is counted from when the callback is called: counted from when it was
+        // asked for, a callback that came late (after a long turn, or the app hidden) had none,
+        // and work that takes its turns by it did nothing.
+        var started = Date.now();
         callback({ didTimeout: false, timeRemaining: function () { return Math.max(0, 50 - (Date.now() - started)); } });
       }, 1);
     };
