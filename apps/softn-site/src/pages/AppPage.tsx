@@ -209,14 +209,16 @@ function AppPageContent({ slug, categories, route }: AppPageProps): React.ReactE
   const runUrl = runtimeAppUrl;
   const [showSource, setShowSource] = useState(false);
   const [sourceVersion, setSourceVersion] = useState<number | undefined>(undefined);
-  const editable = Boolean(savedKey(slug));
+  // Keys are kept by the app's own slug, which is the address's only once it
+  // has loaded: a link may spell the name loosely, and the directory answers it.
+  const editable = Boolean(savedKey(app?.slug ?? slug));
   const [remixBusy, setRemixBusy] = useState(false);
   const [remixError, setRemixError] = useState<string | null>(null);
 
   // The owner takes a remix off this page, or puts one back: anyone can
   // publish a remix of any app, under any name.
   const setHiddenRemixes = async (next: string[]) => {
-    const key = savedKey(slug);
+    const key = app ? savedKey(app.slug) : null;
     if (!app || !key || remixBusy) return;
     setRemixBusy(true);
     setRemixError(null);

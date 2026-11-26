@@ -109,11 +109,14 @@ export function isArrayMutator(fn: unknown): boolean {
  * normally reads: this runs for each name and member of each expression.
  */
 export function markupValue(value: unknown): unknown {
+  // Text, a number, a yes or no: none is in the sets below, which hold
+  // objects and functions alone, and they are most of what a page reads.
+  if (value === null || (typeof value !== 'object' && typeof value !== 'function')) return value;
   // Before the array test: Array.prototype is an array, and Function.prototype a function.
   if (INTRINSIC_PROTOTYPES.has(value) || ARRAY_MUTATORS.has(value) || BLOCKED_FUNCTIONS.has(value)) {
     return undefined;
   }
-  if (value === null || typeof value !== 'object') return value;
+  if (typeof value !== 'object') return value;
   if (Array.isArray(value)) return value;
   const proto = Object.getPrototypeOf(value);
   // Plain data, and the records made here, are the usual case.

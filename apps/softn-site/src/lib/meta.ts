@@ -70,11 +70,13 @@ export function metaFor(page: Page, query?: URLSearchParams): PageMeta {
       if (sub) params.set('subcategory', sub);
       if (pageNum > 1) params.set('page', String(pageNum));
       const qs = params.toString();
+      // No title: the directory names the list it shows itself (the search,
+      // the author, the category by its name). Its effect runs before this
+      // one, a child's before its parent's, so a title here was written over
+      // it whenever both ran: "Apps Directory" for a search, "Ai Apps" for
+      // the category the directory calls "AI & Agents".
       return {
         path: qs ? `/apps?${qs}` : '/apps',
-        title: cat
-          ? `${cat.charAt(0).toUpperCase()}${cat.slice(1)} Apps${pageNum > 1 ? ` — Page ${pageNum}` : ''} — SoftN`
-          : `Apps Directory${pageNum > 1 ? ` — Page ${pageNum}` : ''} — SoftN`,
         description:
           'Apps people made with SoftN: games, tools and experiments that run in your browser, with their source to read and remix.',
         indexable: !hasDynamicFilter,

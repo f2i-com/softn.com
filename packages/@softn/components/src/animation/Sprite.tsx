@@ -89,6 +89,9 @@ export interface SpriteProps {
   ariaLabel?: string;
 }
 
+/** A layout effect in the browser; nothing (and no warning) on the server. */
+const useIsomorphicLayoutEffect = typeof window !== 'undefined' ? React.useLayoutEffect : React.useEffect;
+
 /** The frames a sprite was given, as whole numbers from zero; null when it was given none to play. */
 function framesToPlay(frames: unknown): number[] | null {
   if (!Array.isArray(frames)) return null;
@@ -171,8 +174,11 @@ export function Sprite({
     [frameWidth, frameHeight]
   );
 
-  // Update background position immediately when row/colOffset change (direction switch)
-  React.useEffect(() => {
+  // Update background position immediately when row/colOffset change (direction switch),
+  // before the screen is drawn: React has just drawn the new row's first
+  // frame, and put right only after paint, a walk showed that frame for a
+  // moment at every turn made from a game's tick.
+  useIsomorphicLayoutEffect(() => {
     rowRef.current = row;
     colOffsetRef.current = colOffset;
     columnsRef.current = columns;

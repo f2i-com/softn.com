@@ -4,7 +4,7 @@ import { coreWorkerAssetPlugin } from '../../scripts/build/core-worker-assets.mj
 import { containerRuntimeAssetPlugin } from '../../scripts/build/container-runtime-assets.mjs';
 import { scriptPolicyPlugin } from '../../scripts/build/script-policy.mjs';
 import { sharedRenderBuiltUrl, woff2OnlyFontsPlugin } from '../../scripts/build/shared-assets.mjs';
-import { vendorThreeGroup } from '../../scripts/build/on-demand-chunks.mjs';
+import { sharedChunkGroups } from '../../scripts/build/on-demand-chunks.mjs';
 export default defineConfig({
   // Relative by default, so a standalone deployment works from any directory.
   // The site build sets VITE_BASE to where the shell lands under softn.com
@@ -34,14 +34,10 @@ export default defineConfig({
         : { index: 'index.html', page: 'src/page.tsx' },
       output: {
         entryFileNames: (chunk) => (chunk.name === 'page' ? 'softn-page.js' : 'assets/[name]-[hash].js'),
+        // Three.js, React and the sync and scanner libraries under names of their own,
+        // the same groups as the other apps' (on-demand-chunks.mjs).
         codeSplitting: {
-          groups: [
-            vendorThreeGroup,
-            {
-              name: 'vendor-react',
-              test: /node_modules[\\/](?:react|react-dom|scheduler)[\\/]/,
-            },
-          ],
+          groups: sharedChunkGroups,
         },
       },
     },

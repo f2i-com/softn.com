@@ -632,6 +632,12 @@ export function buildEffectsRig(
     : null;
   let cssWidth = Math.max(1, width);
   let cssHeight = Math.max(1, height);
+  // Its mips at CSS pixels from the first frame, as `setSize` keeps them: the
+  // composer sized them to device pixels as it was added, and they stayed so
+  // (four times the fill at a pixel ratio of 2, and a glow half as wide)
+  // until the scene's size or pixel ratio first changed. (A stand-in pass that
+  // cannot be sized is left as it was made.)
+  if (bloom && typeof bloom.setSize === 'function') bloom.setSize(cssWidth, cssHeight);
   // Tone mapping and the sRGB conversion the renderer would have done.
   add(new mods.OutputPass());
   let grain: ShaderPass | null = null;

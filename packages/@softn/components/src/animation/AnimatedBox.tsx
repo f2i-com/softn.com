@@ -238,14 +238,19 @@ export function AnimatedBox({
     }
   }, [trigger, animation, isHover, transitionValue, preset, reducedMotion]);
 
-  // State trigger
-  React.useEffect(() => {
+  // State trigger: before the first paint, and the first time without a
+  // transition. Put on after paint with the transition already set, content
+  // meant to start hidden was shown, then faded out as the page loaded.
+  const stateAppliedRef = React.useRef(false);
+  useIsomorphicLayoutEffect(() => {
     if (trigger !== 'state') return;
 
     const el = elementRef.current;
     if (!el) return;
 
-    el.style.transition = reducedMotion ? 'none' : transitionValue;
+    const first = !stateAppliedRef.current;
+    stateAppliedRef.current = true;
+    el.style.transition = reducedMotion || first ? 'none' : transitionValue;
     el.style.willChange = 'opacity, transform';
     applyStyles(el, isActive ? preset.to : preset.from);
   }, [trigger, isActive, transitionValue, preset, reducedMotion]);

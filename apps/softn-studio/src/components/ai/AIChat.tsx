@@ -23,7 +23,10 @@ export const AIChat: React.FC<{
     draftMessage: input, setDraftMessage: setInput,
   } = useAIStore();
   const readiness = useAIReadiness();
-  const { blueprint, brief } = useWorkspaceStore();
+  // The two fields alone: taken as the whole store, every line of the log drew every run of the
+  // conversation again, and a run logs as it goes.
+  const blueprint = useWorkspaceStore((s) => s.blueprint);
+  const brief = useWorkspaceStore((s) => s.brief);
   const hasExistingPages = blueprint?.pages.some((page) => page.layout === 'imported');
   // A turn that committed files did so as one VFS transaction under the
   // message's transactionId. The message offers to revert it — the whole
@@ -314,7 +317,7 @@ export const AIChat: React.FC<{
 
         {messages.map((msg) => msg.run ? (
           <div key={msg.id} style={styles.runWrap}>
-            {isReadableRun(msg.run) ? <RunTimeline message={msg} /> : <p className="st-run-reason">{msg.content || 'This run’s record could not be read.'}</p>}
+            {isReadableRun(msg.run) ? <RunTimeline message={msg} live={isRunLive(msg.run.id)} active={activeAgentRunId() === msg.run.id} /> : <p className="st-run-reason">{msg.content || 'This run’s record could not be read.'}</p>}
           </div>
         ) : (
           <div

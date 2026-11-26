@@ -7,9 +7,12 @@
 
 import * as React from 'react';
 import type { ChartPadding } from './series';
-import { chartPadding, describeChart, formatAxisValue, formatterOr, layoutX, normaliseSeries, numericPoints, chartSize } from './series';
+import { chartPadding, describeChart, extent, formatAxisValue, formatterOr, layoutX, normaliseSeries, numericPoints, chartSize } from './series';
 import { chartPalette } from '../theme/chart-palette';
 import { safeSvgPaint } from '../utils/svgPaint';
+
+/** An x label as it is, when the page gives no formatter: one function, so what is built from it is not built again. */
+const formatXValue = (value: number | string): string => String(value);
 
 export interface DataPoint {
   x: number | string;
@@ -79,7 +82,7 @@ export function LineChart({
   const width = chartSize(givenWidth, 600);
   const height = chartSize(givenHeight, 300);
   const padding = chartPadding(givenPadding, { top: 20, right: 20, bottom: 40, left: 50 });
-  const formatXLabel = formatterOr<NonNullable<LineChartProps['formatXLabel']>>(givenFormatXLabel, (v) => String(v));
+  const formatXLabel = formatterOr<NonNullable<LineChartProps['formatXLabel']>>(givenFormatXLabel, formatXValue);
   const formatYLabel = formatterOr<NonNullable<LineChartProps['formatYLabel']>>(givenFormatYLabel, formatAxisValue);
   // Data that has not arrived yet is an empty chart, not a throw.
   // A point whose y is not a number is left out rather than drawn at NaN.
@@ -89,19 +92,19 @@ export function LineChart({
   );
   const xLayout = React.useMemo(() => layoutX(series), [series]);
   const [hoveredSeries, setHoveredSeries] = React.useState<number | null>(null);
-  const [hoveredPointIndex, setHoveredPointIndex] = React.useState<number | null>(null);
+  // The x under the pointer, as a position on the axis (XLayout). It was a
+  // point's place in the first series, and the tooltip gave every other
+  // series' point at that place, whatever x that point was at.
+  const [hoveredX, setHoveredX] = React.useState<number | null>(null);
   const svgRef = React.useRef<SVGSVGElement>(null);
 
   const chartWidth = width - padding.left - padding.right;
   const chartHeight = height - padding.top - padding.bottom;
 
-  const allPoints = series.flatMap((s) => s.data);
-  const yValues = allPoints.map((p) => p.y);
-
   // A chart is routinely bound to data that has not arrived yet. `Math.max()`
   // of nothing is -Infinity, which is truthy, so the `|| 1` guards below never
   // fired and the axis rendered "-Infinityk" above five NaN ticks.
-  const hasPoints = allPoints.length > 0;
+  const yExtent = React.useMemo(() => extent(series.flatMap((s) => s.data.map((p) => p.y))), [series]);
   const { min: xMin, max: xMax } = xLayout;
 
   // Pad away from zero at each end, rather than scaling both ends by 1.1.
@@ -110,8 +113,8 @@ export function LineChart({
   // series like [-100, -105] produced a max of -110 below its own min of -105,
   // so the top of the axis sat beneath the bottom and every point mapped off
   // the canvas — the axis read -110 at the top while the line was nowhere.
-  const dataMin = hasPoints ? Math.min(...yValues) : 0;
-  const dataMax = hasPoints ? Math.max(...yValues) : 0;
+  const dataMin = yExtent ? yExtent.min : 0;
+  const dataMax = yExtent ? yExtent.max : 0;
   const lo = Math.min(0, dataMin);
   const hi = Math.max(0, dataMax);
   const paddedMin = lo < 0 ? lo * 1.1 : lo;
@@ -122,7 +125,10 @@ export function LineChart({
   const yRange = rawYMax - rawYMin || 1;
   const tickStep = Math.pow(10, Math.floor(Math.log10(yRange / 5))) * Math.ceil((yRange / 5) / Math.pow(10, Math.floor(Math.log10(yRange / 5)))) || 1;
   const yMin = propYMin ?? Math.floor(rawYMin / tickStep) * tickStep;
-  const yMax = propYMax ?? (Math.ceil(rawYMax / tickStep) * tickStep || 1);
+  // An axis of losses only ends at zero. With `|| 1` here (the unit domain
+  // above already covers no data) it ended at 1, its ticks between at -23.2
+  // and -47.4.
+  const yMax = propYMax ?? Math.ceil(rawYMax / tickStep) * tickStep;
 
   const scaleX = (position: number): number => {
     return padding.left + ((position - xMin) / (xMax - xMin || 1)) * chartWidth;
@@ -170,25 +176,22 @@ export function LineChart({
     return `${linePath} L ${lastX} ${baseline} L ${firstX} ${baseline} Z`;
   };
 
-  // Find the closest data point index for a given x position
-  const findClosestPointIndex = React.useCallback(
+  // The x nearest the pointer, of every x the series have between them.
+  const findClosestX = React.useCallback(
     (mouseX: number): number | null => {
-      if (series.length === 0 || series[0].data.length === 0) return null;
-      const refSeries = series[0];
-      let closestIdx = 0;
+      let closest: number | null = null;
       let closestDist = Infinity;
-      for (let i = 0; i < refSeries.data.length; i++) {
-        const px = pointX(0, i);
-        const dist = Math.abs(px - mouseX);
+      for (const { position } of xLayout.ticks) {
+        const dist = Math.abs(scaleX(position) - mouseX);
         if (dist < closestDist) {
           closestDist = dist;
-          closestIdx = i;
+          closest = position;
         }
       }
-      return closestIdx;
+      return closest;
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [series, xLayout, padding, chartWidth, xMin, xMax]
+    [xLayout, padding.left, chartWidth]
   );
 
   const handleMouseMove = React.useCallback(
@@ -199,17 +202,72 @@ export function LineChart({
       const rect = svg.getBoundingClientRect();
       const scaleFactorX = width / rect.width;
       const mouseX = (e.clientX - rect.left) * scaleFactorX;
-      const idx = findClosestPointIndex(mouseX);
-      setHoveredPointIndex(idx);
+      setHoveredX(findClosestX(mouseX));
     },
-    [interactive, findClosestPointIndex, width]
+    [interactive, findClosestX, width]
   );
 
   const handleMouseLeave = React.useCallback(() => {
     if (!interactive) return;
-    setHoveredPointIndex(null);
+    setHoveredX(null);
     setHoveredSeries(null);
   }, [interactive]);
+
+  // Each series' point at each x, to find the ones under the pointer.
+  const indexAtX = React.useMemo(
+    () =>
+      series.map((s, seriesIndex) => {
+        const at = new Map<number, number>();
+        s.data.forEach((_point, idx) => {
+          const position = xLayout.position(seriesIndex, idx);
+          if (!at.has(position)) at.set(position, idx);
+        });
+        return at;
+      }),
+    [series, xLayout]
+  );
+  const hoveredTick = hoveredX === null ? undefined : xLayout.ticks.find((tick) => tick.position === hoveredX);
+  const hoveredIndex = (seriesIndex: number): number | undefined =>
+    hoveredTick ? indexAtX[seriesIndex]?.get(hoveredTick.position) : undefined;
+
+  // The lines and their dots, made again only when the data or the scale
+  // changes. Made in every render, each step of the pointer across the plot
+  // built every path again and redrew every dot. The dot under the pointer
+  // is drawn larger over its own.
+  const plotted = React.useMemo(
+    () =>
+      series.map((s, seriesIndex) => {
+        const color = safeSvgPaint(s.color, defaultColors[seriesIndex % defaultColors.length]);
+        return {
+          color,
+          fill: s.fill ? generateFillPath(s.data, seriesIndex, s.smooth) : '',
+          line: generatePath(s.data, seriesIndex, s.smooth),
+          dots:
+            (s.showDots ?? true) &&
+            s.data.map((point, idx) => (
+              <circle
+                key={idx}
+                cx={pointX(seriesIndex, idx)}
+                cy={scaleY(point.y)}
+                r={s.dotSize ?? 3}
+                fill={color}
+                stroke="none"
+                strokeWidth={0}
+                style={{
+                  transition: 'r 0.15s ease, stroke-width 0.15s ease',
+                  cursor: interactive ? 'pointer' : undefined,
+                }}
+                onMouseEnter={interactive ? () => setHoveredSeries(seriesIndex) : undefined}
+                onMouseLeave={interactive ? () => setHoveredSeries(null) : undefined}
+              >
+                {!interactive && <title>{point.label ?? `${point.x}: ${point.y}`}</title>}
+              </circle>
+            )),
+        };
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [series, xLayout, padding.left, padding.top, chartWidth, chartHeight, yMin, yMax, interactive]
+  );
 
   const gridLines: React.ReactNode[] = [];
   const numGridLines = 5;
@@ -268,17 +326,19 @@ export function LineChart({
     }
   });
 
-  const label =
-    ariaLabel ??
-    describeChart(
-      'Line chart',
-      series.map((s) => ({ name: s.name, values: s.data.map((p) => `${formatXLabel(p.x)} ${formatYLabel(p.y)}`) }))
-    );
+  // Every point read out, so written again only when they or their formats change.
+  const label = React.useMemo(
+    () =>
+      ariaLabel ??
+      describeChart(
+        'Line chart',
+        series.map((s) => ({ name: s.name, values: s.data.map((p) => `${formatXLabel(p.x)} ${formatYLabel(p.y)}`) }))
+      ),
+    [ariaLabel, series, formatXLabel, formatYLabel]
+  );
 
   // Crosshair vertical line at hovered point
-  const crosshairX = hoveredPointIndex !== null && series[0]?.data[hoveredPointIndex]
-    ? pointX(0, hoveredPointIndex)
-    : null;
+  const crosshairX = hoveredTick ? scaleX(hoveredTick.position) : null;
 
   return (
     <div className={`softn-line-chart ${className}`} style={{ position: 'relative', ...style }}>
@@ -354,62 +414,44 @@ export function LineChart({
         )}
 
         {series.map((s, seriesIndex) => {
-          const fallbackColor = defaultColors[seriesIndex % defaultColors.length];
-          const color = safeSvgPaint(s.color, fallbackColor);
+          const { color, fill, line, dots } = plotted[seriesIndex];
           const isDimmed = interactive && hoveredSeries !== null && hoveredSeries !== seriesIndex;
+          const hoveredIdx = interactive ? hoveredIndex(seriesIndex) : undefined;
+          const hoveredPoint = hoveredIdx === undefined ? undefined : s.data[hoveredIdx];
           return (
             <g
               key={`${seriesIndex}-${s.name}`}
               opacity={isDimmed ? 0.25 : 1}
               style={{ transition: 'opacity 0.2s ease' }}
             >
-              {s.fill && (
-                <path
-                  d={generateFillPath(s.data, seriesIndex, s.smooth)}
-                  fill={color}
-                  fillOpacity={s.fillOpacity ?? 0.1}
-                />
-              )}
+              {s.fill && <path d={fill} fill={color} fillOpacity={s.fillOpacity ?? 0.1} />}
               <path
-                d={generatePath(s.data, seriesIndex, s.smooth)}
+                d={line}
                 fill="none"
                 stroke={color}
                 strokeWidth={s.strokeWidth ?? 2}
                 strokeLinecap="round"
                 strokeLinejoin="round"
               />
-              {(s.showDots ?? true) &&
-                s.data.map((point, idx) => {
-                  const isHoveredPoint = interactive && hoveredPointIndex === idx;
-                  const baseSize = s.dotSize ?? 3;
-                  const r = isHoveredPoint ? baseSize + 2.5 : baseSize;
-                  return (
-                    <circle
-                      key={idx}
-                      cx={pointX(seriesIndex, idx)}
-                      cy={scaleY(point.y)}
-                      r={r}
-                      fill={isHoveredPoint ? color : color}
-                      stroke={isHoveredPoint ? 'var(--color-bg, #18181b)' : 'none'}
-                      strokeWidth={isHoveredPoint ? 2 : 0}
-                      style={{
-                        transition: 'r 0.15s ease, stroke-width 0.15s ease',
-                        cursor: interactive ? 'pointer' : undefined,
-                      }}
-                      onMouseEnter={interactive ? () => setHoveredSeries(seriesIndex) : undefined}
-                      onMouseLeave={interactive ? () => setHoveredSeries(null) : undefined}
-                    >
-                      {!interactive && <title>{point.label ?? `${point.x}: ${point.y}`}</title>}
-                    </circle>
-                  );
-                })}
+              {dots}
+              {dots && hoveredPoint && hoveredIdx !== undefined && (
+                <circle
+                  cx={pointX(seriesIndex, hoveredIdx)}
+                  cy={scaleY(hoveredPoint.y)}
+                  r={(s.dotSize ?? 3) + 2.5}
+                  fill={color}
+                  stroke="var(--color-bg, #18181b)"
+                  strokeWidth={2}
+                  style={{ pointerEvents: 'none' }}
+                />
+              )}
             </g>
           );
         })}
       </svg>
 
       {/* Crosshair tooltip */}
-      {interactive && hoveredPointIndex !== null && crosshairX !== null && (
+      {interactive && hoveredTick && crosshairX !== null && (
         <div
           style={{
             position: 'absolute',
@@ -430,13 +472,12 @@ export function LineChart({
           }}
         >
           <div style={{ fontWeight: 600, marginBottom: '2px', color: 'var(--color-text-muted, #a1a1aa)', fontSize: '11px' }}>
-            {series[0]?.data[hoveredPointIndex]
-              ? formatXLabel(series[0].data[hoveredPointIndex].x)
-              : ''}
+            {formatXLabel(hoveredTick.value)}
           </div>
           {series.map((s, seriesIndex) => {
             const color = s.color || defaultColors[seriesIndex % defaultColors.length];
-            const point = s.data[hoveredPointIndex];
+            const idx = hoveredIndex(seriesIndex);
+            const point = idx === undefined ? undefined : s.data[idx];
             if (!point) return null;
             return (
               <div key={`${seriesIndex}-${s.name}`} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>

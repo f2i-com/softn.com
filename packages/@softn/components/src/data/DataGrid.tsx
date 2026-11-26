@@ -338,10 +338,19 @@ export function DataGrid<T = Row>({
   // is keyed by its place there, and a column's `render` is handed it: keyed
   // by its place on screen, a selection stayed where it was while the rows
   // moved under it, and an edit told the page another record's key.
+  //
+  // Worked out again when the rows, the column sorted by (its key and how it
+  // reads a row) or the direction change, and not for a new list of the same
+  // columns: written inline, `columns` is a new list on every draw of the
+  // page, and every draw sorted every row again (scrolling draws too).
+  const sortBy = sortsItself ? columns.find((column) => column.key === sortKey && column.sortable) : undefined;
+  const sortByKey = sortBy?.key;
+  const sortByAccessor = sortBy?.accessor;
   const order = React.useMemo(() => {
-    const by = sortsItself ? columns.find((column) => column.key === sortKey && column.sortable) : undefined;
-    return by ? sortOrder(rows, (row) => cellValue(row, by), sortDirection) : null;
-  }, [rows, columns, sortsItself, sortKey, sortDirection]);
+    if (sortByKey === undefined) return null;
+    const by: DataGridColumn<T> = { key: sortByKey, header: '', accessor: sortByAccessor };
+    return sortOrder(rows, (row) => cellValue(row, by), sortDirection);
+  }, [rows, sortByKey, sortByAccessor, sortDirection]);
   const data = React.useMemo(() => (order ? order.map((index) => rows[index]) : rows), [rows, order]);
 
   // Virtual scrolling calculations. A row height of zero or less (or not a
@@ -358,7 +367,11 @@ export function DataGrid<T = Row>({
 
   const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
     if (virtualized) {
-      setScrollTop(e.currentTarget.scrollTop);
+      // Kept to the row the window starts at, which is all a scroll decides,
+      // and set only when that moves: kept to the pixel, every scroll event
+      // drew the whole grid again.
+      const top = Math.floor(e.currentTarget.scrollTop / safeRowHeight) * safeRowHeight;
+      if (top !== scrollTop) setScrollTop(top);
     }
   };
 

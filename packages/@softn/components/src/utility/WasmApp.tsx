@@ -282,6 +282,8 @@ export function WasmApp({
   handlers.current = { onReady, onMessage, onExit, onError };
   const live = useRef({ running, appShown });
   live.current = { running, appShown };
+  /** Asks a paused program's loop for its next frame; see `frames`. */
+  const wakeRef = useRef<(() => void) | null>(null);
 
   // Whole multiples of the frame for fit="pixel", from the space the box has.
   useIsomorphicLayoutEffect(() => {
@@ -319,6 +321,7 @@ export function WasmApp({
     let ended = false;
     let program: WasmProgram | null = null;
     let raf = 0;
+    let wake: (() => void) | null = null;
     const output: string[] = [];
     const fail = (message: string) => {
       if (cancelled) return;
@@ -346,9 +349,14 @@ export function WasmApp({
       let inFlight = false;
       let lastSize = '';
       const loop = () => {
+        raf = 0;
         if (cancelled || ended || !program) return;
+        // Paused, or the app not shown: no frame is asked for until it runs
+        // again and `wake` is called, rather than one at every refresh to find
+        // it still paused, which kept a page with a paused game from going idle.
+        if (!live.current.running || !live.current.appShown) return;
         raf = requestAnimationFrame(loop);
-        if (inFlight || !live.current.running || !live.current.appShown) return;
+        if (inFlight) return;
         const events = eventsRef.current;
         eventsRef.current = [];
         const rect = screen.getBoundingClientRect();
@@ -376,6 +384,10 @@ export function WasmApp({
           inFlight = false;
         });
       };
+      wake = () => {
+        if (raf === 0 && !cancelled && !ended) raf = requestAnimationFrame(loop);
+      };
+      wakeRef.current = wake;
       raf = requestAnimationFrame(loop);
     };
 
@@ -485,6 +497,7 @@ export function WasmApp({
       cancelled = true;
       stopping.abort();
       cancelAnimationFrame(raf);
+      if (wakeRef.current === wake) wakeRef.current = null;
       programRef.current = null;
       program?.stop();
       sound.close();
@@ -498,6 +511,12 @@ export function WasmApp({
     // Started again when what the program is, or what it is started with, changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [startKey]);
+
+  // A paused program's loop asks for no frames (see `frames`): running again,
+  // or shown again, it is asked for the next one.
+  useEffect(() => {
+    if (running && appShown) wakeRef.current?.();
+  }, [running, appShown]);
 
   const exportsOf = (name: string) => programRef.current?.exports.some((e) => e.name === name) ?? false;
 

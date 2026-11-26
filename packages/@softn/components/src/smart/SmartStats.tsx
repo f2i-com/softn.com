@@ -75,9 +75,13 @@ function formatValue(value: number | string, prefix?: string, suffix?: string): 
   if (typeof value !== 'number') return `${prefix || ''}${String(value)}${suffix || ''}`;
 
   let formatted: string;
-  if (value >= 1000000) {
+  // By its size, so that a loss is shortened as a gain is (-1,500,000 was
+  // drawn in full). From 999,950 a figure is in millions: in thousands it
+  // rounded up to "1000.0K".
+  const size = Math.abs(value);
+  if (size >= 999950) {
     formatted = (value / 1000000).toFixed(1) + 'M';
-  } else if (value >= 1000) {
+  } else if (size >= 1000) {
     formatted = (value / 1000).toFixed(1) + 'K';
   } else if (value % 1 !== 0) {
     formatted = value.toFixed(1);
@@ -109,16 +113,23 @@ function humanize(str: string): string {
     .trim();
 }
 
+/** Text that is a number and nothing else: "1200", "-4.5", "2e3". */
+const BARE_NUMBER = /^[-+]?(\d+\.?\d*|\.\d+)(e[-+]?\d+)?$/i;
+
 // Parse stats from string
 function parseStats(statsStr: string): StatItem[] {
   return commaList(statsStr).map((stat) => {
     // "Users" with its figure still to be typed has no value, and
     // `parseFloat(undefined)` left one that could not be formatted.
-    const [label, value = ''] = stat.split(':').map((s) => s.trim());
-    const numValue = parseFloat(value);
+    // Split at the first colon only: "Opens: 09:30" was "9".
+    const colon = stat.indexOf(':');
+    const label = (colon < 0 ? stat : stat.slice(0, colon)).trim();
+    const value = colon < 0 ? '' : stat.slice(colon + 1).trim();
+    // A number only when it is one throughout: read with parseFloat,
+    // "99.9%" lost its unit, "2.0.1" was 2 and "2024-01-05" was "2.0K".
     return {
       label: humanize(label),
-      value: isNaN(numValue) ? value : numValue,
+      value: BARE_NUMBER.test(value) ? Number(value) : value,
     };
   });
 }
@@ -185,7 +196,12 @@ export function SmartStats({
         const icon = stat.icon || iconList[index];
         // A stat's `check` has always been the ticked circle, the table's `success`.
         const statIcon = outlineIcon(icon === 'check' ? 'success' : icon, 24);
-        const trend = stat.trend !== undefined && stat.trend !== null && stat.trend !== '' ? parseTrend(stat.trend) : trendList[index];
+        const parsedTrend = stat.trend !== undefined && stat.trend !== null && stat.trend !== '' ? parseTrend(stat.trend) : trendList[index];
+        // The direction a stat names is the one drawn; without one it is read
+        // from the trend's sign. It was never read: "5%" named as down was
+        // drawn with no arrow.
+        const named = stat.trendDirection === 'up' || stat.trendDirection === 'down' || stat.trendDirection === 'neutral' ? stat.trendDirection : null;
+        const trend = parsedTrend && named ? { ...parsedTrend, direction: named } : parsedTrend;
         const gradient = gradientColors[index % gradientColors.length];
 
         const isGradient = variant === 'gradient';

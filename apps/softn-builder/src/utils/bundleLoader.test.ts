@@ -10,6 +10,7 @@
 import { describe, expect, it } from 'vitest';
 import { strToU8, zipSync } from 'fflate';
 import { loadBundle } from './bundleLoader';
+import { assessSourceFidelity } from './sourceParser';
 
 const manifest = (files: unknown) =>
   strToU8(JSON.stringify({ name: 'Unlisted', version: '1.0.0', main: 'ui/main.ui', files }));
@@ -101,5 +102,25 @@ describe('a logic file a UI file links but the manifest does not list', () => {
     const written = parseBundle(await buildProjectBundle());
     expect(written.manifest.files.logic).toEqual(['logic/app.py']);
     expect(new TextDecoder().decode(written.files.get('logic/app.py'))).toBe('count = 0\n');
+  });
+});
+
+// Reading a page reaches the verdict on whether the canvas can write it back
+// (sourceParser.ts), and the loader threw it away: the Files row, the
+// canvas, Code and the first edit each reached it again, the whole check
+// over, a fifth of a second for a large page.
+describe('the verdict on each page', () => {
+  it('is kept with the page as it was read', async () => {
+    const bundle = zipSync({
+      'manifest.json': manifest({ ui: ['ui/main.ui', 'ui/odd.ui'], logic: [], xdb: [], assets: [] }),
+      'ui/main.ui': strToU8('<App>\n  <Text>entry</Text>\n</App>\n'),
+      'ui/odd.ui': strToU8('<App>\n  <Text>{a b}</Text>\n</App>\n'),
+    });
+    const loaded = await loadBundle(bundle);
+    const byPath = new Map([...loaded.uiFiles.values()].map((file) => [file.path, file]));
+    expect(byPath.get('ui/main.ui')?.sourceFidelity).toEqual(assessSourceFidelity(byPath.get('ui/main.ui')!.originalSource!));
+    expect(byPath.get('ui/main.ui')?.sourceFidelity?.lossless).toBe(true);
+    expect(byPath.get('ui/odd.ui')?.sourceFidelity).toEqual(assessSourceFidelity(byPath.get('ui/odd.ui')!.originalSource!));
+    expect(byPath.get('ui/odd.ui')?.sourceFidelity?.lossless).toBe(false);
   });
 });

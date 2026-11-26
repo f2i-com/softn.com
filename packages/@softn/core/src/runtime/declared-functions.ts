@@ -16,7 +16,10 @@
  * is simply not stood in for, as before.
  */
 
-const JS_FUNCTION = /\bfunction\s*\*?\s*([A-Za-z_$][\w$]*)\s*\(/g;
+// `\s*\*?\s*` could split a run of spaces between its two halves every way
+// there is, before a name that never came: `function` and 20,000 spaces took
+// 150 ms. With the second run inside the star's group, each space is read once.
+const JS_FUNCTION = /\bfunction\s*(?:\*\s*)?([A-Za-z_$][\w$]*)\s*\(/g;
 const JS_BOUND = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?(?:function\b|\([^()]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>)/g;
 const PY_DEF = /^[ \t]*(?:async[ \t]+)?def[ \t]+([A-Za-z_]\w*)[ \t]*\(/gm;
 

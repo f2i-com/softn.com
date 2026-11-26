@@ -65,6 +65,12 @@ export function useSettledFiles<T>(value: T, delay: number, maxWait = 2_000): T 
  * every keystroke, or thirty times a second in a game's loop, says its one line once; an app
  * with a new complaint each time stops being copied out here.
  */
+/**
+ * What the web preview is allowed while nothing is: one list, the same on every redraw. A new
+ * one each time was passed on to the container, which empties its caches and tells its worker.
+ */
+const NOTHING_GRANTED: readonly string[] = [];
+
 /** Live preview host for SoftN v2 Web App Containers (`@softn/container`). */
 const StudioWebContainerPreview: React.FC<{
   files: Map<string, VFSFile>;
@@ -147,9 +153,11 @@ const StudioWebContainerPreview: React.FC<{
     handleRef.current?.setGrantedCapabilities(grantedCapabilities as import('@softn/bundle-format/capabilities').Capability[]);
   }, [grantedCapabilities]);
 
+  // A page chosen once the app is up, the main page included: the container opens on the main
+  // page (above), and is not opened again for a page, so going back to it is a navigation too.
   useEffect(() => {
     const h = handleRef.current;
-    if (h && activePage && activePage !== h.manifest.main && /\.html?$/i.test(activePage)) {
+    if (h && activePage && /\.html?$/i.test(activePage)) {
       void h.navigate(activePage).catch(() => undefined);
     }
   }, [activePage]);
@@ -438,18 +446,18 @@ export function StablePreviewSurface({
 }
 
 export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShowChat }) => {
-  const {
-    brief,
-    blueprint,
-    devicePreset,
-    activePageId,
-    activeFilePath,
-    projectId,
-    projectName,
-    setActiveFilePath,
-    setDevicePreset,
-    errors: checkProblems,
-  } = useWorkspaceStore();
+  // Each field on its own: taken as the whole store, every line of the log drew the canvas and
+  // the running app again, and an app that prints, or a run that works, writes to it all the time.
+  const brief = useWorkspaceStore((s) => s.brief);
+  const blueprint = useWorkspaceStore((s) => s.blueprint);
+  const devicePreset = useWorkspaceStore((s) => s.devicePreset);
+  const activePageId = useWorkspaceStore((s) => s.activePageId);
+  const activeFilePath = useWorkspaceStore((s) => s.activeFilePath);
+  const projectId = useWorkspaceStore((s) => s.projectId);
+  const projectName = useWorkspaceStore((s) => s.projectName);
+  const setActiveFilePath = useWorkspaceStore((s) => s.setActiveFilePath);
+  const setDevicePreset = useWorkspaceStore((s) => s.setDevicePreset);
+  const checkProblems = useWorkspaceStore((s) => s.errors);
   const liveFiles = useVFSStore((s) => s.files);
   const agentWriting = useAIStore((s) => s.agentState === 'building');
   const aiConnected = useAIStore((s) => s.providers.some((provider) => provider.id === s.activeProviderId));
@@ -1046,7 +1054,7 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
               activePage={activeVFSFile}
               theme={containerTheme}
               declaredPermissions={declaration.declared}
-              grantedCapabilities={previewAllowed ? requested : []}
+              grantedCapabilities={previewAllowed ? requested : NOTHING_GRANTED}
               onConsole={(_level, text) => {
                 logAppLine(text);
               }}

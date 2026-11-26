@@ -168,6 +168,11 @@ export function Toast({
   // Always the latest onClose, without making the countdown depend on its identity.
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
+  // Read by the countdown as it ticks: the bar's width is state only for a
+  // bar that is shown. Set every 50 ms regardless, a toast with no bar was
+  // drawn twenty times a second for as long as it showed.
+  const showProgressRef = useRef(showProgress);
+  showProgressRef.current = showProgress;
   const styles = choice(variantStyles, variant, 'info');
 
   useEffect(() => {
@@ -197,7 +202,7 @@ export function Toast({
           setVisible(false);
           onCloseRef.current?.();
           if (timerRef.current) clearInterval(timerRef.current);
-        } else {
+        } else if (showProgressRef.current) {
           const newProgress = (newRemaining / duration) * 100;
           setProgress(Math.max(0, newProgress));
         }

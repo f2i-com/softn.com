@@ -263,6 +263,9 @@ function formatTime(value: unknown): string {
     // Check if it's a date string
     if (/^\d{4}-\d{2}-\d{2}/.test(value)) {
       const date = recordDate(value);
+      // Text that only starts like a date ("2024-01-05 evening") is shown as
+      // written: toLocaleDateString does not throw, it says "Invalid Date".
+      if (Number.isNaN(date.getTime())) return value;
       // A day with no time is shown as the day, with no hour made up for it.
       return date.toLocaleDateString(
         undefined,

@@ -123,7 +123,10 @@ export function Accordion({
       newKeys = multiple ? [...currentOpenKeys, key] : [key];
     }
 
-    if (openKeys === undefined) {
+    // Kept here whenever the page holds none, as `currentOpenKeys` reads it:
+    // with `openKeys` null the accordion was drawn from its own keys and the
+    // press was not kept in them, so nothing opened.
+    if (openKeys === undefined || openKeys === null) {
       setInternalOpenKeys(newKeys);
     }
     onChange?.(newKeys);
@@ -222,8 +225,9 @@ export function Accordion({
     <div className={className} style={containerStyle}>
       {items.map((item, index) => {
         const isOpen = currentOpenKeys.includes(item.key);
-        const buttonId = `${idPrefix}-button-${item.key}`;
-        const panelId = `${idPrefix}-panel-${item.key}`;
+        // The key escaped: the ids are named in space-separated lists (see Tabs).
+        const buttonId = `${idPrefix}-button-${encodeURIComponent(item.key)}`;
+        const panelId = `${idPrefix}-panel-${encodeURIComponent(item.key)}`;
 
         return (
           <div key={item.key} style={getItemStyle(index)}>

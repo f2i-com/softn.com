@@ -152,19 +152,26 @@ export function applyModelAppearance(root: THREE.Object3D, spec?: ModelAppearanc
   }
   // Mixers may write morph arrays each frame. Reapply only explicitly named
   // customization targets afterwards; facial animation remains untouched.
+  // This runs on every frame: the names and the frame's time are read once,
+  // and a mesh that nothing names now and nothing named before is passed over
+  // (each mesh with shapes made a set and wrote two maps a frame, to name nothing).
+  const morphs = spec?.morphs, smoothing = spec?.morphSmoothingMs;
+  const names = morphs ? Object.keys(morphs).slice(0, 64) : null;
+  const dt = Number.isFinite(deltaSeconds) ? Math.max(0, Math.min(.25, deltaSeconds)) : 0;
   for (const mesh of state.meshes) {
     const dictionary = mesh.morphTargetDictionary, weights = mesh.morphTargetInfluences;
     if (!dictionary || !weights) continue;
-    const previous = state.controlled.get(mesh) ?? new Set<number>();
+    const previous = state.controlled.get(mesh);
+    if (!names && !previous?.size) continue;
     const next = new Set<number>();
-    const smoothed = state.smoothed.get(mesh) ?? new Map<number, number>();
-    if (spec?.morphs) for (const name of Object.keys(spec.morphs).slice(0, 64)) {
+    let smoothed = state.smoothed.get(mesh);
+    if (!smoothed) state.smoothed.set(mesh, (smoothed = new Map<number, number>()));
+    if (morphs && names) for (const name of names) {
       if (!owns(dictionary, name)) continue;
-      const index = dictionary[name], value = spec.morphs[name];
+      const index = dictionary[name], value = morphs[name];
       const target = typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0;
-      const duration = spec.morphSmoothingMs && owns(spec.morphSmoothingMs, name) ? spec.morphSmoothingMs[name] : 0;
+      const duration = smoothing && owns(smoothing, name) ? smoothing[name] : 0;
       const ms = typeof duration === 'number' && Number.isFinite(duration) ? Math.max(0, Math.min(500, duration)) : 0;
-      const dt = Number.isFinite(deltaSeconds) ? Math.max(0, Math.min(.25, deltaSeconds)) : 0;
       // Keep interpolation state separate from the animation mixer, which may
       // overwrite this array before every call. A sparse control update should
       // not restart from the authored clip on each render frame.
@@ -174,8 +181,7 @@ export function applyModelAppearance(root: THREE.Object3D, spec?: ModelAppearanc
       smoothed.set(index, weights[index]);
       next.add(index);
     }
-    for (const index of previous) if (!next.has(index)) { weights[index] = state.defaults.get(mesh)?.[index] ?? 0; smoothed.delete(index); }
-    state.smoothed.set(mesh, smoothed);
+    if (previous) for (const index of previous) if (!next.has(index)) { weights[index] = state.defaults.get(mesh)?.[index] ?? 0; smoothed.delete(index); }
     state.controlled.set(mesh, next);
   }
 }

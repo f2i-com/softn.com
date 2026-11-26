@@ -11,6 +11,8 @@
 import React, { useState, useCallback, useEffect, useMemo, useId, useRef, useLayoutEffect } from 'react';
 import { useAppXDB } from '@softn/core';
 import { TOUCH_MEDIA } from '../utils/media';
+import { commaList } from '../utils/rows';
+import { dateFieldValue } from './record-dates';
 
 export interface FieldConfig {
   /** Field name (required) */
@@ -162,6 +164,28 @@ function formFields(given: unknown): FieldConfig[] {
     if (field === null || typeof field !== 'object') return [];
     const name = (field as { name?: unknown }).name;
     return typeof name === 'string' && name !== '' ? [field as FieldConfig] : [];
+  });
+}
+
+/**
+ * A select field's options, as it draws them. A choice may be text (its own
+ * value), a number or a yes or no, or `{ value, label }`, and the list may be
+ * written as text (`options: "low, high"`). A hole in the list (`null`) threw
+ * when its `value` was read, a number was drawn as an empty choice, and text
+ * in place of the list threw (`.map` of a string). `value` is the option's
+ * value as the `<select>` holds it; `given` is what choosing it saves.
+ */
+function selectOptions(given: unknown): Array<{ value: string; label: string; given: unknown }> {
+  const list: unknown[] = Array.isArray(given) ? given : commaList(given);
+  return list.flatMap((option) => {
+    if (typeof option === 'string') return [{ value: option, label: humanize(option), given: option }];
+    if (typeof option === 'number' || typeof option === 'boolean') return [{ value: String(option), label: String(option), given: option }];
+    if (option === null || typeof option !== 'object') return [];
+    const { value, label } = option as { value?: unknown; label?: unknown };
+    // An option written with no value is, as in HTML, its label.
+    const own = value === undefined || value === null ? label : value;
+    if (typeof own !== 'string' && typeof own !== 'number' && typeof own !== 'boolean') return [];
+    return [{ value: String(own), label: label === undefined || label === null ? String(own) : String(label), given: own }];
   });
 }
 
@@ -347,16 +371,22 @@ export function SmartForm({
   // each one put back what was written over every keystroke.
   // Kept as given and compared as Object.is compares: see CodeEditor.
   const [seededFrom, setSeededFrom] = useState(() => initialData);
-  if (!Object.is(initialData, seededFrom) && !sameRecord(initialData, seededFrom)) {
-    setSeededFrom(initialData);
-    setFormData(seedForm(initialData));
-  }
-  const formDataRef = useRef(formData);
-  formDataRef.current = formData;
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [touched, setTouched] = useState<Record<string, boolean>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  if (!Object.is(initialData, seededFrom) && !sameRecord(initialData, seededFrom)) {
+    setSeededFrom(initialData);
+    setFormData(seedForm(initialData));
+    // What was said of the last record is not said of this one: its "This
+    // field is required" stayed under a field the new record had filled,
+    // and its failed save above the buttons.
+    setErrors({});
+    setTouched({});
+    setSubmitError(null);
+  }
+  const formDataRef = useRef(formData);
+  formDataRef.current = formData;
   // A record was saved: said for a moment, and until the next thing typed.
   //
   // A form that saves to a collection said nothing and kept what was typed.
@@ -717,15 +747,15 @@ export function SmartForm({
         );
 
       case 'select': {
-        const options = field.options || [];
-        const normalizedOptions = options.map((opt) =>
-          typeof opt === 'string' ? { value: opt, label: humanize(opt) } : opt
-        );
+        const normalizedOptions = selectOptions(field.options);
         return (
           <select
             {...accessibility}
             value={String(value ?? '')}
-            onChange={(e) => handleChange(field.name, e.target.value)}
+            // The chosen option's own value, so a number stays a number.
+            onChange={(e) =>
+              handleChange(field.name, normalizedOptions.find((opt) => opt.value === e.target.value)?.given ?? e.target.value)
+            }
             onBlur={() => handleBlur(field)}
             disabled={isDisabled}
             className="softn-smart-form-field"
@@ -774,8 +804,9 @@ export function SmartForm({
             // A number as itself: React rewrites a number field only when its
             // text and the value differ as numbers, so "9." and "9.0" stay as
             // typed. Given as text, "9.0" was not "9" and was rewritten, and
-            // typing 9.05 left 95.
-            value={typeof value === 'number' ? value : String(value ?? '')}
+            // typing 9.05 left 95. A date as its day, the only text a date
+            // field takes (dateFieldValue).
+            value={field.type === 'date' ? dateFieldValue(value) : typeof value === 'number' ? value : String(value ?? '')}
             onChange={(e) =>
               handleChange(
                 field.name,

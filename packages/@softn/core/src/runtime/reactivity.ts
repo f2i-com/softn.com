@@ -109,14 +109,20 @@ export function createSignal<T>(initialValue: T): [Getter<T>, Setter<T>] {
   const setter: Setter<T> = (newValue: T) => {
     if (!Object.is(value, newValue)) {
       value = newValue;
-      // Notify subscribers (respecting batch(); mark computed dirty synchronously first)
-      for (const effect of [...subscribers]) {
-        if (effect._onInvalidate) {
-          effect._onInvalidate();
-        } else {
-          scheduleEffect(effect);
+      // Every computed value over this one is marked first, and the effects
+      // run once that is done, each once: as a batch() does. Run as each
+      // subscriber came, an effect over two computed values ran as soon as
+      // the first was marked, read the second as it was before the write,
+      // and ran again when the second was marked.
+      batch(() => {
+        for (const effect of [...subscribers]) {
+          if (effect._onInvalidate) {
+            effect._onInvalidate();
+          } else {
+            scheduleEffect(effect);
+          }
         }
-      }
+      });
     }
   };
 
@@ -363,10 +369,11 @@ export function useReactiveState(
       forceUpdate({});
     });
 
-    return () => {
-      reactive.dispose();
-      reactiveRef.current = null; // Allow re-initialization on Strict Mode remount
-    };
+    // Only the effect goes: the state is the component's for as long as it
+    // is mounted. StrictMode runs this cleanup and the effect again without
+    // a render between, and with the store thrown away here the effect found
+    // none and set nothing up, so what setState wrote was never drawn.
+    return () => reactive.dispose();
   }, []);
 
   const setState = useCallback((name: string, value: unknown) => {
@@ -381,7 +388,9 @@ export function useReactiveState(
   const computed: Record<string, unknown> = {};
 
   for (const [name, value] of Object.entries(snapshot)) {
-    if (name in computedDefs) {
+    // Own names only: `in` found `toString` and `constructor` on every
+    // object, and state of those names was handed back as computed.
+    if (Object.hasOwn(computedDefs, name)) {
       computed[name] = value;
     } else {
       state[name] = value;

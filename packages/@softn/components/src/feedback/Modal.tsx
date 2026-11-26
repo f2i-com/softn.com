@@ -172,9 +172,20 @@ export function Modal({
     onClose?.();
   }, [loading, preventCloseOnLoading, onClose]);
 
+  // Where the press that ends in a click began. A press inside the dialog
+  // that is let go of over the overlay (text in a field selected by dragging
+  // past the dialog's edge) clicks the overlay, the nearest element the two
+  // share, and the dialog closed with what had been typed into it.
+  const pressedInside = useRef(false);
+  const handleOverlayMouseDown = useCallback((e: React.MouseEvent) => {
+    pressedInside.current = e.target !== e.currentTarget;
+  }, []);
+
   const handleOverlayClick = useCallback(
     (e: React.MouseEvent) => {
-      if (e.target === e.currentTarget && closeOnOverlayClick) {
+      const startedInside = pressedInside.current;
+      pressedInside.current = false;
+      if (e.target === e.currentTarget && !startedInside && closeOnOverlayClick) {
         handleClose();
       }
     },
@@ -323,7 +334,7 @@ export function Modal({
         /* Under a finger the close button is 44 pixels. */
         ${TOUCH_MEDIA} { .softn-modal-close { min-width: 44px; min-height: 44px; } }
       `}</style>
-      <div className="softn-modal-overlay" style={overlayStyle} onClick={handleOverlayClick}>
+      <div className="softn-modal-overlay" style={overlayStyle} onMouseDown={handleOverlayMouseDown} onClick={handleOverlayClick}>
         <div
           ref={modalRef}
           className={className ? `softn-modal-dialog ${className}` : 'softn-modal-dialog'}

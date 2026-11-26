@@ -26,7 +26,7 @@ import {
   logicImportPaths,
   pageLogicSources,
   pageStylesheetHrefs,
-  parse,
+  parseCached,
   readManifest,
   resolveBundlePath,
 } from '@softn/core';
@@ -90,10 +90,14 @@ export function withoutRuntimeScripts(text: string, pageUrl: string, runtimeScri
   });
 }
 
-/** The page's title: its `<title>`, read as the parser reads it. */
+/**
+ * The page's title: its `<title>`, read as the parser reads it. Through the
+ * parse cache, as `collectionsOf` reads it, so the main page, which both
+ * ask about, is parsed once on its way in.
+ */
 function titleOf(text: string): string | undefined {
   try {
-    const title = parse(text).title?.trim();
+    const title = parseCached(text).title?.trim();
     return title ? title : undefined;
   } catch {
     return undefined;
@@ -103,7 +107,7 @@ function titleOf(text: string): string | undefined {
 /** The collections the page binds, for the seed files a site may keep beside it (`xdb/<name>.xdb`). */
 function collectionsOf(text: string): string[] {
   try {
-    return (parse(text).data?.collections ?? []).map((collection) => collection.name);
+    return (parseCached(text).data?.collections ?? []).map((collection) => collection.name);
   } catch {
     return [];
   }

@@ -359,6 +359,23 @@ describe('renaming', () => {
     expect(box()).toBeNull();
     expect(notice()).toMatch(/manifest\.json keeps its name and its place/);
   });
+
+  // F2 asked whether a file could be renamed by renaming it to its own name, made clean: a name
+  // the project already had and no name typed here could be (.htaccess, "photo (1).jpg") came
+  // out as another, and the file was renamed there and then, with no box to type in.
+  it.each(['public/.htaccess', 'assets/photo (1).jpg'])('opens the box on %s and renames nothing until a name is given', (path) => {
+    act(() => vfs().hydrateFiles([...[...vfs().files.values()].map((f) => ({ path: f.path, content: f.content })), { path, content: path.endsWith('.jpg') ? PNG : 'Options -Indexes\n' }]));
+    act(() => useWorkspaceStore.getState().setActiveFilePath(path));
+    mount();
+    act(() => row(path).focus());
+    press(row(path), 'F2');
+    expect(box()?.value).toBe(path.slice(path.lastIndexOf('/') + 1));
+    expect(vfs().files.has(path)).toBe(true);
+    expect(vfs().history).toEqual([]);
+    press(box()!, 'Enter');
+    expect(vfs().files.has(path)).toBe(true);
+    expect(vfs().history).toEqual([]);
+  });
 });
 
 describe('deleting', () => {

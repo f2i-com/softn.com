@@ -13,7 +13,60 @@ import { describeHostAllowlist, isLocalHostname } from '../runtime/egress-policy
 import { getXDB } from '../runtime/xdb';
 import { readSavedSyncRoom } from '../runtime/xdb-sync-key';
 import type { SoftNDocument } from '../parser/ast';
+import type { XDBRecord } from '../types';
 import { debug } from '../runtime/debug';
+
+/**
+ * Where a value's type sorts among the others, as the store's own query
+ * orders them (runtime/xdb-service.ts): numbers, text, records, lists, then
+ * true and false.
+ */
+function sortRank(value: unknown): number {
+  switch (typeof value) {
+    case 'number':
+      return 0;
+    case 'string':
+      return 1;
+    case 'boolean':
+      return 4;
+    default:
+      return Array.isArray(value) ? 3 : 2;
+  }
+}
+
+/**
+ * The order `<collection sort="field:order">` puts records in: by the
+ * field of their data, or by the record's own field of that name
+ * (`created_at`) where the data has none; values by type (sortRank), then
+ * within it; a record with no value for it last, whichever way the list
+ * runs, and records that compare the same in the order they were read.
+ *
+ * `a < b` between a number and a word is false both ways, so this said each
+ * record was after the other: a field holding numbers for some records and
+ * text for others left the whole list in the order it was stored.
+ */
+function bySortField(field: string, order: 'asc' | 'desc'): (a: XDBRecord, b: XDBRecord) => number {
+  const valueOf = (record: XDBRecord): unknown => {
+    const data = record.data as Record<string, unknown> | null | undefined;
+    const own = data && typeof data === 'object' && Object.hasOwn(data, field) ? data[field] : undefined;
+    return own ?? (Object.hasOwn(record, field) ? (record as unknown as Record<string, unknown>)[field] : undefined);
+  };
+  return (a, b) => {
+    const aVal = valueOf(a);
+    const bVal = valueOf(b);
+    if (aVal === bVal) return 0;
+    const aMissing = aVal === undefined || aVal === null;
+    const bMissing = bVal === undefined || bVal === null;
+    if (aMissing || bMissing) return aMissing === bMissing ? 0 : aMissing ? 1 : -1;
+    let comparison = sortRank(aVal) - sortRank(bVal);
+    if (comparison === 0) {
+      // Records and lists, which `<` reads as the same text, by what they hold.
+      const [x, y] = sortRank(aVal) >= 2 && sortRank(aVal) <= 3 ? [JSON.stringify(aVal), JSON.stringify(bVal)] : [aVal, bVal];
+      comparison = (x as number) < (y as number) ? -1 : (x as number) > (y as number) ? 1 : 0;
+    }
+    return order === 'desc' ? -comparison : comparison;
+  };
+}
 
 /**
  * Hook to handle data blocks and subscribe to XDB collections
@@ -45,7 +98,7 @@ export function useDataBlock(
   const readGenerationRef = useRef(0);
 
   // Extract collection declarations from document
-  const collectionDefs = useMemo(() => {
+  const declaredDefs = useMemo(() => {
     if (!document?.data?.collections) return [];
     return document.data.collections.map((c) => ({
       name: c.name,
@@ -55,6 +108,19 @@ export function useDataBlock(
       limit: c.limit,
     }));
   }, [document]);
+  // The same declarations are the same source of records, whichever document
+  // they came from. An edit to the page that left its `<data>` block as it was
+  // (a host editing the app while it runs hands over a new document with each
+  // change) took the records away and read them again: the page was drawn
+  // with none for a moment, every row it drew was made again, and what the
+  // person had typed in one was lost. Compared without where they were
+  // written, as an edit above them moves every line.
+  const declaredSignature = JSON.stringify(declaredDefs, (key, value: unknown) => (key === 'loc' ? undefined : value));
+  const stableDefsRef = useRef<{ signature: string; defs: typeof declaredDefs } | null>(null);
+  if (stableDefsRef.current?.signature !== declaredSignature) {
+    stableDefsRef.current = { signature: declaredSignature, defs: declaredDefs };
+  }
+  const collectionDefs = stableDefsRef.current.defs;
 
   // Each XDB/document pairing gets an identity that never repeats, even if a
   // caller switches A -> B -> A. Async refreshes capture this token and may
@@ -158,14 +224,7 @@ export function useDataBlock(
         // Apply sorting if specified
         if (def.sort && Array.isArray(records)) {
           const [field, order] = def.sort.split(':');
-          const sortOrder = order === 'desc' ? -1 : 1;
-          records = [...records].sort((a, b) => {
-            const aVal = a.data[field] ?? a[field as keyof typeof a];
-            const bVal = b.data[field] ?? b[field as keyof typeof b];
-            if (aVal < bVal) return -1 * sortOrder;
-            if (aVal > bVal) return 1 * sortOrder;
-            return 0;
-          });
+          records = [...records].sort(bySortField(field, order === 'desc' ? 'desc' : 'asc'));
         }
 
         // Apply limit if specified

@@ -402,6 +402,8 @@ export function SqliteDatabaseAdmin({ host, modeSwitch }: SqliteDatabaseAdminPro
     rowid: number | null;
     pkValues: Record<string, unknown>;
     draft: Record<string, { value: string; isNull: boolean }>;
+    /** The draft as the row opened, so Save writes only the fields that changed. */
+    initial: Record<string, { value: string; isNull: boolean }>;
   } | null>(null);
 
   // Insert Row state
@@ -683,7 +685,7 @@ export function SqliteDatabaseAdmin({ host, modeSwitch }: SqliteDatabaseAdminPro
         isNull: val === null || val === undefined,
       };
     });
-    setEditingRow({ rowid: row.rowid, pkValues, draft });
+    setEditingRow({ rowid: row.rowid, pkValues, draft, initial: draft });
     setActionError(null);
   };
 
@@ -693,11 +695,21 @@ export function SqliteDatabaseAdmin({ host, modeSwitch }: SqliteDatabaseAdminPro
     if (!session || !selectedTable || !structure || !editingRow || readOnly) return;
     setActionError(null);
     try {
+      // Only the fields the person changed: the form holds each value as text,
+      // and writing an untouched one back from it turned a BLOB into the text
+      // `{"hex":"…"}` and rounded an integer past 2^53.
       const updates: Record<string, unknown> = {};
       for (const col of structure.columns) {
         const entry = editingRow.draft[col.name];
         if (!entry) continue;
+        const before = editingRow.initial[col.name];
+        if (before && before.value === entry.value && before.isNull === entry.isNull) continue;
         updates[col.name] = coerceFieldValue(entry.value, col.type, entry.isNull);
+      }
+      if (Object.keys(updates).length === 0) {
+        // Nothing changed: nothing to write, and the project is not touched.
+        setEditingRow(null);
+        return;
       }
       session.updateRow(selectedTable, { rowid: editingRow.rowid, pkValues: editingRow.pkValues }, updates);
       persistSession(`Updated row in ${selectedTable}`);

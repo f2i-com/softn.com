@@ -66,7 +66,16 @@ the runtime loads it only for an app that declares
 `config.python.packages: ["torch"]`), `adapter/`
 (`packages/@softn/core/src/integrations/formlogic.ts` with its provenance) and
 `softn-release.json` (tag, commit, the engine's whole `SOURCE.json` record with
-its `variants`, protocols, adapter digest, a digest of every other file). Each built folder
+its `variants`, protocols, adapter digest, a digest of every other file). In releases
+after v0.0.52 its `formatVersion` is 2: a file several trees carry byte for byte (the
+engine in `zipp/` and `native-runtime/wasm/`, the container engines in
+`hosted-runtime/` and `native-runtime/wasm/container/`, the torch package, the
+chunks Builder and Studio share) is stored once, and `copies` names every other
+place it goes, `{ "<where it goes>": "<the entry holding its bytes>" }`. `files`
+still lists each of those places with its digest, so a reader fills the copies
+in first (`scripts/lib/archive-copies.mjs`, FormLogic's
+`fetch-softn-release.mjs`) and then reads the archive exactly as before. That
+took about a quarter off the archive. Each built folder
 carries the `runtime-manifest.json` FormLogic's `checkRuntimeArtifact`
 verifies. `hosted-runtime/runtime-manifest.json` also names, in `engines`, the
 engine ids its shell will accept in `formlogic:init`, and in `features` the

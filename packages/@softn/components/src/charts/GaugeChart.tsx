@@ -200,6 +200,10 @@ export function GaugeChart({
       setAnimatedOffset(circumference * (1 - fraction));
     }
   }, [animate, circumference, fraction]);
+  // Not animating, the arc is the value's own from the first pass. Read from
+  // the state, which only this effect moves, a new value was drawn first with
+  // the old arc under the new number.
+  const dashOffset = animate ? animatedOffset : circumference * (1 - fraction);
 
   const fillColor = safeSvgPaint(getColorForValue(clampedValue, thresholds), chartColor(0));
 
@@ -251,7 +255,7 @@ export function GaugeChart({
               strokeWidth={strokeWidth}
               strokeLinecap="round"
               strokeDasharray={circumference}
-              strokeDashoffset={animatedOffset}
+              strokeDashoffset={dashOffset}
               style={{
                 transition: animate
                   ? 'stroke-dashoffset 1s cubic-bezier(0.4, 0, 0.2, 1)'
@@ -281,7 +285,7 @@ export function GaugeChart({
               strokeWidth={strokeWidth}
               strokeLinecap="round"
               strokeDasharray={circumference}
-              strokeDashoffset={animatedOffset}
+              strokeDashoffset={dashOffset}
               style={{
                 transition: animate
                   ? 'stroke-dashoffset 1s cubic-bezier(0.4, 0, 0.2, 1)'

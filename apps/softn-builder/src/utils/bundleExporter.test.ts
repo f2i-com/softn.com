@@ -110,6 +110,62 @@ describe('an export and a file named __proto__', () => {
   });
 });
 
+/** Each entry's compression method, from the archive's central directory. */
+function methodsOf(data: Uint8Array): Map<string, number> {
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  let end = data.length - 22;
+  while (view.getUint32(end, true) !== 0x06054b50) end--;
+  const methods = new Map<string, number>();
+  let at = view.getUint32(end + 16, true);
+  for (let n = view.getUint16(end + 10, true); n > 0; n--) {
+    const nameLength = view.getUint16(at + 28, true);
+    const name = new TextDecoder().decode(data.subarray(at + 46, at + 46 + nameLength));
+    methods.set(name, view.getUint16(at + 10, true));
+    at += 46 + nameLength + view.getUint16(at + 30, true) + view.getUint16(at + 32, true);
+  }
+  return methods;
+}
+
+describe('the archive an export writes', () => {
+  // Noise, as a compressed picture is to deflate.
+  const picture = new Uint8Array(200_000);
+  for (let at = 0; at < picture.length; at += 65_536) crypto.getRandomValues(picture.subarray(at, at + 65_536));
+  const logic = 'export function add(a, b) {\n  return a + b;\n}\n'.repeat(400);
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg">${'<rect width="1" height="1" />'.repeat(300)}</svg>`;
+
+  const exported = () =>
+    exportMultiFileBundle({
+      name: 'Pictures',
+      version: '1.0.0',
+      description: '',
+      themeMode: 'light',
+      uiFiles: new Map([['a', { id: 'a', path: 'ui/main.ui', elements: new Map(), rootId: 'root', imports: [], originalSource: '<logic src="../logic/main.logic" />\n<App></App>' }]]),
+      logicFiles: new Map([['l', { id: 'l', path: 'logic/main.logic', content: logic }]]),
+      collections: [],
+      assets: [
+        { name: 'photo.webp', type: 'image/webp', data: picture, bundlePath: 'assets/photo.webp' },
+        { name: 'icon.png', type: 'image/png', data: picture.slice(0, 5_000), bundlePath: 'assets/icon.png' },
+        { name: 'logo.svg', type: 'image/svg+xml', data: strToU8(svg), bundlePath: 'assets/logo.svg' },
+      ],
+    });
+
+  it('stores what is compressed already and deflates the rest, and the reader gets back every byte', async () => {
+    const data = await exported();
+    const methods = methodsOf(data);
+    expect(methods.get('assets/photo.webp')).toBe(0);
+    for (const path of ['logic/main.logic', 'assets/logo.svg', 'assets/icon.png', 'ui/main.ui', 'manifest.json']) expect(methods.get(path), path).toBe(8);
+
+    // The reader every runtime opens a bundle with (core's bundle/zip.ts).
+    const { files } = parseBundle(data);
+    expect(files.get('assets/photo.webp')).toEqual(picture);
+    expect(files.get('assets/icon.png')).toEqual(picture.slice(0, 5_000));
+    expect(new TextDecoder().decode(files.get('logic/main.logic'))).toBe(logic);
+    expect(new TextDecoder().decode(files.get('assets/logo.svg'))).toBe(svg);
+    // The text is deflated, and the pictures are not grown.
+    expect(data.length).toBeLessThan(picture.length + 5_000 + 6_000);
+  });
+});
+
 describe('opening a bundle with a file the reader leaves out', () => {
   it('says which, so a save does not lose it unremarked', () => {
     const { files, dropped } = parseBundle(bundle({ 'manifest.json': MANIFEST, 'ui/main.ui': '<Stack></Stack>', 'assets/version..png': 'x' }));

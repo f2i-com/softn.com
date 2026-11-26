@@ -7,7 +7,7 @@
 
 import * as React from 'react';
 import type { ChartPadding } from './series';
-import { chartPadding, describeChart, formatAxisValue, formatterOr, normaliseSeries, numericPoints, chartSize } from './series';
+import { chartPadding, describeChart, extent, formatAxisValue, formatterOr, normaliseSeries, numericPoints, chartSize } from './series';
 import { chartPalette } from '../theme/chart-palette';
 import { safeSvgPaint } from '../utils/svgPaint';
 
@@ -90,7 +90,19 @@ export function BarChart({
   const chartWidth = width - padding.left - padding.right;
   const chartHeight = height - padding.top - padding.bottom;
 
-  const allLabels = [...new Set(series.flatMap((s) => s.data.map((d) => d.label)))];
+  const allLabels = React.useMemo(() => [...new Set(series.flatMap((s) => s.data.map((d) => d.label)))], [series]);
+  // Each series' point for each label, the first of any that share one. Found
+  // with `.find` for each label of each series, a chart of a thousand bars
+  // searched a million times, and again at every step of the pointer.
+  const byLabel = React.useMemo(
+    () =>
+      series.map((s) => {
+        const points = new Map<string, (typeof s.data)[number]>();
+        for (const d of s.data) if (!points.has(d.label)) points.set(d.label, d);
+        return points;
+      }),
+    [series]
+  );
 
   // Signed value domain.
   //
@@ -99,32 +111,44 @@ export function BarChart({
   // negative height as an error and skips the element, so a loss simply did
   // not appear — while its axis label still did, making it read as zero. That
   // is the worst possible failure for a chart: confidently wrong.
+  //
+  // Stacked, a column's gains run up from zero and its losses down from it
+  // (see the bars below), so it reaches its gains' total above and its
+  // losses' below. Sized for the net total, a gain taller than it ran out of
+  // the top of the plot. Read in a loop: spread into Math.min, a long list
+  // threw.
   const { minValue, maxValue } = (() => {
     const values = stacked
-      ? allLabels.map((label) =>
-          series.reduce((sum, s) => {
-            const dp = s.data.find((d) => d.label === label);
-            return sum + (dp ? dp.value : 0);
-          }, 0)
-        )
+      ? allLabels.flatMap((label) => {
+          let above = 0;
+          let below = 0;
+          for (const points of byLabel) {
+            const value = points.get(label)?.value ?? 0;
+            if (value < 0) below += value;
+            else above += value;
+          }
+          return [above, below];
+        })
       : series.flatMap((s) => s.data.map((d) => d.value));
 
     // Zero is always in the domain, so bars have a baseline to grow from.
-    const lo = Math.min(0, ...values);
-    const hi = Math.max(0, ...values);
+    const range = extent(values);
+    const lo = Math.min(0, range ? range.min : 0);
+    const hi = Math.max(0, range ? range.max : 0);
     const paddedLo = lo < 0 ? lo * 1.1 : 0;
     const paddedHi = hi > 0 ? hi * 1.1 : 0;
 
     // No data, or all zeros.
     if (paddedHi <= paddedLo) return { minValue: 0, maxValue: 1 };
 
-    // Round each end out to a whole tick, as before.
+    // Round each end out to a whole tick, as before. An axis of losses only
+    // ends at zero: `|| 1` here ended it at 1 (no data is the case above).
     const round = (v: number) => {
       if (v === 0) return 0;
       const step = Math.pow(10, Math.floor(Math.log10(Math.abs(v) / 5))) || 1;
       return v > 0 ? Math.ceil(v / step) * step : Math.floor(v / step) * step;
     };
-    return { minValue: round(paddedLo), maxValue: round(paddedHi) || 1 };
+    return { minValue: round(paddedLo), maxValue: round(paddedHi) };
   })();
 
   const valueSpan = maxValue - minValue || 1;
@@ -136,6 +160,13 @@ export function BarChart({
   const groupGap = groupWidth * groupPadding;
   const availableGroupWidth = groupWidth - groupGap;
   const barWidth = Math.max(1, (availableGroupWidth / numBarsPerGroup) * (1 - barPadding));
+  /**
+   * A bar's place across its category. Grouped, side by side; not grouped,
+   * one over another in the middle, as a stacked column is: each series was
+   * still put a bar further along, into the next category and past the plot.
+   */
+  const barOffset = (seriesIdx: number): number =>
+    grouped ? seriesIdx * (barWidth + barWidth * barPadding) : (availableGroupWidth - barWidth) / 2;
 
   const axisExtent = orientation === 'vertical' ? chartHeight : chartWidth;
 
@@ -199,12 +230,20 @@ export function BarChart({
     }
   }
 
-  const bars: React.ReactNode[] = [];
+  // The bars, made again when the data, the scale or the bar under the
+  // pointer changes; not at each step of the pointer across a bar, which
+  // only moves the tooltip.
+  const bars = React.useMemo(() => {
+  const drawn: React.ReactNode[] = [];
   allLabels.forEach((label, groupIdx) => {
-    let stackOffset = 0;
+    // A gain stands on the gains before it and a loss hangs from the losses
+    // before it. Run as one total, a loss was drawn back over the gain
+    // beneath it.
+    let above = 0;
+    let below = 0;
 
     series.forEach((s, seriesIdx) => {
-      const dataPoint = s.data.find((d) => d.label === label);
+      const dataPoint = byLabel[seriesIdx].get(label);
       if (!dataPoint) return;
 
       const value = dataPoint.value;
@@ -223,9 +262,10 @@ export function BarChart({
       let x: number, y: number, w: number, h: number;
 
       if (stacked) {
-        // Stacked segments sit end to end from the running total.
-        const from = scaleValue(stackOffset);
-        const to = scaleValue(stackOffset + value);
+        // Stacked segments sit end to end from the running total of their sign.
+        const base = value < 0 ? below : above;
+        const from = scaleValue(base);
+        const to = scaleValue(base + value);
         const segNear = Math.min(from, to);
         const segLength = Math.abs(to - from);
 
@@ -242,17 +282,18 @@ export function BarChart({
           w = segLength;
           h = barWidth;
         }
-        stackOffset += value;
+        if (value < 0) below += value;
+        else above += value;
       } else if (orientation === 'vertical') {
         const groupStart = padding.left + groupIdx * groupWidth + groupGap / 2;
-        x = groupStart + seriesIdx * (barWidth + barWidth * barPadding);
+        x = groupStart + barOffset(seriesIdx);
         y = padding.top + chartHeight - far;
         w = barWidth;
         h = barLength;
       } else {
         const groupStart = padding.top + groupIdx * groupWidth + groupGap / 2;
         x = padding.left + near;
-        y = groupStart + seriesIdx * (barWidth + barWidth * barPadding);
+        y = groupStart + barOffset(seriesIdx);
         w = barLength;
         h = barWidth;
       }
@@ -261,7 +302,7 @@ export function BarChart({
       const isHovered = interactive && hoveredBar === barKey;
       const isDimmed = interactive && hoveredBar !== null && !isHovered;
 
-      bars.push(
+      drawn.push(
         <g key={barKey} opacity={isDimmed ? 0.3 : 1} style={{ transition: 'opacity 0.15s ease' }}>
           <rect
             x={x}
@@ -330,12 +371,17 @@ export function BarChart({
       );
     });
   });
+  return drawn;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allLabels, series, byLabel, stacked, grouped, orientation, padding.left, padding.top, chartWidth, chartHeight, minValue, maxValue, barPadding, groupPadding, interactive, hoveredBar, showValues, formatValue]);
 
-  const labels: React.ReactNode[] = [];
+  // A label for each category, made again only when they or the layout change.
+  const labels = React.useMemo(() => {
+  const drawn: React.ReactNode[] = [];
   allLabels.forEach((label, idx) => {
     if (orientation === 'vertical') {
       const x = padding.left + idx * groupWidth + groupWidth / 2;
-      labels.push(
+      drawn.push(
         <text
           key={`label-${idx}`}
           x={x}
@@ -349,7 +395,7 @@ export function BarChart({
       );
     } else {
       const y = padding.top + idx * groupWidth + groupWidth / 2;
-      labels.push(
+      drawn.push(
         <text
           key={`label-${idx}`}
           x={padding.left - 8}
@@ -364,6 +410,19 @@ export function BarChart({
       );
     }
   });
+  return drawn;
+  }, [allLabels, orientation, padding.left, padding.top, padding.bottom, height, groupWidth]);
+
+  // Every bar read out, so written again only when they or their format change.
+  const summary = React.useMemo(
+    () =>
+      ariaLabel ??
+      describeChart(
+        stacked ? 'Stacked bar chart' : 'Bar chart',
+        series.map((s) => ({ name: s.name, values: s.data.map((d) => `${d.label} ${formatValue(d.value)}`) }))
+      ),
+    [ariaLabel, stacked, series, formatValue]
+  );
 
   return (
     <div
@@ -375,13 +434,7 @@ export function BarChart({
         width="100%"
         preserveAspectRatio="xMidYMid meet"
         role="img"
-        aria-label={
-          ariaLabel ??
-          describeChart(
-            stacked ? 'Stacked bar chart' : 'Bar chart',
-            series.map((s) => ({ name: s.name, values: s.data.map((d) => `${d.label} ${formatValue(d.value)}`) }))
-          )
-        }
+        aria-label={summary}
       >
         {showGrid && gridLines}
         {bars}

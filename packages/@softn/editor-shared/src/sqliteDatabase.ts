@@ -7,12 +7,21 @@
  * inside SoftN containers and writes standard `.db` bytes back into `.softn` bundles.
  */
 
-import {
-  loadXdbWasm,
-  type DatabaseConfig,
-  type LoadedXdbBindings,
-  type XdbWasmConnection,
-} from '@softn/container';
+import type { DatabaseConfig, LoadedXdbBindings, XdbWasmConnection } from '@softn/container';
+
+type LoadXdbWasm = typeof import('@softn/container').loadXdbWasm;
+
+/**
+ * The engine's loader, imported when a database is first opened: a static
+ * import of @softn/container put all of it (about 460 KB) in the first load of
+ * every editor screen that can reach a database, Studio's agent tools and Data
+ * tab among them, though most visits never open one. Every caller awaits the
+ * engine already, and the container is the same chunk the previews import.
+ */
+async function loadXdbWasm(...args: Parameters<LoadXdbWasm>): ReturnType<LoadXdbWasm> {
+  const { loadXdbWasm: load } = await import('@softn/container');
+  return load(...args);
+}
 
 export interface ProjectSqliteDatabase {
   /** Stable identifier for the DB selector. */
@@ -131,6 +140,14 @@ export function quoteSqlIdent(ident: string): string {
   return `"${clean.replace(/"/g, '""')}"`;
 }
 
+/** The hex digits of a BLOB value in the engine's JSON form, or null for anything else. */
+function blobHexOf(val: unknown): string | null {
+  if (!val || typeof val !== 'object' || Array.isArray(val)) return null;
+  const keys = Object.keys(val);
+  const hex = (val as { hex?: unknown }).hex;
+  return keys.length === 1 && typeof hex === 'string' && /^(?:[0-9a-fA-F]{2})*$/.test(hex) ? hex : null;
+}
+
 export function formatSqlLiteral(val: unknown): string {
   if (val === null || val === undefined) return 'NULL';
   if (typeof val === 'number') return Number.isFinite(val) ? String(val) : 'NULL';
@@ -140,6 +157,10 @@ export function formatSqlLiteral(val: unknown): string {
     for (let i = 0; i < val.length; i++) hex += val[i].toString(16).padStart(2, '0');
     return `X'${hex}'`;
   }
+  // A BLOB as the engine answers one (`execute_json` gives `{ "hex": "00ff" }`).
+  // Written as text, it came back from a dump as the string `{"hex":"00ff"}`.
+  const blobHex = blobHexOf(val);
+  if (blobHex !== null) return `X'${blobHex}'`;
   const str = typeof val === 'string' ? val : JSON.stringify(val);
   return `'${str.replace(/'/g, "''")}'`;
 }
@@ -152,9 +173,12 @@ export function sqliteBytesSignature(bytes: Uint8Array | null | undefined): stri
   if (!bytes || bytes.byteLength === 0) return 'empty';
   let h = 0x811c9dc5;
   const len = bytes.byteLength;
-  // Sample all bytes for small DBs (<=64KB) or strided slices for larger DBs
-  const step = len <= 65536 ? 1 : Math.max(1, Math.floor(len / 16384));
-  for (let i = 0; i < len; i += step) {
+  // Every byte. A database over 64 KB used to be sampled (every 64th byte of
+  // one of 1 MB), so a change that touched only unsampled pages, at the same
+  // length, read as no change: the Data tab kept showing the old rows, and its
+  // next save wrote its own copy back over the change. A pass over every byte
+  // of a few megabytes is milliseconds.
+  for (let i = 0; i < len; i++) {
     h ^= bytes[i];
     h = Math.imul(h, 0x01000193) >>> 0;
   }
@@ -236,12 +260,17 @@ export function isMutatingSql(script: string): boolean {
  */
 export function splitSqlStatements(script: string): string[] {
   const out: string[] = [];
-  let cur = '';
+  // Where the statement being read began: it is `script.slice(start, i)`. It
+  // used to be built a character at a time, which made a large seed (a dump
+  // of every row, as Sync seed SQL writes it) several times slower to split.
+  let start = 0;
   let inSingle = false;
   let inDouble = false;
   let inLineComment = false;
   let inBlockComment = false;
   let beginDepth = 0;
+  // CASE … END expressions, whose END is theirs and not the trigger body's.
+  let caseDepth = 0;
 
   const isIdentChar = (c: string) => /[A-Za-z0-9_$]/.test(c);
 
@@ -250,23 +279,18 @@ export function splitSqlStatements(script: string): string[] {
     const next = script[i + 1] ?? '';
 
     if (inLineComment) {
-      cur += ch;
       if (ch === '\n') inLineComment = false;
       continue;
     }
     if (inBlockComment) {
-      cur += ch;
       if (ch === '*' && next === '/') {
-        cur += '/';
         i++;
         inBlockComment = false;
       }
       continue;
     }
     if (inSingle) {
-      cur += ch;
       if (ch === "'" && next === "'") {
-        cur += "'";
         i++;
       } else if (ch === "'") {
         inSingle = false;
@@ -274,9 +298,7 @@ export function splitSqlStatements(script: string): string[] {
       continue;
     }
     if (inDouble) {
-      cur += ch;
       if (ch === '"' && next === '"') {
-        cur += '"';
         i++;
       } else if (ch === '"') {
         inDouble = false;
@@ -286,55 +308,56 @@ export function splitSqlStatements(script: string): string[] {
 
     if (ch === '-' && next === '-') {
       inLineComment = true;
-      cur += '--';
       i++;
       continue;
     }
     if (ch === '/' && next === '*') {
       inBlockComment = true;
-      cur += '/*';
       i++;
       continue;
     }
     if (ch === "'") {
       inSingle = true;
-      cur += ch;
       continue;
     }
     if (ch === '"') {
       inDouble = true;
-      cur += ch;
       continue;
     }
 
     // Track trigger/compound BEGIN ... END blocks so semicolons inside triggers don't split prematurely
-    if ((i === 0 || !isIdentChar(script[i - 1])) && /[BbEe]/.test(ch)) {
+    if ((ch === 'B' || ch === 'b' || ch === 'E' || ch === 'e' || ch === 'C' || ch === 'c') && (i === 0 || !isIdentChar(script[i - 1]))) {
       const slice5 = script.slice(i, i + 5).toUpperCase();
       const after5 = script[i + 5] ?? '';
+      const slice4 = slice5.slice(0, 4);
+      const after4 = script[i + 4] ?? '';
       if (slice5 === 'BEGIN' && !isIdentChar(after5)) {
-        if (/\bCREATE\s+(?:TEMP\s+|TEMPORARY\s+)?TRIGGER\b/i.test(cur)) {
+        if (/\bCREATE\s+(?:TEMP\s+|TEMPORARY\s+)?TRIGGER\b/i.test(script.slice(start, i))) {
           beginDepth++;
         }
+      } else if (slice4 === 'CASE' && !isIdentChar(after4)) {
+        caseDepth++;
       } else {
         const slice3 = script.slice(i, i + 3).toUpperCase();
         const after3 = script[i + 3] ?? '';
-        if (slice3 === 'END' && !isIdentChar(after3) && beginDepth > 0) {
-          beginDepth--;
+        if (slice3 === 'END' && !isIdentChar(after3)) {
+          if (caseDepth > 0) caseDepth--;
+          else if (beginDepth > 0) beginDepth--;
         }
       }
     }
 
     if (ch === ';' && beginDepth === 0) {
-      const trimmed = cur.trim();
+      const trimmed = script.slice(start, i).trim();
       if (trimmed) out.push(trimmed);
-      cur = '';
+      start = i + 1;
+      // A CASE left open (a statement SQLite will refuse) ends with its statement.
+      caseDepth = 0;
       continue;
     }
-
-    cur += ch;
   }
 
-  const tail = cur.trim();
+  const tail = script.slice(start).trim();
   if (tail) out.push(tail);
   return out;
 }

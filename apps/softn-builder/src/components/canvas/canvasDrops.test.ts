@@ -18,12 +18,15 @@
 
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parseSource } from '../../utils/sourceParser';
 import { generateSource } from '../../utils/sourceGenerator';
 import { useCanvasStore } from '../../stores/canvasStore';
 import { useFilesStore } from '../../stores/filesStore';
+import { useHistoryStore } from '../../stores/historyStore';
+import { useProjectStore } from '../../stores/projectStore';
 import { CanvasElement } from './CanvasElement';
+import * as blocks from '../../utils/blocks';
 
 let root: Root | undefined;
 let host: HTMLDivElement;
@@ -120,6 +123,27 @@ describe('moving an element within its own list', () => {
     expect(inside('Stack')).toEqual(['A', 'B', 'C', 'D']);
     canvas().moveElement(byText('B').id, byType('Stack').id, 2);
     expect(inside('Stack')).toEqual(['A', 'B', 'C', 'D']);
+  });
+
+  // Let go below the element before it, or above the one after it, an
+  // element is where it was. That was a step to undo that undid nothing, and
+  // a project marked as unsaved that had not changed.
+  it('let go where it already is, is no edit: nothing to undo and nothing unsaved', () => {
+    mount();
+    useProjectStore.getState().markClean();
+    useHistoryStore.getState().clear();
+    const before = canvas().elements;
+    for (const [over, y] of [['A', 80], ['C', 20]] as const) {
+      const node = placed(byText(over).id, 0);
+      act(() => canvas().setDraggedElementId(byText('B').id));
+      pointerAt(node, y);
+      expect(canvas().dropIndicator).not.toBeNull();
+      release(node);
+    }
+    expect(inside('Stack')).toEqual(['A', 'B', 'C', 'D']);
+    expect(canvas().elements).toBe(before);
+    expect(useHistoryStore.getState().past).toHaveLength(0);
+    expect(useProjectStore.getState().isDirty).toBe(false);
   });
 });
 
@@ -344,5 +368,28 @@ describe('what may not be dropped', () => {
     pointerAt(node, 50);
     release(node);
     expect(inside('ButtonGroup')).toEqual(['One', 'Click me']);
+  });
+});
+
+/**
+ * Every element on the canvas took the drop indicator itself from the store,
+ * so each move of the place shown during a drag drew the whole canvas again:
+ * 17.6 ms a move for 242 elements in jsdom. Each takes only what the place
+ * is to it now, and only those whose answer changed are drawn again.
+ */
+describe('the place shown for a drop, as it moves', () => {
+  it('draws again only the elements it is shown on', () => {
+    const rows = Array.from({ length: 30 }, (_, i) => `<Stack><Text>Row ${i}</Text><Button>Go ${i}</Button></Stack>`).join('');
+    open(`<App><Stack>${rows}</Stack></App>`);
+    mount();
+    const list = [...canvas().elements.values()].find((el) => el.componentType === 'Stack' && el.parentId === canvas().rootId)!;
+    act(() => canvas().setDraggedType('Button'));
+    const drawn = vi.spyOn(blocks, 'acceptsChildren');
+    for (let at = 0; at < 10; at++) act(() => canvas().setDropIndicator({ parentId: list.id, index: at }));
+    // Ten moves over 92 elements: the rows each move leaves and reaches, and
+    // not the whole canvas ten times over (each element drawn asks this once).
+    expect(drawn.mock.calls.length).toBeLessThan(2 * canvas().elements.size);
+    expect(host.querySelectorAll('[data-canvas-element-id]').length).toBe(canvas().elements.size);
+    drawn.mockRestore();
   });
 });

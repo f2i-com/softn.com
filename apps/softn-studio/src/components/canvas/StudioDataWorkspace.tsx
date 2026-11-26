@@ -439,6 +439,12 @@ export const StudioDataWorkspace: React.FC<StudioDataWorkspaceProps> = ({ onOpen
   const [collectionTab, setCollectionTab] = useState<'rows' | 'fields'>('rows');
   const [rowSearch, setRowSearch] = useState('');
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  /**
+   * The file the row being edited is in, as it was when the row was opened. The row is known by
+   * its place in the file, and a file changed meanwhile (another tab's save taken in, an undo)
+   * may hold another record there: the draft was written over that one.
+   */
+  const [editingFrom, setEditingFrom] = useState<{ path: string; version: number } | null>(null);
   const [rowDraft, setRowDraft] = useState<Record<string, string>>({});
   const [addingRow, setAddingRow] = useState(false);
   const [newFieldName, setNewFieldName] = useState('');
@@ -466,6 +472,13 @@ export const StudioDataWorkspace: React.FC<StudioDataWorkspaceProps> = ({ onOpen
     () => xdbCollections.find((c) => c.path === selectedCollectionPath) ?? null,
     [xdbCollections, selectedCollectionPath]
   );
+  // A form opened on one collection is not one for the next.
+  const activePath = activeCollection?.path ?? null;
+  useEffect(() => {
+    setEditingIndex(null);
+    setEditingFrom(null);
+    setAddingRow(false);
+  }, [activePath]);
 
   const sqliteHost = useMemo<SqliteDatabaseAdminHost>(
     () => ({
@@ -542,7 +555,11 @@ export const StudioDataWorkspace: React.FC<StudioDataWorkspaceProps> = ({ onOpen
 
   const openNewRowForm = () => {
     if (!activeCollection) return;
-    const nextId = `${activeCollection.collection}-${activeCollection.records.length + 1}`;
+    // One more than the count was, after a deletion, often a record's own id.
+    const ids = new Set(activeCollection.records.map((record) => String(record.id ?? '')));
+    let next = activeCollection.records.length + 1;
+    while (ids.has(`${activeCollection.collection}-${next}`)) next++;
+    const nextId = `${activeCollection.collection}-${next}`;
     const draft: Record<string, string> = { id: nextId };
     for (const f of activeCollection.schemaFields) {
       draft[f.name] = f.type === 'boolean' ? 'false' : f.type === 'number' || f.type === 'integer' ? '0' : '';
@@ -564,6 +581,7 @@ export const StudioDataWorkspace: React.FC<StudioDataWorkspaceProps> = ({ onOpen
     setRowDraft(draft);
     setAddingRow(false);
     setEditingIndex(index);
+    setEditingFrom({ path: activeCollection.path, version: files.get(activeCollection.path)?.version ?? -1 });
   };
 
   const handleCommitRow = (e: React.FormEvent) => {
@@ -581,6 +599,10 @@ export const StudioDataWorkspace: React.FC<StudioDataWorkspaceProps> = ({ onOpen
       saveCollection(activeCollection, nextRecords, activeCollection.schemaFields, `Added row to ${activeCollection.collection}`);
       setAddingRow(false);
     } else if (editingIndex !== null && nextRecords[editingIndex]) {
+      if (editingFrom?.path !== activeCollection.path || files.get(activeCollection.path)?.version !== editingFrom.version) {
+        setFeedback({ kind: 'err', text: `${activeCollection.path} changed while the row was open (an undo, the AI or another tab), so nothing was saved over it. Open the row again to edit it as it is now.` });
+        return;
+      }
       nextRecords[editingIndex] = writeRecordFields(nextRecords[editingIndex], id, values, preferWrapped);
       saveCollection(activeCollection, nextRecords, activeCollection.schemaFields, `Updated row in ${activeCollection.collection}`);
       setEditingIndex(null);

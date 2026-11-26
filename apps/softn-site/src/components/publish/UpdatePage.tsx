@@ -45,6 +45,13 @@ export function UpdatePage({ slug, categories, categoriesError, onRetryCategorie
   const [confirmRemove, setConfirmRemove] = useState(false);
   /** The saved key was refused: offer to forget it, rather than doing so unasked. */
   const [refusedSavedKey, setRefusedSavedKey] = useState(false);
+  /**
+   * Where this app's key is kept: under its own slug. The address may spell
+   * the app's name loosely (what was typed into "Already published an app?"),
+   * and the directory answers that with the app; a key kept under the typed
+   * spelling was a second entry, found by nothing and refused by a restore.
+   */
+  const keySlug = app?.slug ?? slug;
 
   useEffect(() => {
     document.title = `Update ${slug} — SoftN`;
@@ -52,6 +59,7 @@ export function UpdatePage({ slug, categories, categoriesError, onRetryCategorie
     getApp(slug, ac.signal)
       .then((a) => {
         setApp(a);
+        setKey((k) => (k === '' ? (savedKey(a.slug) ?? '') : k));
         setName(a.name);
         setDescription(a.description);
         setAuthor(a.author);
@@ -84,7 +92,7 @@ export function UpdatePage({ slug, categories, categoriesError, onRetryCategorie
     try {
       const outcome = await fn(key.trim());
       if (remember && outcome?.keep !== false) {
-        const kept = rememberKey(slug, key.trim());
+        const kept = rememberKey(keySlug, key.trim());
         if (kept !== 'stored') setDone((d) => `${d ?? ''} The key could not be kept in this browser; keep your own copy.`.trim());
       }
       setRefusedSavedKey(false);
@@ -95,7 +103,7 @@ export function UpdatePage({ slug, categories, categoriesError, onRetryCategorie
         // saved one is the only copy this browser has. Say so; the forgetting
         // is the visitor's to do.
         setError('That edit key does not open this app.');
-        setRefusedSavedKey(key.trim() === (savedKey(slug) ?? ''));
+        setRefusedSavedKey(key.trim() === (savedKey(keySlug) ?? ''));
       } else setError(errorText(err));
     } finally {
       setBusy(null);
@@ -235,7 +243,7 @@ export function UpdatePage({ slug, categories, categoriesError, onRetryCategorie
                 type="button"
                 className="link-btn"
                 onClick={() => {
-                  if (forgetKey(slug) === 'stored') {
+                  if (forgetKey(keySlug) === 'stored') {
                     setKey('');
                     setRefusedSavedKey(false);
                     setDone('The saved key is forgotten.');
@@ -248,7 +256,7 @@ export function UpdatePage({ slug, categories, categoriesError, onRetryCategorie
               everywhere: use the new one, or ask the site owner for one.
             </p>
           )}
-          <KeyImport onImported={() => setKey(savedKey(slug) ?? key)} />
+          <KeyImport onImported={() => setKey(savedKey(keySlug) ?? key)} />
         </section>
 
         {done && (
@@ -488,7 +496,7 @@ export function UpdatePage({ slug, categories, categoriesError, onRetryCategorie
               const r = await replaceKey(slug, key.trim());
               // The new key goes where the old one was kept, and is kept if
               // asked to; the old one opens nothing now, wherever it is.
-              const kept = remember || savedKey(slug) !== null ? rememberKey(slug, r.editKey) : null;
+              const kept = remember || savedKey(keySlug) !== null ? rememberKey(keySlug, r.editKey) : null;
               setKey(r.editKey);
               setRefusedSavedKey(false);
               return { key: r.editKey, kept };
@@ -515,7 +523,7 @@ export function UpdatePage({ slug, categories, categoriesError, onRetryCategorie
                 onClick={() =>
                   withKey('remove', async (k) => {
                     await unpublish(slug, k);
-                    forgetKey(slug);
+                    forgetKey(keySlug);
                     navigate('/apps');
                     return { keep: false };
                   })

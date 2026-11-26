@@ -451,7 +451,7 @@ function addSharedEntries(
  * for each byte. fflate collects them again on a plain object of its own, so a
  * file of that name at the root is refused, by name.
  */
-function zip(files: Record<string, Uint8Array>, options: SharedOptions): Uint8Array {
+function zip(files: Record<string, Uint8Array>): Uint8Array {
   if (Object.hasOwn(files, '__proto__')) {
     throw new Error('Export refused: a file at the bundle\'s root may not be named "__proto__". Rename it.');
   }
@@ -465,11 +465,30 @@ function zip(files: Record<string, Uint8Array>, options: SharedOptions): Uint8Ar
         : `Export refused: "${path}" cannot name a file in a bundle. Rename it.`);
     }
   }
-  return zipSync(files, {
-    level: 6,
-    comment: `SoftN Bundle - ${options.name} v${options.version}`,
-  });
+  // Text and code are deflated as small as deflate makes them. What is
+  // compressed already (a WebP, a film, a font, an archive) is stored as it
+  // is: deflating it again was the longest part of an export and made it no
+  // smaller. Everything else is deflated as before. Every reader takes both
+  // kinds of entry (@softn/bundle-format's zip.ts). No comment is written:
+  // fflate put the one this passed into every entry of the directory, and no
+  // reader reads one.
+  const entries: Record<string, [Uint8Array, { level: 0 | 6 | 9 }]> = Object.create(null);
+  for (const [path, bytes] of Object.entries(files)) {
+    entries[path] = [bytes, { level: STORED_AS_IS.test(path) ? 0 : TEXT.test(path) ? 9 : 6 }];
+  }
+  return zipSync(entries);
 }
+
+/**
+ * Kinds of file deflate cannot make smaller: their bytes are compressed
+ * already. Measured over the bundles the repository ships, a WebP gained
+ * nothing; an MP3 still gained 1.5%, a PNG 3% and a JPEG 14%, so those are
+ * deflated.
+ */
+const STORED_AS_IS = /\.(?:webp|avif|heic|heif|jxl|woff2?|zip|gz|tgz|br|xz|bz2|7z|softn|mp4|m4v|mov|webm|ogv|ogg|oga|opus|m4a|aac|flac|ktx2)$/i;
+
+/** Text and code, which deflate's slowest and smallest setting costs no more time on than its usual one. */
+const TEXT = /(?:\.(?:ui|logic|[cm]?js|jsx|tsx?|mts|vue|py|php|phtml|rs|toml|ini|ya?ml|css|json|xdb|md|txt|html?|svg|xml|csv|sql)|(?:^|\/)\.htaccess)$/i;
 
 /**
  * Export a .softn bundle as a ZIP file
@@ -505,7 +524,7 @@ export async function exportBundle(options: BundleOptions): Promise<Uint8Array> 
   );
   files['manifest.json'] = manifestBytes(manifest, options.source);
 
-  return zip(files, options);
+  return zip(files);
 }
 
 /**
@@ -588,7 +607,7 @@ export async function exportMultiFileBundle(options: MultiBundleOptions): Promis
 
   debug('[exportMultiFileBundle] Creating bundle with', Object.keys(files).length, 'files');
 
-  return zip(isWebExport ? await webArchiveEntries(files) : files, options);
+  return zip(isWebExport ? await webArchiveEntries(files) : files);
 }
 
 interface ParsedBundle {

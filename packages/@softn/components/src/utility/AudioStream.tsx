@@ -451,6 +451,8 @@ export function AudioStream({
   const lastUnderrunReportRef = useRef(-Infinity);
   const runningRef = useRef(running);
   const bufferFailedRef = useRef(false);
+  /** Whether a getSamples that threw has been said; see the catch in `pump`. */
+  const producerWarnedRef = useRef(false);
 
   // Callbacks and tunables live in refs so a host that passes a fresh closure
   // every render does not rebuild the audio graph. Rebuilding it would drop the
@@ -932,10 +934,25 @@ export function AudioStream({
           break;
         }
         cursor += scheduled;
+        // Saved as each block is queued, not once at the end: the next wait
+        // can end in a `return` (paused, suspended), and a pump that returned
+        // with its cursor unsaved left the next one scheduling from the old
+        // cursor, on top of the blocks this one had queued.
+        cursorRef.current = cursor;
         now = context.currentTime;
       }
 
       cursorRef.current = cursor;
+    } catch (error) {
+      // A getSamples that throws, or rejects, is a bug in the producer. What
+      // it queued before stays queued (the cursor is saved block by block),
+      // this tick has no more audio, and the next asks again. Said once:
+      // thrown on, it was an unhandled rejection at every tick, since every
+      // caller starts a pump with `void`.
+      if (!producerWarnedRef.current) {
+        producerWarnedRef.current = true;
+        console.warn('AudioStream: getSamples threw; asking again next tick.', error);
+      }
     } finally {
       if (pumpingRef.current === self) {
         lastPumpMsRef.current = performance.now() - startedAt;

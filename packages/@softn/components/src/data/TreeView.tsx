@@ -71,7 +71,10 @@ function TreeNodeItem({
   showLines,
   indent,
 }: TreeNodeItemProps) {
-  const hasChildren = !!node.children && node.children.length > 0;
+  // A branch's list can have holes, as the top level's can (a record a store
+  // deleted is null in it): `child.id` of one threw in render.
+  const children = presentNodes(node.children);
+  const hasChildren = children.length > 0;
   const isExpanded = expandedIds.has(node.id);
   const isSelected = selectedId === node.id;
 
@@ -179,13 +182,13 @@ function TreeNodeItem({
               }}
             />
           )}
-          {node.children!.map((child, index) => (
+          {children.map((child, index) => (
             <TreeNodeItem
               key={child.id}
               node={child}
               level={level + 1}
               posInSet={index + 1}
-              setSize={node.children!.length}
+              setSize={children.length}
               expandedIds={expandedIds}
               selectedId={selectedId}
               selectable={selectable}
@@ -204,15 +207,19 @@ function TreeNodeItem({
   );
 }
 
+/** The nodes of a list that are there: what is not a list is none, and a hole is no node. */
+function presentNodes(list: TreeNode[] | undefined): TreeNode[] {
+  if (!Array.isArray(list)) return [];
+  return list.some((node) => !node) ? list.filter(Boolean) : list;
+}
+
 function getAllNodeIds(nodes: TreeNode[]): string[] {
   const ids: string[] = [];
   const traverse = (nodeList: TreeNode[]) => {
     for (const node of nodeList) {
       if (!node) continue;
       ids.push(node.id);
-      if (node.children) {
-        traverse(node.children);
-      }
+      traverse(presentNodes(node.children));
     }
   };
   traverse(nodes);
@@ -231,7 +238,8 @@ function visibleNodes(nodes: TreeNode[], expandedIds: Set<string>): VisibleNode[
     for (const node of list) {
       if (!node) continue;
       out.push({ node, parentId });
-      if (node.children && node.children.length > 0 && expandedIds.has(node.id)) walk(node.children, node.id);
+      const children = presentNodes(node.children);
+      if (children.length > 0 && expandedIds.has(node.id)) walk(children, node.id);
     }
   };
   walk(nodes, null);
@@ -335,7 +343,7 @@ export function TreeView({
     const index = visible.findIndex((v) => v.node.id === id);
     if (index < 0) return;
     const { node, parentId } = visible[index];
-    const hasChildren = !!node.children && node.children.length > 0;
+    const hasChildren = presentNodes(node.children).length > 0;
     const expanded = expandedIds.has(node.id);
     switch (e.key) {
       case 'ArrowDown':

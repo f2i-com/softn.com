@@ -27,6 +27,20 @@ export function useXDBStorageStatus(xdb?: XDBService): XDBStorageStatus {
 }
 
 /**
+ * What a query option says, as a value equal from one render to the next while
+ * it says the same: an object as its JSON, anything else (or an object JSON
+ * cannot hold) as itself.
+ */
+function optionKey(value: unknown): unknown {
+  if (typeof value !== 'object' || value === null) return value;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return value;
+  }
+}
+
+/**
  * Hook options for useCollection
  */
 export interface UseCollectionOptions {
@@ -62,14 +76,22 @@ export function useCollection(
   const [loading, setLoading] = useState(!options.skip);
   const [error, setError] = useState<Error | null>(null);
 
-  // Query options
+  // Query options, kept while they say the same thing. Keyed on the objects
+  // themselves, options written in place (`{ sort: { field: 'n', order: 'asc' } }`)
+  // were new at every render: each made a new query, which subscribed again,
+  // read the collection again and set a new list, which rendered again,
+  // without end.
+  const filterKey = optionKey(options.filter);
+  const sortKey = optionKey(options.sort);
   const queryOptions = useMemo(
     () => ({
       filter: options.filter,
       sort: options.sort,
       limit: options.limit,
     }),
-    [options.filter, options.sort, options.limit]
+    // The keys stand for the objects (optionKey).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [filterKey, sortKey, options.limit]
   );
 
   // Fetch records

@@ -1064,6 +1064,19 @@ function DefaultRuntimeErrorFallback({
   );
 }
 
+/**
+ * What a record-shaped prop left out stands for: one object for every
+ * render. A default written as `= {}` is a new object each render, and the
+ * memos and effects that depend on these props took it for a change every
+ * time: `_onDataChange()` was called after every render of a renderer given
+ * no `initialData`, so one that changed state ran for ever. Frozen, as it is
+ * shared by every renderer on the page.
+ */
+const NOTHING_GIVEN = Object.freeze({}) as Record<string, never>;
+
+/** The functions a page is drawn with before its script has loaded (declared-functions.ts), as sets. */
+const STAND_INS = new WeakSet<object>();
+
 /** Whether the browser is showing this document: false while its tab is in the background. */
 function useDocumentShown(): boolean {
   const [shown, setShown] = useState(() => typeof document === 'undefined' || document.visibilityState !== 'hidden');
@@ -1085,13 +1098,13 @@ function useDocumentShown(): boolean {
 export function SoftNRenderer({
   source,
   url,
-  componentProps = {},
+  componentProps = NOTHING_GIVEN,
   permissions,
   appId,
-  initialState = {},
-  computedDefs = {},
-  initialData = {},
-  functions = {},
+  initialState = NOTHING_GIVEN,
+  computedDefs = NOTHING_GIVEN,
+  initialData = NOTHING_GIVEN,
+  functions = NOTHING_GIVEN,
   loading: loadingComponent,
   error: errorComponent,
   onLoad,
@@ -2354,6 +2367,7 @@ export function SoftNRenderer({
             scriptArrived = resolve;
           });
           standIns = standInFunctions(declaredFunctionNames(codeBlock.code || ''), arrived);
+          STAND_INS.add(standIns);
 
           // Load the script in the VM (async — compiles, runs, extracts state + functions)
           runtime
@@ -2846,7 +2860,12 @@ export function SoftNRenderer({
 
   // When initialData changes (e.g., XDB server sync delivers new records), call
   // the script's _onDataChange() convention so it can refresh derived state.
+  // Not through the stand-ins a page is drawn with before its script has
+  // loaded: one waits for the script and calls the function then, and the
+  // script's own functions arriving call it again, so it ran twice at every
+  // start.
   useEffect(() => {
+    if (STAND_INS.has(state.scriptFunctions)) return;
     const fn = state.scriptFunctions['_onDataChange'] as
       | ((...args: unknown[]) => Promise<unknown>)
       | undefined;

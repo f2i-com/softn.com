@@ -35,6 +35,8 @@ export interface Step {
   noStream?: boolean;
   /** Send the tool calls without an id, as some OpenAI-compatible servers do. */
   noCallIds?: boolean;
+  /** Give every tool call this one id, as some OpenAI-compatible servers do ("0" for each). */
+  sameCallId?: string;
   /** Never answer: the request hangs until its own clock, or the caller, aborts it. */
   stall?: boolean;
 }
@@ -73,7 +75,7 @@ function respond(shape: Shape, step: Step): Record<string, unknown> {
   if (shape === 'anthropic') {
     const content: unknown[] = [];
     if (step.text) content.push({ type: 'text', text: step.text });
-    for (const call of step.calls ?? []) content.push({ type: 'tool_use', ...(step.noCallIds ? {} : { id: `toolu_${++callCounter}` }), name: call.name, input: call.input });
+    for (const call of step.calls ?? []) content.push({ type: 'tool_use', ...(step.noCallIds ? {} : { id: step.sameCallId ?? `toolu_${++callCounter}` }), name: call.name, input: call.input });
     return {
       id: `msg_${callCounter}`,
       type: 'message',
@@ -84,7 +86,7 @@ function respond(shape: Shape, step: Step): Record<string, unknown> {
     };
   }
   if (shape === 'openai') {
-    const toolCalls = (step.calls ?? []).map((call) => ({ ...(step.noCallIds ? {} : { id: `call_${++callCounter}` }), type: 'function', function: { name: call.name, arguments: JSON.stringify(call.input) } }));
+    const toolCalls = (step.calls ?? []).map((call) => ({ ...(step.noCallIds ? {} : { id: step.sameCallId ?? `call_${++callCounter}` }), type: 'function', function: { name: call.name, arguments: JSON.stringify(call.input) } }));
     return {
       choices: [
         {

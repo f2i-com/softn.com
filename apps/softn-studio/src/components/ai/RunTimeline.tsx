@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import React, { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useAIStore, useVFSStore } from '../../stores';
 import { Icon } from '../common/Icon';
 import type { ChatMessage } from '../../types/studio';
@@ -283,14 +283,21 @@ export function isReadableRun(run: unknown): run is AgentRunRecord {
 /** For a run that cannot be another tab's: nothing to be told of. */
 const watchNothing = () => () => {};
 
-export function RunTimeline({ message }: { message: ChatMessage }) {
+/**
+ * One run in the conversation. Drawn again only when its message changes, or what it reads
+ * of the stores does: the chat redrew every run for each key typed in its box and each piece
+ * of a reply arriving in another run, which in a long conversation was a wait on every key.
+ * Whether this page drives the run is not in a store, so the chat says it (`live`, `active`),
+ * and a change of it draws the run again; drawn without them, the run asks for itself.
+ */
+export const RunTimeline = memo(function RunTimeline({ message, live: driven, active }: { message: ChatMessage; live?: boolean; active?: boolean }) {
   const run = message.run!;
   const agentState = useAIStore((s) => s.agentState);
   const currentStep = useAIStore((s) => s.currentStep);
   const journal = useVFSStore((s) => s.journal);
   const files = useVFSStore((s) => s.files);
   const [notice, setNotice] = useState<string | null>(null);
-  const live = isRunLive(run.id);
+  const live = driven ?? isRunLive(run.id);
   // A run still open that this page does not drive is another tab's, or one a reload cut
   // short: which, is asked for while it is shown (keepAlive.ts).
   const mayBeElsewhere = !live && !run.continuedBy && (run.status === 'running' || run.status === 'waiting' || run.status === 'paused');
@@ -298,12 +305,18 @@ export function RunTimeline({ message }: { message: ChatMessage }) {
   // A run saved mid-way by an earlier session cannot be driven from here.
   // A run saved mid-way by a page that has since reloaded: its conversation is gone, its record is not.
   const interrupted = wasInterrupted(run);
-  const savingResult = run.status === 'finished' && agentState === 'building' && activeAgentRunId() === run.id;
+  const savingResult = run.status === 'finished' && agentState === 'building' && (active ?? activeAgentRunId() === run.id);
   const status: AgentRunRecord['status'] = savingResult ? 'running' : interrupted ? 'stopped' : run.status;
   const running = status === 'running';
   const busy = agentState === 'building';
   const canContinue = ((live && (status === 'stopped' || status === 'failed' || status === 'paused')) || interrupted) && !busy;
-  const revertState = useMemo(() => runRevertState(run, journal, (path) => files.get(path)?.content), [run, journal, files]);
+  // Worked out again when what it reads changes: not for each piece of a reply arriving (run.live,
+  // every 60 ms while one streams), for which it hashed every file the run had written.
+  const revertState = useMemo(
+    () => runRevertState(run, journal, (path) => files.get(path)?.content),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the parts of the run it reads
+    [run.reverted, run.transactions, run.entries, journal, files],
+  );
   const revertable = revertState.available;
   const plan = run.plan;
   const done = plan.filter((p) => p.status === 'done').length;
@@ -429,4 +442,4 @@ export function RunTimeline({ message }: { message: ChatMessage }) {
       {run.reverted && <p className="st-run-reason">This run was reverted.</p>}
     </section>
   );
-}
+});

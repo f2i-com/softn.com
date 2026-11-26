@@ -192,10 +192,15 @@ export function Slider({
     commit(value + delta);
   };
 
-  /** The value goes to where the pointer is, and the page is told. */
+  /**
+   * The value goes to where the pointer is, and the page is told when that
+   * is a new value: every pointermove was sent, so a drag across one step
+   * told the page the same number once for each pixel it crossed.
+   */
   const moveTo = useCallback(
     (clientX: number) => {
       const newValue = getValueFromPosition(clientX);
+      if (newValue === dragValueRef.current) return;
       dragValueRef.current = newValue;
       if (controlledValue === undefined) {
         setInternalValue(newValue);
@@ -230,6 +235,8 @@ export function Slider({
     e.preventDefault();
     trackRef.current?.querySelector<HTMLElement>('[role="slider"]')?.focus();
     setIsDragging(true);
+    // Counted from the value shown, not from the last drag's.
+    dragValueRef.current = value;
     moveTo(e.clientX);
   };
 

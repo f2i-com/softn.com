@@ -67,6 +67,23 @@ export function formatAxisValue(v: number): string {
   return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
 }
 
+/**
+ * The least and the greatest of `values`, or null when there are none.
+ * `Math.min(...values)` passes each value as an argument: past about 125,000
+ * of them it threw "Maximum call stack size exceeded", and a long series
+ * took its chart to the error box.
+ */
+export function extent(values: readonly number[]): { min: number; max: number } | null {
+  if (values.length === 0) return null;
+  let min = values[0];
+  let max = values[0];
+  for (const v of values) {
+    if (v < min) min = v;
+    if (v > max) max = v;
+  }
+  return { min, max };
+}
+
 /** The array, or nothing: never `undefined`, never a value of another shape. */
 export function normaliseArray<T>(value: T[] | undefined | null): T[] {
   return Array.isArray(value) ? value : [];
@@ -142,10 +159,11 @@ export function layoutX(series: Array<{ data: Array<{ x?: unknown }> }>): XLayou
         ticks.push({ value: v, position: v });
       }
     }
+    const range = extent(values);
     return {
       position: (si, i) => (series[si]?.data[i]?.x as number | undefined) ?? i,
-      min: values.length ? Math.min(...values) : 0,
-      max: values.length ? Math.max(...values) : 1,
+      min: range ? range.min : 0,
+      max: range ? range.max : 1,
       ticks,
     };
   }

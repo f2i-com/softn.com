@@ -49,6 +49,16 @@ export function bareAssetPaths(path: string, source: string, files: ReadonlyMap<
   return out;
 }
 
+/**
+ * Bytes as base64, a block at a time: a character at a time, a picture of a few megabytes took a
+ * tenth of a second each time a page that shows it was drawn after an edit.
+ */
+function base64Of(bytes: Uint8Array): string {
+  const parts: string[] = [];
+  for (let at = 0; at < bytes.length; at += 0x8000) parts.push(String.fromCharCode(...bytes.subarray(at, at + 0x8000)));
+  return btoa(parts.join(''));
+}
+
 /** Resolve local bundle assets without depending on an assets/ directory. */
 export function createPreviewAssetResolver(files: ReadonlyMap<string, VFSFile>, ownerPath: string) {
   const urls = new Map<string, string>();
@@ -72,9 +82,7 @@ export function createPreviewAssetResolver(files: ReadonlyMap<string, VFSFile>, 
       if (typeof file.content === 'string') {
         url = `data:${mime};charset=utf-8,${encodeURIComponent(file.content)}`;
       } else {
-        let binary = '';
-        for (const byte of file.content) binary += String.fromCharCode(byte);
-        url = `data:${mime};base64,${btoa(binary)}`;
+        url = `data:${mime};base64,${base64Of(file.content)}`;
       }
       urls.set(path, url);
       return url;

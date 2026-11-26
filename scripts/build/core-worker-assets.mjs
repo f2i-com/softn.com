@@ -1,8 +1,71 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { copyWorkerFiles, WORKER_ENTRIES } from '../../packages/@softn/core/scripts/worker-files.mjs';
+import { buildSync } from 'esbuild';
+import { copyWorkerFiles, moduleReferences, WORKER_ENTRIES } from '../../packages/@softn/core/scripts/worker-files.mjs';
 import { sharedAssetsBase } from './shared-assets.mjs';
+
+/** Below this a module is left as it is: the saving is smaller than a request's headers. */
+const MINIFY_MIN_BYTES = 4096;
+
+/** What a module is to the modules around it: what it exports, what it imports, what it names by URL. */
+function moduleInterface(meta, text) {
+  const output = Object.values(meta.outputs)[0];
+  return JSON.stringify({
+    exports: [...output.exports].sort(),
+    imports: output.imports.map((entry) => `${entry.kind} ${entry.path}`).sort(),
+    references: moduleReferences(text).sort(),
+  });
+}
+
+function esbuildModule(text, sourcefile, minify) {
+  const result = buildSync({
+    stdin: { contents: text, loader: 'js', sourcefile },
+    write: false,
+    bundle: false,
+    format: 'esm',
+    target: 'esnext',
+    charset: 'utf8',
+    legalComments: 'inline',
+    minify,
+    metafile: true,
+    outfile: sourcefile,
+    logLevel: 'silent',
+  });
+  return { code: result.outputFiles[0].text, meta: result.metafile };
+}
+
+/**
+ * Core's build leaves its modules readable (the apps' bundlers minify what they
+ * bundle), but the workers' copies are served as they are: 570 KB of script,
+ * of which minifying takes 120 KB (28 KB gzipped) in every app that carries
+ * them. A module is replaced only by output that exports, imports and names by
+ * URL exactly what it did, and only when that saves a twentieth of it; anything
+ * else, the WASM and the licences included, stays byte for byte. The names do
+ * not change: a chunk keeps the name core's build gave its source. Returns the
+ * files it rewrote.
+ */
+export function minifyWorkerModules(root, files) {
+  const rewritten = [];
+  for (const rel of files) {
+    if (!/\.m?js$/.test(rel)) continue;
+    const file = path.join(root, ...rel.split('/'));
+    const source = fs.readFileSync(file, 'utf8');
+    if (source.length < MINIFY_MIN_BYTES) continue;
+    let minified;
+    try {
+      const plain = esbuildModule(source, rel, false);
+      minified = esbuildModule(source, rel, true);
+      if (moduleInterface(plain.meta, source) !== moduleInterface(minified.meta, minified.code)) continue;
+    } catch {
+      continue;
+    }
+    if (Buffer.byteLength(minified.code) > source.length * 0.95) continue;
+    fs.writeFileSync(file, minified.code);
+    rewritten.push(rel);
+  }
+  return rewritten;
+}
 
 const defaultCoreRoot = fileURLToPath(new URL('../../packages/@softn/core/dist/', import.meta.url));
 const MIME_TYPES = new Map([
@@ -70,7 +133,7 @@ export function coreWorkerAssetPlugin({ coreDistRoot = defaultCoreRoot, env = pr
       // app, of which the workers reach 2.8 MB.
       const target = path.join(destination, 'assets', 'core-runtime');
       fs.rmSync(target, { recursive: true, force: true });
-      copyWorkerFiles(sourceRoot, target);
+      minifyWorkerModules(target, copyWorkerFiles(sourceRoot, target));
       if (shared) {
         // One small static import in the owning service worker's scope. The worker
         // implementation and every relative import still live in the shared folder.

@@ -405,7 +405,16 @@ export const useVFSStore = create<VFSState>((set, get) => ({
     const records: VFSChangeRecord[] = plan.files.map(({ path, content }) =>
       content === undefined ? { op: 'delete', path } : s.files.has(path) ? { op: 'update', path, content } : { op: 'create', path, content },
     );
-    if (records.length > 0) get().applyTransaction(records, 'user');
+    // Refused as a whole (a file to bring back that another spelling of has been made since),
+    // nothing is written and the undo data stays: said, not thrown at a button that cannot catch it.
+    if (records.length > 0) {
+      try {
+        get().applyTransaction(records, 'user');
+      } catch (err) {
+        const said = what ?? 'this change';
+        return { ok: false, reason: `${said[0].toUpperCase()}${said.slice(1)} cannot be put back: ${err instanceof Error ? err.message : String(err)}.` };
+      }
+    }
     const used = new Set(transactionIds);
     set((state) => ({ journal: state.journal.filter((e) => !used.has(e.id)) }));
     return { ok: true, paths: plan.paths };

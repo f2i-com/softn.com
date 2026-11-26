@@ -22,9 +22,12 @@ const AGENT_LABEL: Record<string, string> = {
  * closes it and gives focus back to the count.
  */
 export const StatusBar: React.FC = () => {
-  const { errors, blueprint } = useWorkspaceStore();
-  const { agentState } = useAIStore();
-  const { files } = useVFSStore();
+  // What it shows, each on its own: taken as whole stores, every key typed in the chat, every
+  // piece of a reply arriving and every line of the log drew the bar again.
+  const errors = useWorkspaceStore((s) => s.errors);
+  const blueprint = useWorkspaceStore((s) => s.blueprint);
+  const agentState = useAIStore((s) => s.agentState);
+  const files = useVFSStore((s) => s.files);
   const [issuesOpen, setIssuesOpen] = useState(false);
   const toggleRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);

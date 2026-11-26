@@ -59,7 +59,11 @@
  *                      with the provenance FormLogic's sync-softn.mjs records.
  *   softn-release.json the tag, the commit, the engine (the install's whole
  *                      SOURCE.json, `variants.web` included), the protocols,
- *                      the adapter digest and a digest of every other file.
+ *                      the adapter digest, a digest of every other file, and
+ *                      (formatVersion 2) `copies`: the files the archive
+ *                      stores once although several trees carry them, each
+ *                      named where else it goes (scripts/lib/archive-copies.mjs;
+ *                      a reader fills them in before it reads anything else).
  *   README.md          the plain-language explainer; INTEGRATION.md the guide.
  *
  * Every copy of the engine in the archive, found by its exports rather than
@@ -85,6 +89,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { writeArchive } from '../lib/archive.mjs';
+import { COPIES_FORMAT, planCopies } from '../lib/archive-copies.mjs';
 import { KNOWN_TORCH_COPIES, PACKAGE_TREES, VARIANT_ENGINE_COPIES, archiveEngineProblems, containerEngineBundle, isZippEngineWasm } from '../lib/zipp-engine-copy.mjs';
 import { archiveName, root } from './release-packages.mjs';
 import { TORCH_PACKAGE, WEB_VARIANT, ensureReleaseEngine, packageDir, releaseOptions, variantDir } from '../../packages/@softn/core/scripts/fetch-zipp-release.mjs';
@@ -426,8 +431,13 @@ try {
   // softn-release.json last: a digest of everything else.
   const files = {};
   for (const [name, value] of [...entries].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) files[name] = sha256(Buffer.isBuffer(value) ? value : value.data);
+  // A file several trees carry byte for byte is stored once; `copies` names
+  // where else it goes, and `files` still lists it everywhere it goes
+  // (scripts/lib/archive-copies.mjs). About a quarter of the archive.
+  const copies = planCopies(entries);
+  for (const copy of Object.keys(copies)) entries.delete(copy);
   const release = {
-    formatVersion: 1,
+    formatVersion: COPIES_FORMAT,
     tag,
     commit,
     version: tag.replace(/^v/, ''),
@@ -437,13 +447,14 @@ try {
     protocols,
     adapter,
     files,
+    copies,
   };
   add('softn-release.json', Buffer.from(JSON.stringify(release, null, 2) + '\n'));
 
   const name = archiveName('formlogic-runtime', { tag });
   const out = path.join(outDir, name);
   const result = writeArchive(entries, out, { stamp });
-  console.log(`wrote ${result.path} (${result.entries.length} files, ${(result.size / 1024 / 1024).toFixed(1)} MB) and ${name}.sha256`);
+  console.log(`wrote ${result.path} (${result.entries.length} files, ${Object.keys(copies).length} more stored once as copies, ${(result.size / 1024 / 1024).toFixed(1)} MB) and ${name}.sha256`);
   console.log(`  softn ${commit.slice(0, 7)}${dirty ? ' (dirty)' : ''} ${tag}, zipp ${zippSource.release} (${engineCopies.length} engine copies and ${packageCopies.length} torch package copies checked), protocols ${JSON.stringify(protocols)}`);
 } finally {
   fs.rmSync(stage, { recursive: true, force: true });

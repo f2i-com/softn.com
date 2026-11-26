@@ -12,7 +12,7 @@ import React, { useState, useMemo, useCallback, useEffect, useId, useRef } from 
 import { nameList } from '../utils/lists';
 import { commaList, recordRows } from '../utils/rows';
 import { sortRows } from '../utils/sort';
-import { recordDate } from './record-dates';
+import { dateFieldValue, recordDate } from './record-dates';
 
 /**
  * Get field value from item, handling both flat objects and XDB record format
@@ -90,6 +90,14 @@ interface ColumnConfig {
 }
 
 const DEFAULT_HIDDEN_COLUMNS = ['id', '_id'];
+
+/**
+ * A row under the pointer is lit by the stylesheet. Kept in state, every row
+ * and cell of the grid was drawn again each time the pointer crossed into
+ * another row: about 200 ms a row for a thousand rows with two date columns.
+ */
+const ROW_CLASS = 'softn-smart-grid-row';
+const ROW_HOVER_CSS = `.${ROW_CLASS}:hover { background: var(--color-gray-50, #f3f3f6); }`;
 const DIALOG_FOCUSABLE_SELECTOR = [
   'a[href]',
   'button:not([disabled])',
@@ -124,12 +132,14 @@ const RECORD_FIELDS = new Set(['collection', 'created_at', 'updated_at', 'delete
 /**
  * A column's type, from its first filled cell. Read from the first row alone,
  * a column whose first record had no value was typed `unknown`, and its
- * dates and yes/no values were drawn as raw text.
+ * dates and yes/no values were drawn as raw text. Blank text is no value
+ * either: a form saves an empty date field as "", and a column whose first
+ * record had one drew every date under it as ISO text.
  */
 function columnType<T>(rows: readonly T[], key: string): ColumnConfig['type'] {
   for (const row of rows) {
     const value = getFieldValue(row, key);
-    if (value !== null && value !== undefined) return detectType(value);
+    if (value !== null && value !== undefined && !(typeof value === 'string' && value.trim() === '')) return detectType(value);
   }
   return 'unknown';
 }
@@ -147,6 +157,17 @@ function detectType(value: unknown): ColumnConfig['type'] {
   return 'string';
 }
 
+/**
+ * A date cell's day, as `toLocaleDateString` with these options writes it.
+ * One formatter for every cell: that call builds a new one each time, and a
+ * thousand rows of dates took tens of milliseconds each time the grid drew.
+ */
+let cellDateFormat: Intl.DateTimeFormat | undefined;
+function cellDay(date: Date): string {
+  cellDateFormat ??= new Intl.DateTimeFormat(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+  return cellDateFormat.format(date);
+}
+
 // Format value for display
 function formatValue(value: unknown, type: ColumnConfig['type']): React.ReactNode {
   if (value === null || value === undefined) return '—';
@@ -161,11 +182,10 @@ function formatValue(value: unknown, type: ColumnConfig['type']): React.ReactNod
     case 'date':
       try {
         const date = recordDate(value);
-        return date.toLocaleDateString(undefined, {
-          year: 'numeric',
-          month: 'short',
-          day: 'numeric',
-        });
+        // A cell that is no date ("", "soon") is shown as written:
+        // toLocaleDateString does not throw for one, it returns "Invalid Date".
+        if (Number.isNaN(date.getTime())) return String(value);
+        return cellDay(date);
       } catch {
         return String(value);
       }
@@ -314,7 +334,6 @@ export function SmartGrid<T extends Record<string, unknown>>({
     dialogGeneration.current += 1;
     setConfirmDeleteState(row);
   }, []);
-  const [hoveredRow, setHoveredRow] = useState<number | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const modalTitleId = useId();
   const deleteTitleId = useId();
@@ -379,15 +398,19 @@ export function SmartGrid<T extends Record<string, unknown>>({
     return sortRows(filteredData, (row) => getFieldValue(row, sortColumn), sortDirection);
   }, [filteredData, sortColumn, sortDirection]);
 
+  const totalPages = Math.ceil(sortedData.length / safePageSize);
+  // The page drawn: the one asked for, or the last there is. Drawn from
+  // `currentPage` alone, the render that shrank the data drew an empty page
+  // and the "no items" message until the effect below moved it back.
+  const page = Math.min(currentPage, Math.max(1, totalPages));
+
   // Paginate data
   const paginatedData = useMemo(() => {
     if (!isPageable) return sortedData;
 
-    const start = (currentPage - 1) * safePageSize;
+    const start = (page - 1) * safePageSize;
     return sortedData.slice(start, start + safePageSize);
-  }, [sortedData, isPageable, currentPage, safePageSize]);
-
-  const totalPages = Math.ceil(sortedData.length / safePageSize);
+  }, [sortedData, isPageable, page, safePageSize]);
 
   // Follow the data back when it shrinks under us — deleting the last row of
   // the last page, say. Nothing else moves `currentPage`, so it would sit past
@@ -777,8 +800,9 @@ export function SmartGrid<T extends Record<string, unknown>>({
                   <input
                     id={fieldId}
                     type={col.type === 'number' ? 'number' : col.type === 'date' ? 'date' : 'text'}
-                    // A number as itself, so a decimal can be typed (SmartForm says why).
-                    value={typeof formData[col.key] === 'number' ? (formData[col.key] as number) : formData[col.key] != null ? String(formData[col.key]) : ''}
+                    // A number as itself, so a decimal can be typed (SmartForm says why);
+                    // a date as its day, the only text a date field takes.
+                    value={col.type === 'date' ? dateFieldValue(formData[col.key]) : typeof formData[col.key] === 'number' ? (formData[col.key] as number) : formData[col.key] != null ? String(formData[col.key]) : ''}
                     onChange={(e) =>
                       setFormData((prev) => ({
                         ...prev,
@@ -1067,6 +1091,7 @@ export function SmartGrid<T extends Record<string, unknown>>({
       ) : (
         /* Desktop Table */
         <div style={{ overflowX: 'auto' }}>
+          <style>{ROW_HOVER_CSS}</style>
           <table style={tableStyle}>
             <thead>
               <tr>
@@ -1131,14 +1156,11 @@ export function SmartGrid<T extends Record<string, unknown>>({
                 paginatedData.map((row, index) => (
                   <tr
                     key={getRowKey(row, index)}
+                    className={ROW_CLASS}
                     style={{
-                      background:
-                        hoveredRow === index ? 'var(--color-gray-50, #f3f3f6)' : 'transparent',
                       cursor: onSelect ? 'pointer' : 'default',
                       transition: 'background 0.15s',
                     }}
-                    onMouseEnter={() => setHoveredRow(index)}
-                    onMouseLeave={() => setHoveredRow(null)}
                     onClick={() => onSelect?.(row)}
                     // Focusable and selected with Enter or Space. No aria-label:
                     // one on the row replaced everything its cells say.
@@ -1207,28 +1229,28 @@ export function SmartGrid<T extends Record<string, unknown>>({
       {isPageable && totalPages > 1 && (
         <div style={paginationStyle}>
           <span>
-            Showing {(currentPage - 1) * safePageSize + 1} to{' '}
-            {Math.min(currentPage * safePageSize, sortedData.length)} of {sortedData.length}
+            Showing {(page - 1) * safePageSize + 1} to{' '}
+            {Math.min(page * safePageSize, sortedData.length)} of {sortedData.length}
           </span>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <button
               type="button"
               aria-label="Previous page"
               onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
-              disabled={currentPage === 1}
-              style={{ ...paginationButtonStyle, opacity: currentPage === 1 ? 0.5 : 1 }}
+              disabled={page === 1}
+              style={{ ...paginationButtonStyle, opacity: page === 1 ? 0.5 : 1 }}
             >
               <ChevronLeft />
             </button>
             <span style={{ padding: '0 0.5rem' }}>
-              Page {currentPage} of {totalPages}
+              Page {page} of {totalPages}
             </span>
             <button
               type="button"
               aria-label="Next page"
               onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
-              disabled={currentPage === totalPages}
-              style={{ ...paginationButtonStyle, opacity: currentPage === totalPages ? 0.5 : 1 }}
+              disabled={page === totalPages}
+              style={{ ...paginationButtonStyle, opacity: page === totalPages ? 0.5 : 1 }}
             >
               <ChevronRight />
             </button>

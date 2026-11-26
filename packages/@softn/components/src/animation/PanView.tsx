@@ -130,9 +130,15 @@ export function PanView({
     const prev = prevScaleRef.current;
     prevScaleRef.current = safeScale;
     if (!el || prev === safeScale || !Number.isFinite(prev) || prev <= 0) return;
+    const placed = placedRef.current;
+    const untouched = placed !== null && el.scrollLeft === placed.left && el.scrollTop === placed.top;
     const ratio = safeScale / prev;
     el.scrollLeft = (el.scrollLeft + el.clientWidth / 2) * ratio - el.clientWidth / 2;
     el.scrollTop = (el.scrollTop + el.clientHeight / 2) * ratio - el.clientHeight / 2;
+    // A zoom is the app's, not a pan: a view the user had not moved is still
+    // one they have not, and a resize goes on re-centring it. It no longer
+    // matched where it was put, and was taken for one the user had panned.
+    if (untouched) placedRef.current = { left: el.scrollLeft, top: el.scrollTop };
   }, [safeScale]);
 
   const endDrag = React.useCallback(() => {

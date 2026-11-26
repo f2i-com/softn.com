@@ -231,9 +231,11 @@ export function createBundleRuntime(
 
     // If it's a pure .ui file (not a full .softn), wrap it
     if (!content.includes('<logic>') && !content.includes('<script>')) {
-      // Check for associated .logic file
-      const logicPath = normalizedPath.replace('.ui', '.logic');
-      const logicFile = bundle.files.get(logicPath);
+      // Check for associated .logic file: the page's own name with its .ui
+      // ending swapped. (`replace('.ui', …)` swapped the first `.ui` anywhere,
+      // so `kit.ui/page.ui` looked for `kit.logic/page.ui`.)
+      const logicPath = /\.ui$/.test(normalizedPath) ? normalizedPath.replace(/\.ui$/, '.logic') : null;
+      const logicFile = logicPath === null ? undefined : bundle.files.get(logicPath);
 
       if (logicFile) {
         source = `<logic>\n${logicFile.content}\n</logic>\n${content}`;

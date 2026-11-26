@@ -65,3 +65,38 @@ describe('a text property', () => {
     expect(placeholderIn(second)).toBe(value);
   });
 });
+
+/**
+ * An HTML element's quoted attribute is read as HTML reads one, where a
+ * backslash is a backslash (`pattern="\d{3}"`): the escapes a component's
+ * strings are written with came back as written. `C:\new` on a `<div title>`
+ * was read back with two backslashes, a line break as a backslash and an n,
+ * and each edit after wrote them again, doubled.
+ */
+describe('a text property of an HTML element', () => {
+  function titleIn(source: string, tag: string): unknown {
+    const doc = parse(source);
+    expect(doc.diagnostics ?? []).toEqual([]);
+    const app = doc.template[0];
+    if (app.type !== 'Element') throw new Error('expected <App>');
+    const element = app.children.find((child) => child.type === 'Element' && child.tag === tag);
+    if (!element || element.type !== 'Element') throw new Error(`expected <${tag}>`);
+    return element.props.find((p) => p.name === 'title')?.value.value;
+  }
+
+  it.each(VALUES.filter((value) => value !== '').flatMap((value) => [['div', value], ['span', value], ['my-card', value]]))(
+    '<%s title> %j reaches the page as it was typed, and is the same written again',
+    (tag, value) => {
+      const elements = new Map<string, CanvasElement>([
+        ['root', { id: 'root', componentType: 'App', props: {}, children: ['el'], parentId: null }],
+        ['el', { id: 'el', componentType: tag, props: { title: value }, children: [], parentId: 'root' }],
+      ]);
+      const first = generateSource(elements, 'root', '');
+      expect(titleIn(first, tag)).toBe(value);
+      const read = parseSource(first);
+      expect(read.fidelity).toEqual({ lossless: true, reasons: [] });
+      const second = generateSource(read.elements, read.rootId, '');
+      expect(second).toBe(first);
+    }
+  );
+});

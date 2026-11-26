@@ -86,6 +86,13 @@ function draggedIndexIn(state: DragState, items: unknown[], renderKey?: string):
   }
 }
 
+/** Where the dragged item is drawn: moved with the pointer along the list, and lifted. */
+function draggedTransform(state: DragState, vertical: boolean): string {
+  const x = vertical ? 0 : state.currentX - state.startX;
+  const y = vertical ? state.currentY - state.startY : 0;
+  return `translate(${x}px, ${y}px) scale(1.02)`;
+}
+
 /** Move the item at `from` to `to`, returning a new array. */
 function moveItem(items: unknown[], from: number, to: number): unknown[] {
   const next = [...items];
@@ -143,7 +150,7 @@ export function SortableList({
   primary,
   secondary,
   direction = 'vertical',
-  gap = 8,
+  gap: givenGap = 8,
   onReorder,
   ariaLabel,
   className,
@@ -152,6 +159,11 @@ export function SortableList({
   // A list that has not loaded is null, and one typed as text in an editor
   // is a string: neither has a `.map`. Nothing to sort is an empty list.
   const items = React.useMemo(() => (Array.isArray(givenItems) ? givenItems : []), [givenItems]);
+  // A gap that is not a number is the default, and one below zero is none,
+  // as CSS draws them: NaN made every slot NaN, and a click that moved the
+  // pointer a pixel dropped the item first in the list.
+  const gapNumber = Number(givenGap);
+  const gap = Number.isFinite(gapNumber) ? Math.max(0, gapNumber) : 8;
   const [dragState, setDragState] = React.useState<DragState | null>(null);
   const containerRef = React.useRef<HTMLDivElement>(null);
   const itemRefs = React.useRef<Map<number, HTMLDivElement>>(new Map());
@@ -194,6 +206,9 @@ export function SortableList({
 
   const handlePointerDown = React.useCallback(
     (index: number, e: React.PointerEvent<HTMLDivElement>) => {
+      // The main button only. A right-click picked the item up, the menu it
+      // opened took the release, and the next click dropped it somewhere.
+      if (e.button !== 0) return;
       const el = itemRefs.current.get(index);
       if (!el) return;
 
@@ -232,9 +247,18 @@ export function SortableList({
 
       updated.overIndex = calculateOverIndex(updated);
       dragStateRef.current = updated;
-      setDragState(updated);
+      // The list is drawn again when the slot the item would drop into
+      // changes, and the items between move. In between, the dragged item is
+      // all that moves, and that is its transform: drawn at every move, the
+      // whole list was rendered sixty times a second for the length of a drag.
+      if (updated.overIndex !== state.overIndex) {
+        setDragState(updated);
+      } else {
+        const el = itemRefs.current.get(updated.dragIndex);
+        if (el) el.style.transform = draggedTransform(updated, isVertical);
+      }
     },
-    [calculateOverIndex]
+    [calculateOverIndex, isVertical]
   );
 
   const endDrag = React.useCallback(
@@ -358,14 +382,8 @@ export function SortableList({
   const getDraggedOffset = (): React.CSSProperties => {
     if (!dragState) return {};
 
-    const deltaX = dragState.currentX - dragState.startX;
-    const deltaY = dragState.currentY - dragState.startY;
-
-    const translateX = isVertical ? 0 : deltaX;
-    const translateY = isVertical ? deltaY : 0;
-
     return {
-      transform: `translate(${translateX}px, ${translateY}px) scale(1.02)`,
+      transform: draggedTransform(dragState, isVertical),
       boxShadow: '0 8px 24px rgba(0, 0, 0, 0.15)',
       zIndex: 999,
       position: 'relative' as const,

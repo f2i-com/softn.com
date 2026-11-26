@@ -361,13 +361,23 @@ function methodOf(object: unknown, key: unknown): unknown {
   return safeKey === null ? undefined : (object as Record<string, unknown>)[safeKey];
 }
 
-/** Say that a call found no function to make, unless that is expected. */
+/** Calls already said to have found no function. */
+const reportedMissingFunctions = new WeakSet<object>();
+
+/**
+ * Say that a call found no function to make, unless that is expected: once
+ * for each call written in the page. It was said every time the call was
+ * worked out, which is every drawing, and once for each row of a list:
+ * `{row.price.toFixed(2)}` over two thousand rows, a few of them with no
+ * price, wrote that many warnings on every keystroke.
+ */
 function reportMissingFunction(expr: CallExpression, fn: null | undefined, context: SoftNRenderContext): void {
   // Handle optional chaining - return undefined if function is null/undefined
   if (expr.optional) return;
   // Only warn if the script has finished loading. Before loadScript() completes,
   // functions are not yet available — this is normal and not worth warning about.
-  if (context.scriptLoaded) {
+  if (context.scriptLoaded && !reportedMissingFunctions.has(expr)) {
+    reportedMissingFunctions.add(expr);
     const funcName =
       expr.callee.type === 'Identifier'
         ? expr.callee.name

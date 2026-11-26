@@ -148,12 +148,35 @@ function scanTag(text: string, nameStart: number): ScannedTag | null {
   }
 }
 
+/**
+ * The last few texts read, and what each read as. One keystroke in the picked
+ * element's form read the page five times over: the form reads the element,
+ * the change is checked against the page before it and after it, and the pane
+ * and the form read the element again in the changed page. Each was a parse of
+ * the whole page. The parser is a function of the text alone, and nothing here
+ * writes into what it returns, so a text is read once while it is in use.
+ */
+const READS_KEPT = 4;
+const reads = new Map<string, SoftNDocument | null>();
+
 function read(text: string): SoftNDocument | null {
-  try {
-    return parse(text);
-  } catch {
-    return null;
+  // A text that does not parse is kept as null, so undefined is only a text not read.
+  const kept = reads.get(text);
+  if (kept !== undefined) {
+    // The newest again, so the texts in use stay.
+    reads.delete(text);
+    reads.set(text, kept);
+    return kept;
   }
+  let doc: SoftNDocument | null;
+  try {
+    doc = parse(text);
+  } catch {
+    doc = null;
+  }
+  reads.set(text, doc);
+  if (reads.size > READS_KEPT) reads.delete(reads.keys().next().value as string);
+  return doc;
 }
 
 /** The element whose name begins at `nameStart`, and the nodes it is inside, outermost first. */

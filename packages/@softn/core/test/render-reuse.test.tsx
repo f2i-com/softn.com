@@ -19,7 +19,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { act } from 'react-dom/test-utils';
 import { parse } from '../src/parser';
 import { renderDocument, ComponentRegistry, createRenderCache, type SoftNRenderCache } from '../src/renderer';
-import { beginPass, keep, recall, sameProps, settleProps } from '../src/renderer/reuse';
+import { beginPass, enterRow, keep, leaveRow, recall, sameProps, settleProps, type ReuseScope } from '../src/renderer/reuse';
 import type { SoftNDocument } from '../src/parser';
 import type { SoftNRenderContext } from '../src/types';
 
@@ -200,6 +200,26 @@ describe('with a cache', () => {
     expect(runs).toEqual({ a: 1, b: 2, c: 1, d: 1 });
   });
 
+  it('keeps each row of a loop in a row, and of an each= list, to itself', () => {
+    const groups = [
+      { id: 'g1', items: [{ id: 'x', v: 1 }, { id: 'y', v: 2 }] },
+      { id: 'g2', items: [{ id: 'x', v: 3 }, { id: 'y', v: 4 }] },
+    ];
+    const app = mount(
+      '#each (group in groups) key={group.id}\n#each (item in group.items) key={item.id}\n<Probe name={group.id + item.id} label={item.v} />\n#end\n#end\n<Probe each={tags} as="tag" name={tag.id} label={tag.v} />',
+      { groups, tags: [{ id: 't1', v: 'a' }, { id: 't2', v: 'b' }] }
+    );
+    expect(app.text('[data-probe]')).toEqual(['1', '2', '3', '4', 'a', 'b']);
+    // One item of one group changes: its row of its group is drawn again, and
+    // the row of the same key in the other group is not.
+    app.set({ groups: [groups[0], { id: 'g2', items: [{ id: 'x', v: 30 }, groups[1].items[1]] }] });
+    expect(app.text('[data-probe]')).toEqual(['1', '2', '30', '4', 'a', 'b']);
+    expect(runs).toEqual({ g1x: 1, g1y: 1, g2x: 2, g2y: 1, t1: 1, t2: 1 });
+    app.set({ tags: [{ id: 't2', v: 'b' }, { id: 't1', v: 'A' }] });
+    expect(app.text('[data-probe]')).toEqual(['1', '2', '30', '4', 'b', 'A']);
+    expect(runs).toEqual({ g1x: 1, g1y: 1, g2x: 2, g2y: 1, t1: 2, t2: 1 });
+  });
+
   it('draws the other branch of an #if, and the first again', () => {
     const app = mount('#if (on)\n<Probe name="yes" label="on" />\n#else\n<Probe name="no" label="off" />\n#end', { on: true });
     expect(app.text('[data-probe]')).toEqual(['on']);
@@ -306,16 +326,28 @@ describe('what is never taken to be the same', () => {
     expect(app.text('b')).toEqual(['a?']);
   });
 
-  it('what another node drew under the same key', () => {
-    const pass = beginPass(createRenderCache(), {});
+  it('what another node, another kind or another row drew', () => {
+    const cache = createRenderCache();
+    const document = {};
+    const pass = beginPass(cache, document);
     const one = {};
     const other = {};
-    keep(pass, 'k', { node: one, kind: 'element', result: 'one' });
-    pass.prev = pass.next;
-    pass.next = new Map();
-    expect(recall(pass, 'k', other, 'element')).toBeUndefined();
-    expect(recall(pass, 'k', one, 'text')).toBeUndefined();
-    expect(recall(pass, 'k', one, 'element')?.result).toBe('one');
+    const loop = {};
+    keep(pass, { node: one, kind: 'element', result: 'one' });
+    const outer = enterRow(pass, loop, 'a');
+    keep(pass, { node: one, kind: 'element', result: 'one in a' });
+    leaveRow(pass, outer);
+
+    expect(beginPass(cache, document)).toBe(pass);
+    expect(recall(pass, other, 'element')).toBeUndefined();
+    expect(recall(pass, one, 'text')).toBeUndefined();
+    expect(recall(pass, one, 'element')?.result).toBe('one');
+    let row = enterRow(pass, loop, 'b');
+    expect(recall(pass, one, 'element')).toBeUndefined();
+    leaveRow(pass, row);
+    row = enterRow(pass, loop, 'a');
+    expect(recall(pass, one, 'element')?.result).toBe('one in a');
+    leaveRow(pass, row);
   });
 
   it('a style object that is the same object saying something else', () => {
@@ -451,12 +483,24 @@ describe('what the cache holds', () => {
   it('is what the last drawing drew, and no more', () => {
     const rows = Array.from({ length: 50 }, (_, i) => ({ id: 'r' + i }));
     const app = mount('#each (row in rows) key={row.id}\n<p>{row.id}</p>\n#end', { rows });
-    const held = () => app.cache!.passes.get(app.doc)!.next.size;
+    // The places the last drawing kept something at, and every place held.
+    const places = (scope: ReuseScope, drawing?: number): number =>
+      [...scope.slots.values()].filter((slot) => drawing === undefined || slot.keptIn === drawing).length +
+      [...(scope.rows?.values() ?? [])].reduce((n, rows) => n + [...rows.values()].reduce((m, row) => m + places(row, drawing), 0), 0);
+    const held = () => {
+      const pass = app.cache!.passes.get(app.doc)!;
+      return places(pass.root, pass.drawing);
+    };
     const full = held();
     expect(full).toBeGreaterThan(100);
     app.set({ rows: rows.slice(0, 2) });
     expect(held()).toBeLessThan(full / 10);
     app.set({ rows: [] });
     expect(held()).toBeLessThanOrEqual(1);
+    // And what earlier drawings kept is let go as the next one begins.
+    app.redraw();
+    const pass = app.cache!.passes.get(app.doc)!;
+    expect(places(pass.root)).toBe(held());
+    expect(pass.root.rows?.size ?? 0).toBe(0);
   });
 });

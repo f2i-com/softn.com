@@ -178,7 +178,13 @@ export async function createStudioSqliteDatabase(
 ): Promise<ProjectSqliteDatabase> {
   const busy = busyReason();
   if (busy) throw new Error(busy);
+  const projectId = useWorkspaceStore.getState().projectId;
   const bytes = await createEmptySqliteBytes(options);
+  // The engine loads first, which can take a while: the project open now may not be the one
+  // the database was asked for, and a run may have begun.
+  if (useWorkspaceStore.getState().projectId !== projectId) throw new Error('Another project was opened while the database was being made, so it was not added to it.');
+  const began = busyReason();
+  if (began) throw new Error(began);
   const db = buildNewSqliteDatabase(rawName, bytes, options.fileOverride);
   const vfs = useVFSStore.getState();
   const { records } = buildSqlitePersistRecords(vfs.files, db, bytes);

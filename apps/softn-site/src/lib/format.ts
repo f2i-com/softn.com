@@ -6,7 +6,8 @@ export function formatCount(n: number): string {
   if (!Number.isFinite(n)) return '0';
   if (n < 1000) return String(n);
   if (n < 10_000) return `${(n / 1000).toFixed(1).replace(/\.0$/, '')}k`;
-  if (n < 1_000_000) return `${Math.round(n / 1000)}k`;
+  // Below the count that rounds to a thousand thousands: 999,999 read "1000k".
+  if (n < 999_500) return `${Math.round(n / 1000)}k`;
   return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`;
 }
 
@@ -18,7 +19,8 @@ export function runsLabel(n: number): string {
 export function formatBytes(n: number): string {
   if (!Number.isFinite(n) || n <= 0) return '—';
   if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
+  // Below the size that rounds to 1024 KB, which is written as 1.0 MB.
+  if (n < 1024 * 1024 - 512) return `${Math.round(n / 1024)} KB`;
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 

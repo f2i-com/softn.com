@@ -23,6 +23,7 @@ import {
 } from '@softn/editor-shared/sqliteDatabase';
 import type { VFSFile } from '../../types/studio';
 import type { VFSChangeRecord } from '../../stores/vfsStore';
+import { resolveProjectPath } from '../paths';
 import {
   buildSqlitePersistRecords,
   detectStudioSqliteDatabases,
@@ -36,7 +37,7 @@ export interface SqliteToolDeps {
   runtimeUrl?: string;
   commit: (
     records: VFSChangeRecord[],
-    seenAfter: Array<{ path: string; whole: boolean }>
+    seenAfter: Array<{ path: string; whole: boolean; generated?: boolean }>
   ) => string;
 }
 
@@ -293,6 +294,15 @@ export async function runSqliteQuery(
   }
 }
 
+/** Why the tool may not write `path`, or null: a project path, not Studio's own, and of the kind (`ending`) it has to be. */
+function writableProblem(path: string, ending?: RegExp): { path: string; problem: string } | null {
+  const verdict = resolveProjectPath(path);
+  if (!verdict.ok) return { path, problem: `${path} is not a project path: ${verdict.reason}` };
+  if (verdict.private) return { path, problem: `${verdict.path} is private editor state (builder/), which you do not write` };
+  if (ending && !ending.test(verdict.path)) return { path, problem: `${verdict.path} is not a .sql file, and the seed dump is SQL: give seed_sql_path a .sql file` };
+  return null;
+}
+
 /**
  * `sqlite_execute` — Execute DDL or DML statements against a project SQLite database,
  * persist the updated `.db` binary bytes into VFS as an atomic undoable `'ai'` transaction,
@@ -340,6 +350,13 @@ export async function runSqliteExecute(
     }
   }
 
+  // Where the tool writes is the project's own files, as for every other write: the seed dump
+  // went wherever it was asked to (over index.html, into Studio's notes under builder/).
+  const refusal =
+    (createdNewDb ? writableProblem(normalizeSqlitePath(targetDb.file)) : null) ??
+    (syncSeedSql ? writableProblem(seedSqlPathArg ?? normalizeSqlitePath(targetDb.seedSqlPaths[0] || 'backend/schema.sql'), /\.sql$/i) : null);
+  if (refusal) return { isError: true, subject: refusal.path, content: `${refusal.problem}. Nothing was run or written.` };
+
   const params = Array.isArray(input.params) ? input.params : undefined;
   let session: SqliteSession | null = null;
   try {
@@ -356,13 +373,14 @@ export async function runSqliteExecute(
 
     // Build line diffs for any text files updated alongside the binary `.db`
     const diffs: LineDiff[] = [];
-    const seenAfter: Array<{ path: string; whole: boolean }> = [];
+    const seenAfter: Array<{ path: string; whole: boolean; generated?: boolean }> = [];
     for (const rec of persist.records) {
       if (typeof rec.content === 'string') {
         const prev = deps.files.get(rec.path);
         const prevText = prev && typeof prev.content === 'string' ? prev.content : null;
         diffs.push(lineDiff(rec.path, prevText, rec.content));
-        seenAfter.push({ path: rec.path, whole: true });
+        // Text the tool made (the manifest's database entry, the seed dump): not the model's to have seen whole.
+        seenAfter.push({ path: rec.path, whole: false, generated: true });
       }
     }
 

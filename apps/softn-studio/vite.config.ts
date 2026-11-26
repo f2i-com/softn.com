@@ -9,7 +9,7 @@ import { exampleBundlesPlugin } from '../../scripts/dev/example-bundles.mjs';
 import { scriptPolicyPlugin } from '../../scripts/build/script-policy.mjs';
 import { buildSourcemaps } from '../../scripts/build/sourcemaps.mjs';
 import { sharedRenderBuiltUrl, woff2OnlyFontsPlugin } from '../../scripts/build/shared-assets.mjs';
-import { fullEngineGlob, fullEngineRuntimeCaching, vendorThreeGroup } from '../../scripts/build/on-demand-chunks.mjs';
+import { fullEngineGlob, fullEngineRuntimeCaching, sharedChunkGroups } from '../../scripts/build/on-demand-chunks.mjs';
 
 const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {};
 
@@ -101,8 +101,10 @@ export default defineConfig({
     manifest: true,
     rolldownOptions: {
       output: {
+        // Three.js, React and the sync and scanner libraries under names of their own,
+        // so every app's build writes the same file for each (on-demand-chunks.mjs).
         codeSplitting: {
-          groups: [vendorThreeGroup],
+          groups: sharedChunkGroups,
         },
       },
     },

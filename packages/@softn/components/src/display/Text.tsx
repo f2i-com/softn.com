@@ -141,6 +141,11 @@ export function Text({
           overflow: 'hidden',
           textOverflow: 'ellipsis',
           whiteSpace: 'nowrap',
+          // An inline span neither clips nor draws an ellipsis: in a block
+          // (a Card's body, a Box, a ListItem) the line only stopped
+          // wrapping and ran out past the edge. As a box no wider than
+          // what holds it, it is cut there with the ellipsis.
+          ...(block ? {} : { display: 'inline-block', maxWidth: '100%', verticalAlign: 'bottom' }),
         }
       : {}),
     ...(lineClamp

@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { useVFSStore } from '../../stores';
+import { useAIStore, useVFSStore } from '../../stores';
 import { Icon } from '../common/Icon';
 import type { VFSEvent } from '../../types/studio';
 
@@ -74,17 +74,23 @@ export function describeUnit(unit: HistoryUnit): { title: string; detail: string
 /**
  * The project's changes as undo units, newest first. Undo last takes back
  * the newest unit whole; Revert puts back one unit, when nothing later
- * touched its files; Revert AI changes takes back every AI turn.
+ * touched its files; Revert AI changes takes back the AI turns made since
+ * the person's newest change, and is offered while there are any.
+ *
+ * Nothing here changes a file while a run is working, as nothing else done by
+ * hand does (lib/fileOps.ts): Undo last, pressed to take back the person's own
+ * edit, took the step the AI had made a moment before.
  */
 export const HistoryPanel: React.FC = () => {
   const { history, undoStack, revertAIChanges, undoLast, redoLast, revertTransaction } = useVFSStore();
+  const busy = useAIStore((s) => s.agentState === 'building');
   const [notice, setNotice] = useState<string | null>(null);
 
   const units = useMemo(() => groupHistory(history), [history]);
-  const aiUnits = units.filter((u) => u.source === 'ai');
+  const newestByAI = units.at(-1)?.source === 'ai';
 
   const revert = (unit: HistoryUnit) => {
-    if (!unit.transactionId) return;
+    if (!unit.transactionId || busy) return;
     const result = revertTransaction(unit.transactionId);
     setNotice(result.ok ? `Reverted ${result.paths.length} file${result.paths.length === 1 ? '' : 's'}.` : result.reason);
   };
@@ -93,16 +99,18 @@ export const HistoryPanel: React.FC = () => {
   // The store always could; nothing here asked it to, so one press too many was final, and
   // when the press took the last unit the panel had only "No changes yet" to say.
   const redo = undoStack.length > 0 && (
-    <button type="button" className="st-btn st-btn-sm" onClick={() => { setNotice(null); redoLast(); }} title="Put back the unit that was undone last">
+    <button type="button" className="st-btn st-btn-sm" disabled={busy} onClick={() => { setNotice(null); redoLast(); }} title="Put back the unit that was undone last">
       <Icon name="redo" size={14} />
       Redo
     </button>
   );
+  const waiting = busy && <p className="st-history-notice" role="note">The AI is working, and may be reading or writing these files. Undo and revert wait until the run stops.</p>;
 
   if (history.length === 0) {
     return (
       <div className="st-history">
         {redo && <div className="st-history-actions">{redo}</div>}
+        {waiting}
         <div className="st-panel-empty">
           <Icon name="clock" size={22} />
           <strong>{redo ? 'Everything here was undone' : 'No changes yet'}</strong>
@@ -116,17 +124,18 @@ export const HistoryPanel: React.FC = () => {
   return (
     <div className="st-history">
       <div className="st-history-actions">
-        <button type="button" className="st-btn st-btn-sm" onClick={() => { setNotice(null); undoLast(); }} title="Undo the most recent unit: an edit or a whole AI turn">
+        <button type="button" className="st-btn st-btn-sm" disabled={busy} onClick={() => { setNotice(null); undoLast(); }} title="Undo the most recent unit: an edit or a whole AI turn">
           <Icon name="undo" size={14} />
           Undo last
         </button>
         {redo}
-        {aiUnits.length > 0 && (
-          <button type="button" className="st-btn st-btn-sm st-btn-ghost" onClick={() => { setNotice(null); revertAIChanges(); }} title="Take back every change the AI made">
+        {newestByAI && (
+          <button type="button" className="st-btn st-btn-sm st-btn-ghost" disabled={busy} onClick={() => { setNotice(null); revertAIChanges(); }} title="Take back the AI’s changes made since your newest change">
             Revert AI changes
           </button>
         )}
       </div>
+      {waiting}
 
       <div aria-live="polite" role="status" className={notice ? 'st-history-notice' : undefined}>
         {notice}
@@ -153,7 +162,7 @@ export const HistoryPanel: React.FC = () => {
                   type="button"
                   className="st-btn st-btn-sm st-history-revert"
                   onClick={() => revert(unit)}
-                  disabled={!unit.revertible}
+                  disabled={!unit.revertible || busy}
                   // What and when: every single edit's button was "Revert Edited".
                   aria-label={`Revert ${title}: ${detail}, ${time}`}
                   title={unit.revertible ? 'Put back what this unit changed' : 'A later change touched one of these files. Undo that first, or revert by hand.'}

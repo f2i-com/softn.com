@@ -40,6 +40,7 @@ export {
   holdsNothingOfItsOwn,
   removeAppData,
   restoreAppStorageBackup,
+  storedKeys,
   transferStorageKeys,
 } from './appCacheStorage';
 

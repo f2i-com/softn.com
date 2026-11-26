@@ -162,11 +162,14 @@ export function TextArea({
     (e: React.ChangeEvent<HTMLTextAreaElement>) => {
       setTypedCount(e.target.value.length);
       onChange?.(e);
-      if (autoResize) {
+      // Held by the page, the field is measured when the value it hands back
+      // arrives (the effect above); measured here as well, every key pressed
+      // laid the page out twice.
+      if (autoResize && value === undefined) {
         adjustHeight();
       }
     },
-    [onChange, autoResize, adjustHeight]
+    [onChange, autoResize, adjustHeight, value]
   );
 
   const getBorderColor = () => {

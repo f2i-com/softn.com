@@ -77,6 +77,25 @@ describe('hosted AI: capability', () => {
     dispose();
   });
 
+  it('stops announcing itself once a host has connected', async () => {
+    // The ready message repeats every 500 ms until a host answers; the timer
+    // went on firing (to do nothing) for as long as the editor was open.
+    hostedLocation();
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    const mod = await loadModule();
+    const dispose = mod.connectHostedEditor({ open: async () => {}, export: () => new Uint8Array([1]) });
+    expect(vi.getTimerCount()).toBe(1);
+    vi.advanceTimersByTime(1000);
+    expect(window.parent.postMessage).toHaveBeenCalledTimes(3);
+    const channel = new MessageChannel();
+    window.dispatchEvent(new MessageEvent('message', { data: { kind: 'formlogic-editor-connect', protocol: 1 }, origin: location.origin, source: window.parent as unknown as Window, ports: [channel.port1] }));
+    expect(vi.getTimerCount()).toBe(0);
+    vi.advanceTimersByTime(5000);
+    expect(window.parent.postMessage).toHaveBeenCalledTimes(3);
+    dispose();
+    channel.port2.close();
+  });
+
   it('is 0 for a host that announces nothing, and the version for one that does', async () => {
     hostedLocation();
     let mod = await loadModule();

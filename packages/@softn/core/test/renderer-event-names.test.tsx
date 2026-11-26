@@ -66,6 +66,17 @@ describe('reactEventProp', () => {
     expect(reactEventProp('keyDown')).toBe('onKeyDown');
     expect(reactEventProp('doubleClick')).toBe('onDoubleClick');
   });
+
+  it('reads the table’s own entries, not what every object has', () => {
+    // `@constructor` found Object's constructor in the table, and the
+    // function itself was the name of the prop the handler went under.
+    expect(reactEventProp('constructor')).toBe('onConstructor');
+    expect(reactEventProp('toString')).toBe('onToString');
+    expect(reactEventProp('hasOwnProperty')).toBe('onHasOwnProperty');
+    // Asked again, from what was worked out the first time.
+    expect(reactEventProp('constructor')).toBe('onConstructor');
+    expect(reactEventProp('keydown')).toBe('onKeyDown');
+  });
 });
 
 describe('@event names reach the component as React props', () => {

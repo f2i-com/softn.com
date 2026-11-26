@@ -11,7 +11,9 @@
  * entry is stored as it is, which every reader of a bundle takes.
  */
 
-import { classifyAsset, openBundleArchive } from '@softn/core';
+import { classifyAsset } from '@softn/core';
+import { readZip } from '@softn/runtime-shell/bundleFiles';
+import { unwrapContainerZipEntries } from '@softn/runtime-shell/containerBundle';
 
 const CRC_TABLE = (() => {
   const table = new Uint32Array(256);
@@ -145,15 +147,25 @@ export function damagedFile(path: string): Error {
  *
  * Every file is read here, including ones the app never asked for. One that
  * is damaged stops this with a sentence that names it.
+ *
+ * `textFiles` names the files as the app was opened with them: a bundle
+ * zipped as its folder is opened as the folder's contents (runtime-shell's
+ * unwrapContainerZipEntries), and is written back so. Its files used to be
+ * looked for at the archive's root, where none is: every text file was
+ * written there and its pictures were left in the folder, out of reach of
+ * the pages that show them.
  */
 export async function bundleWith(bundle: Uint8Array, textFiles: ReadonlyMap<string, string>): Promise<Uint8Array> {
-  const archive = openBundleArchive(bundle);
+  const zip = readZip(bundle);
+  const { archive } = zip;
   try {
-    const names = new Set(archive.names());
+    const folder = unwrapContainerZipEntries(zip.textFiles, zip.binaryFiles).unwrappedPrefix ?? '';
+    const names = new Set<string>();
+    for (const name of archive.names()) if (name.startsWith(folder) && name.length > folder.length) names.add(name.slice(folder.length));
     const own = (path: string): Uint8Array | undefined => {
       if (!names.has(path)) return undefined;
       try {
-        return archive.read(path);
+        return archive.read(folder + path);
       } catch {
         throw damagedFile(path);
       }

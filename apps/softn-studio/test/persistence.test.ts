@@ -6,7 +6,9 @@ import {
   loadVFSSnapshot,
   loadWorkspaceSnapshot,
   removeRecentProject,
+  recordFilesAsMap,
   saveRecentProject,
+  type ProjectRecord,
 } from '../src/lib/persistence';
 
 /** A complete legacy workspace snapshot, as the old single-slot saver wrote it. */
@@ -351,5 +353,24 @@ describe('Studio persistence', () => {
     });
 
     expect(decoded).toEqual([{ path: 'ui/main.ui', content: 'hello' }]);
+  });
+});
+
+describe('a saved project as files, for exporting it without opening it', () => {
+  it('keeps each file with its own details, the first of two spellings of one path, and nothing unsafe', () => {
+    const file = (path: string, content: string | Uint8Array, version: number) => ({ path, content, mimeType: 'text/plain', lastModified: version, lastModifiedBy: 'ai' as const, version });
+    const record = {
+      projectId: 'p',
+      schemaVersion: 1,
+      revision: 3,
+      savedAt: 99,
+      workspace: fullWorkspace,
+      session: { messages: [], iterationsUsed: 0, tokensUsed: 0, filesChanged: 0 },
+      files: [file('ui/main.ui', '<App />', 4), file('UI/Main.ui', 'alias', 5), file('ui/main.ui', 'again', 6), file('../outside.txt', 'x', 7), file('assets/a.png', new Uint8Array([1, 2]), 8)],
+    } as ProjectRecord;
+    const map = recordFilesAsMap(record);
+    expect([...map.keys()]).toEqual(['ui/main.ui', 'assets/a.png']);
+    expect(map.get('ui/main.ui')).toEqual({ path: 'ui/main.ui', content: '<App />', mimeType: 'text/plain', lastModified: 4, lastModifiedBy: 'ai', version: 4 });
+    expect(map.get('assets/a.png')).toMatchObject({ content: new Uint8Array([1, 2]), version: 8 });
   });
 });

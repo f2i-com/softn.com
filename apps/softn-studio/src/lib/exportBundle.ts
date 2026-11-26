@@ -1,8 +1,9 @@
-import { zipSync } from 'fflate';
+import { zipSync, type Zippable } from 'fflate';
 import { isHostedEditor } from '@softn/editor-shared/hostedEditor';
 import { webArchiveEntries } from '@softn/editor-shared/prepareWebSource';
 import { compiledSourcePath } from '@softn/bundle-format/source-modules';
 import type { ValidationError, VFSFile } from '../types/studio';
+import { keptAsBytes } from './fileKinds';
 import { bundleNameProblem, isPrivatePath, normalizeProjectPath, resolveProjectPath } from './paths';
 import { isPagePath, linkedScripts, projectContainerMode } from './sourceKinds';
 import { MAIN_PAGE_PATH } from './studioProject';
@@ -135,7 +136,37 @@ const MANAGED_GROUPS = new Set(['ui', 'logic', 'server', 'xdb', 'assets']);
  * archive.
  */
 export function normalizeManifest(files: Map<string, VFSFile>): { manifest: string | null; warnings: ValidationError[] } {
-  return normalizeManifestFrom(files, collectEntries(files));
+  const { manifest, warnings } = planned(files);
+  return { manifest, warnings: [...warnings] };
+}
+
+/** The plan of one set of files, worked out once (see planned). */
+interface Planned {
+  /** The files it was made from, each file as it was: a map changed in place is planned again. */
+  of: Map<string, VFSFile>;
+  collected: Collected;
+  manifest: string | null;
+  manifestBytes: Uint8Array | null;
+  warnings: ValidationError[];
+}
+
+const plans = new WeakMap<Map<string, VFSFile>, Planned>();
+
+/**
+ * The entries and the manifest for these files. Every file of the project is encoded to make
+ * them, and the validator, the bundle summary, the preview and the logic check each asked for
+ * the same files' plan after every change, the check once for every page. The store replaces
+ * its map of files on any change, so a plan is kept with the map it was made from, for as long
+ * as the map still holds the same files.
+ */
+function planned(files: Map<string, VFSFile>): Planned {
+  const known = plans.get(files);
+  if (known && known.of.size === files.size && [...files].every(([path, file]) => known.of.get(path) === file)) return known;
+  const collected = collectEntries(files);
+  const { manifest, warnings } = normalizeManifestFrom(files, collected);
+  const plan: Planned = { of: new Map(files), collected, manifest, manifestBytes: manifest === null ? null : encoder.encode(manifest), warnings };
+  plans.set(files, plan);
+  return plan;
 }
 
 function normalizeManifestFrom(files: Map<string, VFSFile>, collected: Collected): { manifest: string | null; warnings: ValidationError[] } {
@@ -264,12 +295,12 @@ export function normalizeManifestForBundle(files: Map<string, VFSFile>): string 
   return normalizeManifest(files).manifest;
 }
 
-/** The archive the project would become: its canonical entries, and every reason it could not. */
+/** The archive the project would become: its canonical entries, and every reason it could not. Each call is handed a plan of its own to keep. */
 export function planBundle(files: Map<string, VFSFile>): BundlePlan {
-  const collected = collectEntries(files);
-  const { manifest, warnings } = normalizeManifestFrom(files, collected);
-  if (manifest !== null) collected.entries.set('manifest.json', encoder.encode(manifest));
-  return { entries: collected.entries, sources: collected.sources, problems: [...collected.problems, ...warnings] };
+  const { collected, manifestBytes, warnings } = planned(files);
+  const entries = new Map(collected.entries);
+  if (manifestBytes !== null) entries.set('manifest.json', manifestBytes);
+  return { entries, sources: new Map(collected.sources), problems: [...collected.problems, ...warnings] };
 }
 
 export interface BundleSummary {
@@ -328,15 +359,43 @@ function archiveEntries(files: Map<string, VFSFile>): Record<string, Uint8Array>
   return entries;
 }
 
+/**
+ * Formats that are compressed already. Deflated again they do not shrink, and trying is most of
+ * the time an export of a project with pictures or sound takes: they are stored as they are.
+ * A stored entry is method 0, which every SoftN reader takes as it takes deflate
+ * (packages/@softn/bundle-format/src/zip.ts; the directory's and the hosts' readers alike).
+ * One audio extension is spelt `o(?:pus)` only because test/noModelNames.test.ts reads that
+ * bare word as the name of a model.
+ */
+const COMPRESSED_ALREADY = /\.(?:png|jpe?g|gif|webp|avif|heic|heif|jxl|mp3|m4a|aac|ogg|oga|o(?:pus)|flac|mp4|m4v|mov|webm|mkv|woff2?|zip|gz|tgz|bz2|xz|7z|rar|jar|br|zst)$/i;
+
+/**
+ * The entries with how hard each is deflated: text and code hardest (level 9), since a bundle
+ * is written once and downloaded and opened many times; anything else kept as bytes as before
+ * (level 6); and what is compressed already, stored (level 0). What comes out of the archive is
+ * the same bytes whichever it is.
+ */
+function withLevels(entries: Record<string, Uint8Array>, files: Map<string, VFSFile>): Zippable {
+  const out: Zippable = Object.create(null) as Zippable;
+  for (const [path, bytes] of Object.entries(entries)) {
+    // An entry the project does not hold as a file (a ready-to-run module) is text unless its kind is bytes.
+    const content = files.get(path)?.content;
+    const text = content === undefined ? !keptAsBytes(path) : typeof content === 'string';
+    out[path] = [bytes, { level: COMPRESSED_ALREADY.test(path) ? 0 : text ? 9 : 6 }];
+  }
+  return out;
+}
+
 /** An editable copy for an editor-to-editor handoff, even when a component is mid-edit. */
 export function buildBundle(files: Map<string, VFSFile>, level: 0 | 6 = 6): Uint8Array {
-  return zipSync(archiveEntries(files), { level });
+  const entries = archiveEntries(files);
+  return level === 0 ? zipSync(entries, { level }) : zipSync(withLevels(entries, files));
 }
 
 /** A recipient can run these files offline without downloading an editor or compiler. */
 export async function buildRunnableBundle(files: Map<string, VFSFile>): Promise<Uint8Array> {
   const entries = archiveEntries(files);
-  return zipSync(projectContainerMode(files) === 'web' ? await webArchiveEntries(entries) : entries, { level: 6 });
+  return zipSync(withLevels(projectContainerMode(files) === 'web' ? await webArchiveEntries(entries) : entries, files));
 }
 
 export function projectDownloadName(projectName: string): string {

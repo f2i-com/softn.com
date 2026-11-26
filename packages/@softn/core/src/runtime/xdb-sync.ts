@@ -772,6 +772,28 @@ export class XDBSyncAdapter {
   }
 
   /**
+   * Remove what the room's peers removed for good from one collection at once
+   * (XDBService.removeRecords): one removal at a time read and wrote the whole
+   * collection each time, so a peer clearing a large collection held this tab
+   * for seconds. When the store refuses the lot, each is tried on its own, so
+   * the rest are removed.
+   */
+  private removeAll(collName: string, ids: string[]): void {
+    if (ids.length === 0) return;
+    try {
+      this.xdb.removeRecords(collName, ids, { fromPeer: true });
+    } catch {
+      for (const id of ids) {
+        try {
+          this.xdb.removeRecord(collName, id, { fromPeer: true });
+        } catch (err) {
+          this.warnMalformed(collName, id, err);
+        }
+      }
+    }
+  }
+
+  /**
    * Whether a record the room holds was removed here for good while the room
    * was not open (XDBService.pendingRemovals), and not made here again: then
    * the room is told, and the record is not written back into the store. A
@@ -808,6 +830,9 @@ export class XDBSyncAdapter {
   private setupXDBListener(): void {
     this.removeStampSource?.();
     this.removeStampSource = this.xdb.addStampSource?.((collName, id) => this.roomStamp(collName, id)) ?? null;
+    // Once: linked again (attachLocal() twice, or connect() after it), the first subscription
+    // was kept, every write here went into the room twice, and close() never reached it.
+    this.unsubscribeXDB?.();
     this.unsubscribeXDB = this.xdb.subscribeAll((event: XDBEvent) => {
       // Skip events caused by incoming sync (prevent echo loop)
       if (this.isSyncing) return;
@@ -975,6 +1000,8 @@ export class XDBSyncAdapter {
       const removed: string[] = [];
       // What is written here, at once (writeAll).
       const toWrite: XDBRecord[] = [];
+      // What a peer removed for good, removed here at once (removeAll).
+      const gone: string[] = [];
       try {
         let local: Map<string, XDBRecord> | null = null;
         for (const [recordId, change] of event.changes.keys) {
@@ -1014,13 +1041,14 @@ export class XDBSyncAdapter {
               // Remote hard-delete, made whether or not this collection loaded
               // from the native store (XDBService.removeRecord `fromPeer`).
               this.markStored(collName, recordId);
-              this.xdb.removeRecord(collName, recordId, { fromPeer: true });
+              gone.push(recordId);
             }
           } catch (err) {
             this.warnMalformed(collName, recordId, err);
             if (change.action !== 'delete' && !local?.has(recordId)) this.markUnstored(collName, recordId);
           }
         }
+        this.removeAll(collName, gone);
         this.writeAll(collName, toWrite, local ?? new Map());
       } finally {
         this.isSyncing = false;
@@ -1054,7 +1082,8 @@ export class XDBSyncAdapter {
       this.observeCollection(key, false);
     }
 
-    // Discover new collections after each Y.Doc update.
+    // Discover new collections after each Y.Doc update (one handler, however often linked).
+    if (this.updateHandler) this.ydoc.off('update', this.updateHandler);
     this.updateHandler = () => {
       for (const [key] of this.ydoc.share) {
         if (!this.carries(key)) continue;

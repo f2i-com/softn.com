@@ -28,7 +28,7 @@
  * reasons rather than writing the lossy model back.
  */
 
-import { parse, tokenize, TokenType } from '@softn/core/authoring';
+import { parse, TokenType } from '@softn/core/authoring';
 import type {
   Expression,
   PropValue,
@@ -37,16 +37,9 @@ import type {
   Token,
 } from '@softn/core';
 import type { CanvasElement, SourceFidelity } from '../types/builder';
-import { commentsOf, frameSource, writeBack } from './sourceFrame';
+import { commentsOf, frameSource, tokensOf as safeTokenize, writeBack } from './sourceFrame';
 
 export type { SourceFidelity } from '../types/builder';
-function safeTokenize(source: string): Token[] | null {
-  try {
-    return tokenize(source);
-  } catch {
-    return null;
-  }
-}
 
 // ---------------------------------------------------------------------------
 // 2. Expressions the parser stops reading part way through

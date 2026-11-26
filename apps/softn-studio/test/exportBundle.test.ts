@@ -10,10 +10,11 @@
  * its last file and the runtime was told to load a file that was not there.
  */
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { unzipSync } from 'fflate';
 import { composeBundleSource } from '@softn/core';
-import { buildBundle, normalizeManifest, normalizeManifestForBundle, planBundle } from '../src/lib/exportBundle';
+import { buildBundle, buildRunnableBundle, normalizeManifest, normalizeManifestForBundle, planBundle } from '../src/lib/exportBundle';
+import { readProjectArchive } from '../src/lib/projectImport';
 import { validateProject } from '../src/lib/validator';
 import type { VFSFile } from '../src/types/studio';
 import { READING_LIST_PYTHON } from '../src/examples/readingListPython';
@@ -289,5 +290,97 @@ describe('the export and Python logic', () => {
     const composed = composeBundleSource(text, manifest.main, manifest.files.logic);
     expect(composed.languages).toContain('python');
     expect(composed.python?.modules).toEqual(['shelf', 'main']);
+  });
+});
+
+// Every entry was deflated at level 6, pictures and sound included: they do not shrink, and
+// deflating them was most of the time an export took. They are stored as they are now, and
+// text is deflated hardest; what comes out is the same bytes either way.
+describe('how the export compresses', () => {
+  const noise = (length: number, seed: number) => {
+    const out = new Uint8Array(length);
+    let a = seed;
+    for (let i = 0; i < length; i++) out[i] = (a = (Math.imul(a, 1103515245) + 12345) >>> 0) >>> 24;
+    return out;
+  };
+  const project = toVfs([
+    { path: 'manifest.json', content: manifestWith({}) },
+    { path: 'ui/main.ui', content: `<App>\n${'  <Text>Hello</Text>\n'.repeat(200)}</App>\n` },
+    { path: 'assets/photo.jpg', content: noise(40_000, 1) },
+    { path: 'assets/song.mp3', content: noise(30_000, 2) },
+    { path: 'assets/face.woff2', content: noise(20_000, 3) },
+    { path: 'assets/tone.wav', content: new Uint8Array(30_000).fill(7) },
+    { path: 'data/table.dat', content: new Uint8Array(10_000).fill(9) },
+  ]);
+  /** The compression method of each entry, from the archive's own directory. */
+  const methods = (zip: Uint8Array): Record<string, number> => {
+    const out: Record<string, number> = {};
+    unzipSync(zip, { filter: (file) => { out[file.name] = file.compression; return false; } });
+    return out;
+  };
+
+  it.each([
+    ['Export bundle', (files: Map<string, VFSFile>) => buildRunnableBundle(files)],
+    ['a handoff', async (files: Map<string, VFSFile>) => buildBundle(files)],
+  ])('%s stores what is compressed already, deflates the rest, and reads back as the same files', async (_name, build) => {
+    const zip = await build(project);
+    expect(methods(zip)).toEqual({
+      'manifest.json': 8,
+      'ui/main.ui': 8,
+      'assets/photo.jpg': 0,
+      'assets/song.mp3': 0,
+      'assets/face.woff2': 0,
+      'assets/tone.wav': 8,
+      'data/table.dat': 8,
+    });
+    // Read as Studio's import reads a bundle (core's reader, which every SoftN host shares).
+    const back = new Map(readProjectArchive(zip).map((entry) => [entry.path, entry.content]));
+    const planned = planBundle(project).entries;
+    expect([...back.keys()].sort()).toEqual([...planned.keys()].sort());
+    for (const [path, bytes] of planned) {
+      const content = back.get(path)!;
+      expect(typeof content === 'string' ? new TextEncoder().encode(content) : content).toEqual(bytes);
+    }
+  });
+});
+
+// The validator, the bundle summary, the preview and the logic check each asked for the same
+// files' plan after every change, the check once for every page, and every file of the project
+// was encoded each time. It is made once for a set of files now.
+describe('the plan of a set of files', () => {
+  const project = () => toVfs([
+    { path: 'manifest.json', content: manifestWith({}) },
+    { path: 'ui/main.ui', content: '<App><Text>1</Text></App>' },
+    { path: 'assets/a.png', content: new Uint8Array([1, 2, 3]) },
+  ]);
+
+  it('is made once for the same files, and made again when one of them is replaced, in the same map too', () => {
+    const files = project();
+    const encode = vi.spyOn(TextEncoder.prototype, 'encode');
+    try {
+      planBundle(files);
+      const made = encode.mock.calls.length;
+      planBundle(files);
+      normalizeManifest(files);
+      normalizeManifestForBundle(files);
+      expect(encode.mock.calls.length).toBe(made);
+      files.set('ui/main.ui', { ...files.get('ui/main.ui')!, content: '<App><Text>2</Text></App>' });
+      expect(new TextDecoder().decode(planBundle(files).entries.get('ui/main.ui'))).toBe('<App><Text>2</Text></App>');
+      files.delete('assets/a.png');
+      expect(planBundle(files).entries.has('assets/a.png')).toBe(false);
+    } finally {
+      encode.mockRestore();
+    }
+  });
+
+  it('hands each caller a plan of its own to change', () => {
+    const files = project();
+    const first = planBundle(files);
+    first.entries.delete('ui/main.ui');
+    first.problems.push({ file: 'x', level: 'error', type: 'x', message: 'x' });
+    const second = planBundle(files);
+    expect(second.entries.has('ui/main.ui')).toBe(true);
+    expect(second.problems).toEqual([]);
+    expect(JSON.parse(new TextDecoder().decode(second.entries.get('manifest.json'))).files.ui).toEqual(['ui/main.ui']);
   });
 });

@@ -19,11 +19,12 @@ import { createRoot, type Root } from 'react-dom/client';
 import { strToU8, zipSync } from 'fflate';
 import type { AppDetail } from '../src/lib/api';
 
-const { getApp, unpublish } = vi.hoisted(() => ({ getApp: vi.fn(), unpublish: vi.fn() }));
+const { getApp, unpublish, updateListing } = vi.hoisted(() => ({ getApp: vi.fn(), unpublish: vi.fn(), updateListing: vi.fn() }));
 vi.mock('../src/lib/api', async () => ({
   ...(await vi.importActual<typeof import('../src/lib/api')>('../src/lib/api')),
   getApp,
   unpublish,
+  updateListing,
 }));
 
 import { ApiError } from '../src/lib/api';
@@ -178,6 +179,27 @@ describe('the update page', () => {
     await press('Yes, unpublish it');
     expect(unpublish).toHaveBeenCalledWith('notes', 'a'.repeat(40));
     expect(savedKeys()).toEqual({ other: 'b'.repeat(40) });
+  });
+
+  it('keeps and finds the key under the app’s own slug, whatever the link spelled', async () => {
+    // "Already published an app?" sends what the visitor typed, often the
+    // app's name, and the directory answers it with the app. The key kept for
+    // the app's slug was not filled in, and the one used was kept under the
+    // typed spelling: a second entry no backup restore takes (not a slug).
+    localStorage.setItem('softn.site.editKeys', JSON.stringify({ 'my-notes': 'a'.repeat(40) }));
+    getApp.mockImplementation(async () => detail('my-notes'));
+    updateListing.mockReset();
+    updateListing.mockImplementation(async () => detail('my-notes'));
+    await mountUpdate('My Notes');
+    expect(container.querySelector<HTMLInputElement>('input[placeholder^="40 characters"]')!.value).toBe('a'.repeat(40));
+    const save = [...container.querySelectorAll('button')].find((b) => b.textContent === 'Save the listing')!;
+    await act(async () => {
+      save.click();
+    });
+    await settle();
+    // The directory takes the spelling as the address gave it; the key map does not.
+    expect(updateListing).toHaveBeenCalledWith('My Notes', 'a'.repeat(40), expect.objectContaining({ name: 'Notes' }));
+    expect(savedKeys()).toEqual({ 'my-notes': 'a'.repeat(40) });
   });
 
   it('offers to try again when the app could not be loaded, and loads it when asked', async () => {

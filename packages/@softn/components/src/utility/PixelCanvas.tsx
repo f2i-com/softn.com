@@ -24,7 +24,7 @@
  * background-position animation, applied to a whole bitmap instead of a style.
  */
 
-import React, { useCallback, useEffect, useLayoutEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 
 /* -------------------------------------------------------------------------- */
 /* Frame shapes                                                               */
@@ -473,6 +473,13 @@ export function PixelCanvas({
   const paletteSignatureRef = useRef<string | null>(null);
   const paletteRevRef = useRef<number | null>(null);
   const paletteSourceRef = useRef<string>('');
+  /**
+   * Whether the table holds an array palette a frame brought. Such a palette
+   * is parsed when it is not there yet, or on a revision bump; "the table is
+   * empty" stood in for "not there yet", and a `palette` prop (or a greyscale
+   * fallback) in the table kept the frame's palette out for good.
+   */
+  const frameArrayPaletteRef = useRef(false);
 
   const dimensionsRef = useRef({ w: 0, h: 0 });
   const appliedScaleRef = useRef(0);
@@ -701,19 +708,21 @@ export function PixelCanvas({
               paletteCountRef.current = entries;
               paletteRevRef.current = frameRev ?? null;
               paletteSourceRef.current = framePalette;
-              // The frame's palette has replaced the prop's, so the prop must be
-              // reconsidered if it ever changes again.
-              paletteSignatureRef.current = null;
+              frameArrayPaletteRef.current = false;
+              // The prop's signature is left as it is: the prop is reconsidered
+              // when it changes, not at every draw. Clearing it here re-parsed
+              // the prop's palette at every draw of a page that writes it
+              // inline, and the frame's own at the next frame.
             }
           }
-        } else if (revChanged || paletteCountRef.current === 0) {
+        } else if (revChanged || !frameArrayPaletteRef.current) {
           // An array palette in a frame is re-parsed only on an explicit
           // revision bump: comparing arrays every frame would cost more than
           // the frame does.
           paletteCountRef.current = writePaletteEntries(framePalette, paletteLutRef.current);
           paletteRevRef.current = frameRev ?? null;
           paletteSourceRef.current = '';
-          paletteSignatureRef.current = null;
+          frameArrayPaletteRef.current = true;
         }
       }
 
@@ -910,10 +919,10 @@ export function PixelCanvas({
 
   // Palette prop. Compared by content, not identity, because a template that
   // writes its palette inline hands over a new array on every render.
+  const paletteKey = useMemo(() => paletteSignature(palette), [palette]);
   useEffect(() => {
-    const signature = paletteSignature(palette);
-    if (signature === paletteSignatureRef.current) return;
-    paletteSignatureRef.current = signature;
+    if (paletteKey === paletteSignatureRef.current) return;
+    paletteSignatureRef.current = paletteKey;
 
     if (!palette || palette.length === 0) {
       paletteCountRef.current = 0;
@@ -926,21 +935,26 @@ export function PixelCanvas({
     // which one was last seen; the next frame carrying one will re-decode it.
     paletteRevRef.current = null;
     paletteSourceRef.current = '';
+    frameArrayPaletteRef.current = false;
     // The pixels on screen were expanded through the old palette.
     lastFrameNumberRef.current = null;
-  }, [palette]);
+    // Keyed by what the palette says, which `palette` itself is read for.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paletteKey]);
 
   // Pushed frames. `getFrame` owns the surface when it is present; this is for
   // hosts that hand over a frame at a time.
   //
-  // `palette`, `width` and `height` are dependencies although the body does not
-  // read them: each changes how the bytes already in hand should be drawn, and
+  // The palette (by what it says: an inline one is a new array at every draw,
+  // and by identity the same frame was decoded and put again at each),
+  // `width` and `height` are dependencies although the body does not read
+  // them: each changes how the bytes already in hand should be drawn, and
   // with no loop running there is nothing else to notice that.
   useEffect(() => {
     if (wantsLoop) return;
     if (frame === null || frame === undefined) return;
     paint(frame);
-  }, [frame, wantsLoop, paint, palette, width, height]);
+  }, [frame, wantsLoop, paint, paletteKey, width, height]);
 
   // Size the surface before the browser paints, so the first frame is never
   // shown at the wrong scale.

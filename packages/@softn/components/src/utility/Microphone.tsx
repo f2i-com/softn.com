@@ -76,6 +76,21 @@ const FALLBACK_BLOCK_SAMPLES = 4096;
 /** Refuse to grow a recording past this, so a forgotten mic cannot exhaust memory. */
 const DEFAULT_MAX_SECONDS = 60;
 
+/** Samples per `onSamples` window when the host does not say. */
+const DEFAULT_FRAME_SIZE = 2048;
+
+/**
+ * `value` when it is a number, `fallback` for anything else. A prop bound to
+ * a variable not set yet arrives as `null`, which a default parameter does
+ * not stand in for: `frameSize` null was a window of one sample (an
+ * onSamples call into the app's logic for every sample, 48,000 a second) and
+ * `maxSeconds` null a limit of 0 s, which stopped a clip at its first block.
+ * NaN was a window never filled and a clip never capped.
+ */
+function numberOr(value: unknown, fallback: number): number {
+  return typeof value === 'number' && !Number.isNaN(value) ? value : fallback;
+}
+
 /** Root-mean-square of a block, which is what a level meter is measuring. */
 function blockRms(block: Float32Array): number {
   let sum = 0;
@@ -172,7 +187,7 @@ export function Microphone({
   mode = 'clip',
   active = true,
   sampleRate = 48000,
-  frameSize = 2048,
+  frameSize = DEFAULT_FRAME_SIZE,
   processing = true,
   showControls = true,
   showMeter = true,
@@ -214,7 +229,11 @@ export function Microphone({
   const handlers = useRef({ onCapture, onSamples, onLevel, onStart, onStop, onError });
   handlers.current = { onCapture, onSamples, onLevel, onStart, onStop, onError };
   const settings = useRef({ mode, frameSize, maxSeconds });
-  settings.current = { mode, frameSize, maxSeconds };
+  settings.current = {
+    mode,
+    frameSize: numberOr(frameSize, DEFAULT_FRAME_SIZE),
+    maxSeconds: numberOr(maxSeconds, DEFAULT_MAX_SECONDS),
+  };
 
   // Same exposure as <Camera>: openMicrophone calls getUserMedia from a mount
   // effect, and permission.json's `mic` entry gates the softn.* API rather than
@@ -370,8 +389,12 @@ export function Microphone({
   const cleanup = useCallback(() => {
     if (recordingRef.current) {
       // A recording interrupted by the microphone closing is still a recording;
-      // throwing it away would lose whatever the user had already said.
+      // throwing it away would lose whatever the user had already said. It has
+      // stopped, so it is said to have, as stopRecording says it: onStop, then
+      // onCapture. Without it a page showing "Recording" from onStart to
+      // onStop went on showing it.
       recordingRef.current = false;
+      handlers.current.onStop?.();
       finishClip();
     }
     const node = nodeRef.current;

@@ -6,6 +6,7 @@ import { docsDevPlugin } from '../../scripts/dev/dev-docs.mjs';
 import { scriptPolicyPlugin } from '../../scripts/build/script-policy.mjs';
 import { buildSourcemaps } from '../../scripts/build/sourcemaps.mjs';
 import { sharedAssetsBase, sharedRenderBuiltUrl, woff2OnlyFontsPlugin } from '../../scripts/build/shared-assets.mjs';
+import { sharedChunkGroups } from '../../scripts/build/on-demand-chunks.mjs';
 
 const appDir = fileURLToPath(new URL('.', import.meta.url));
 
@@ -117,6 +118,16 @@ export default defineConfig(({ mode }) => {
       target: 'es2022',
       // In a development build only (scripts/build/sourcemaps.mjs).
       sourcemap: buildSourcemaps(),
+      // React in a chunk of its own, as every app builds it (on-demand-chunks.mjs): the
+      // site's entry changes with every release, React seldom, and a returning visitor
+      // keeps what has not changed.
+      rolldownOptions: {
+        output: {
+          codeSplitting: {
+            groups: sharedChunkGroups,
+          },
+        },
+      },
     },
   };
 });

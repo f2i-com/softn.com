@@ -636,7 +636,9 @@ const warnedAssetExtensions = new Set<string>();
 
 function warnUnknownAssetExtension(path: string): void {
   const ext = path.split('.').pop()?.toLowerCase() ?? '';
-  if (ext in ASSET_CLASSIFICATIONS || warnedAssetExtensions.has(ext)) return;
+  // Own keys only: `in` found `constructor` or `toString` on the prototype, so a
+  // file named `x.constructor` was never warned about.
+  if (Object.prototype.hasOwnProperty.call(ASSET_CLASSIFICATIONS, ext) || warnedAssetExtensions.has(ext)) return;
   warnedAssetExtensions.add(ext);
   console.warn(
     `[SoftN] No MIME type registered for .${ext}; serving as application/octet-stream`

@@ -30,7 +30,7 @@ import React, {
   useMemo,
   useId,
 } from 'react';
-import { tokenize, type Token } from './highlight';
+import { tokenizeLines, type Token } from './highlight';
 import { codeColor } from '../theme/code-palette';
 
 export interface CodeEditorProps {
@@ -107,6 +107,33 @@ function renderTokens(tokens: Token[]): React.ReactNode[] {
     )
   );
 }
+
+/** Whether two lines of tokens draw the same. */
+function sameTokens(a: Token[], b: Token[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].kind !== b[i].kind || a[i].text !== b[i].text) return false;
+  }
+  return true;
+}
+
+/**
+ * One line of the colour layer, drawn again only when its tokens change. The
+ * layer was one list of every token in the text, keyed by place: a keystroke
+ * that split or joined a token moved every token after it to another place,
+ * and all of them were drawn again, on every keystroke.
+ */
+const HighlightedLine = React.memo(
+  function HighlightedLine({ tokens, last }: { tokens: Token[]; last: boolean }) {
+    return (
+      <>
+        {renderTokens(tokens)}
+        {last ? null : '\n'}
+      </>
+    );
+  },
+  (before, after) => before.last === after.last && sameTokens(before.tokens, after.tokens)
+);
 
 /** A value as the editor's text: nothing for null or undefined, a string otherwise. */
 function asText(value: unknown): string {
@@ -268,7 +295,11 @@ export function CodeEditor({
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-      if (e.key === 'Escape') {
+      // A key an input method is using is not the editor's: Escape cancels a
+      // conversion and Enter commits one, and Safari reports that Enter once
+      // the composition has ended, as key 229.
+      const composing = e.nativeEvent.isComposing || e.keyCode === 229;
+      if (e.key === 'Escape' && !composing) {
         // The first Escape lets Tab leave the editor, as its hint says, and
         // is the editor's: a dialog around it closed on it, with the code in
         // it. A second goes on to the dialog.
@@ -281,7 +312,7 @@ export function CodeEditor({
       if (e.key === 'Shift') return;
       const released = tabReleased.current;
       tabReleased.current = false;
-      if (readOnly || disabled || e.nativeEvent.isComposing) return;
+      if (readOnly || disabled || composing) return;
       const textarea = e.currentTarget;
       const { selectionStart: start, selectionEnd: end, value: text } = textarea;
 
@@ -323,11 +354,13 @@ export function CodeEditor({
     [applyEdit, disabled, indentUnit, readOnly]
   );
 
-  const highlighted = useMemo(
-    () =>
-      renderTokens(tokenize(code, code.length > CODE_EDITOR_HIGHLIGHT_LIMIT ? 'plain' : language)),
-    [code, language]
-  );
+  const highlighted = useMemo(() => {
+    if (code.length > CODE_EDITOR_HIGHLIGHT_LIMIT) return code;
+    const lines = tokenizeLines(code, language);
+    return lines.map((tokens, index) => (
+      <HighlightedLine key={index} tokens={tokens} last={index === lines.length - 1} />
+    ));
+  }, [code, language]);
 
   const lineCount = useMemo(() => {
     let count = 1;

@@ -65,10 +65,13 @@ export function Marquee({
 
     measure();
 
+    // The observer reports every change of the content's size. Keyed by
+    // `children` as well, a new value at every draw of the page, it was taken
+    // down and made again, and the content measured (a layout), each time.
     const observer = new ResizeObserver(measure);
     observer.observe(el);
     return () => observer.disconnect();
-  }, [isHorizontal, children]);
+  }, [isHorizontal]);
 
   // Calculate animation duration from content size and speed
   // A speed of zero, a negative one or not a number at all stands still,

@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import type { LoadedXdbBindings } from '@softn/container';
 import { useVFSStore, useWorkspaceStore } from '../src/stores';
 import { executeTool, type ToolContext } from '../src/lib/agent/executeTool';
-import { detectStudioSqliteDatabases } from '../src/lib/studioSqlite';
+import { createStudioSqliteDatabase, detectStudioSqliteDatabases } from '../src/lib/studioSqlite';
 import { generateBlueprintFromBrief, scaffoldProjectFiles } from '../src/lib/studioProject';
 import type { ProjectBrief } from '../src/types/studio';
 
@@ -182,6 +182,57 @@ INSERT INTO notes (title, done) VALUES ('Seed note', 0);
       expect.objectContaining({ name: 'app', engine: 'sqlite', file: 'app.db', persist: true }),
     ]);
     expect(detectStudioSqliteDatabases(files)).toHaveLength(1);
+  });
+
+  // The tool wrote the manifest's new `databases` entry, and the model was taken to have read
+  // the manifest it wrote, whole: a write_file of the manifest it remembered went through, and
+  // the database was no longer in it. What a tool writes is seen as part of a file: the model
+  // may edit it, and reads it before replacing it.
+  it('does not count a manifest the tool rewrote as read whole', async () => {
+    useVFSStore.getState().openFiles([{ path: 'manifest.json', content: JSON.stringify({ name: 'Notes', version: '1.0.0', main: 'index.html' }, null, 2) }]);
+    const ctx = makeCtx();
+    expect((await executeTool({ id: 'r', name: 'read_file', input: { path: 'manifest.json' } }, ctx)).isError).toBe(false);
+    const made = await executeTool({ id: 'x', name: 'sqlite_execute', input: { sql: 'CREATE TABLE notes (id INTEGER PRIMARY KEY)' } }, ctx);
+    expect(made.changed).toBe(true);
+    const replaced = await executeTool({ id: 'w', name: 'write_file', input: { path: 'manifest.json', content: JSON.stringify({ name: 'Notes', version: '1.1.0', main: 'index.html' }, null, 2) } }, ctx);
+    expect(replaced.isError).toBe(true);
+    expect(replaced.content).toContain('You have read only part of manifest.json');
+    expect(JSON.parse(String(useVFSStore.getState().files.get('manifest.json')?.content)).databases).toHaveLength(1);
+    // An exact edit of what is there now is still the model's to make.
+    const edited = await executeTool({ id: 'e', name: 'edit_file', input: { path: 'manifest.json', old_string: '"version": "1.0.0"', new_string: '"version": "1.1.0"' } }, ctx);
+    expect(edited.isError).toBe(false);
+  });
+
+  // The seed dump's path was taken as given: a dump asked to go to index.html, or into Studio's
+  // own notes under builder/, which the agent never writes, was written there, over the file.
+  it.each(['index.html', 'builder/notes.sql', 'notes.txt'])('refuses to write the seed dump to %s, and writes nothing', async (seedPath) => {
+    const page = '<!doctype html><h1>Notes</h1>';
+    useVFSStore.getState().openFiles([
+      { path: 'manifest.json', content: JSON.stringify({ name: 'Notes', version: '1.0.0', main: 'index.html' }, null, 2) },
+      { path: 'index.html', content: page },
+      { path: 'builder/notes.sql', content: '-- Studio' },
+      { path: 'notes.txt', content: 'mine' },
+    ]);
+    const before = new Map(useVFSStore.getState().files);
+    const res = await executeTool({ id: 'x', name: 'sqlite_execute', input: { sql: 'CREATE TABLE notes (id INTEGER PRIMARY KEY)', sync_seed_sql: true, seed_sql_path: seedPath } }, makeCtx());
+    expect(res.isError).toBe(true);
+    expect(res.content).toContain(seedPath);
+    expect(useVFSStore.getState().files).toEqual(before);
+  });
+
+  // The engine loads before the database is made, which the first time takes a while: the Data
+  // tab's new database, and its entry in the manifest, went into whatever project was open then.
+  it('makes no database in a project opened while the engine loaded', async () => {
+    const second = JSON.stringify({ name: 'Second', version: '1.0.0', main: 'index.html' }, null, 2);
+    useWorkspaceStore.setState({ projectId: 'first' });
+    useVFSStore.getState().openFiles([{ path: 'manifest.json', content: JSON.stringify({ name: 'First', version: '1.0.0', main: 'index.html' }, null, 2) }]);
+    const creating = createStudioSqliteDatabase('app', { bindings: xdbBindings });
+    useWorkspaceStore.setState({ projectId: 'second' });
+    useVFSStore.getState().reset();
+    useVFSStore.getState().hydrateFiles([{ path: 'manifest.json', content: second }]);
+    await expect(creating).rejects.toThrow(/Another project was opened/);
+    expect(useVFSStore.getState().files.get('manifest.json')?.content).toBe(second);
+    expect(useVFSStore.getState().files.has('app.db')).toBe(false);
   });
 
   it('scaffolds both .ui + custom PHP/SQLite backend AND Web Container + FormLogic tables', () => {

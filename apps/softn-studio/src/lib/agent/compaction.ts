@@ -50,8 +50,15 @@ const lineTotal = (text: unknown) => (typeof text === 'string' ? text.split('\n'
  * - an old reply's long text.
  * The latest check, the latest version of each file the model wrote, the
  * newest turns and the person's own messages are left as they are.
+ *
+ * Answers the files whose whole text the conversation no longer holds: a read
+ * of each was shortened, and neither a write of it nor a whole read of it since
+ * its last change is still there. The run stops counting them as read whole
+ * (runAgent.ts), or a write_file of one from memory would replace lines the
+ * model no longer has.
  */
-export function compact(ctl: Conversation, step: number, aggressive: boolean): void {
+export function compact(ctl: Conversation, step: number, aggressive: boolean): Set<string> {
+  const shortened = new Set<string>();
   const keep = aggressive ? 2 : KEEP_READS_FOR;
   // The latest check report is never compacted, wherever it is.
   let latestCheck: string | null = null;
@@ -97,6 +104,7 @@ export function compact(ctl: Conversation, step: number, aggressive: boolean): v
           const path = call ? callPaths(call)[0] : undefined;
           const since = meta.name === 'read_file' && path !== undefined && ((lastChange.get(path) ?? 0) > at || (lastRead.get(path) ?? 0) > at);
           if (old || since) {
+            if (meta.name === 'read_file' && path !== undefined) shortened.add(path);
             const lines = r.content.split('\n').length;
             const why = since ? `${path} has been ${(lastChange.get(path) ?? 0) > at ? 'changed' : 'read again'} since` : 'removed to save context';
             return { ...r, content: `[${meta.name} result from step ${meta.step}, ${lines} lines; ${why}. Call ${meta.name} again if you still need it.]` };
@@ -133,4 +141,25 @@ export function compact(ctl: Conversation, step: number, aggressive: boolean): v
     // An echoed reply is re-encoded from what is left: an old turn's reasoning is not needed again.
     ctl.turns[index] = { role: 'assistant', text, calls };
   });
+
+  // What the conversation still holds of each file a read of was shortened: the newest change
+  // of it as a write the model sent whole (the newest write of a file is never shortened), or a
+  // whole read of it made since that change.
+  const forgotten = new Set<string>();
+  if (shortened.size === 0) return forgotten;
+  const results = new Map<string, { content: string; isError: boolean }>();
+  for (const turn of ctl.turns) if (turn.role === 'tool') for (const r of turn.results) results.set(r.id, r);
+  for (const path of shortened) {
+    const changedAt = lastChange.get(path) ?? 0;
+    let held = false;
+    for (const [id, call] of callOf) {
+      const at = order.get(id) ?? 0;
+      const result = results.get(id);
+      if (!result || result.isError || !callPaths(call).includes(path)) continue;
+      if (at === changedAt && call.name === 'write_file') held = true;
+      if (at > changedAt && call.name === 'read_file' && /, complete\)$/.test(result.content.split('\n', 1)[0])) held = true;
+    }
+    if (!held) forgotten.add(path);
+  }
+  return forgotten;
 }

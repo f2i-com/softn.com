@@ -189,6 +189,27 @@ describe('a save by hand', () => {
     // And with no file open for editing, Ctrl+S is left to the browser.
     expect(press(document.body).defaultPrevented).toBe(false);
   });
+
+  // A bundle written on Windows keeps its \r\n, and a text box hands its text back with \n
+  // alone: a save that changed one word wrote every line of the file again with the other
+  // ending, and a word typed and taken back again was a change to save.
+  it('keeps the line endings of a file written with \\r\\n', () => {
+    const windows = PAGE.replace(/\n/g, '\r\n');
+    act(() => vfs().createFile('ui/win.ui', windows));
+    open('ui/win.ui');
+    act(() => button('Edit')!.click());
+    const shown = area()!.value;
+    type(shown.replace('Count:', 'Total:'));
+    type(shown);
+    expect(container.textContent).not.toContain('not saved');
+    act(() => button('Cancel')!.click());
+    expect(asked).toEqual([]);
+
+    act(() => button('Edit')!.click());
+    type(shown.replace('Count:', 'Total:'));
+    act(() => button('Save')!.click());
+    expect(text('ui/win.ui')).toBe(windows.replace('Count:', 'Total:'));
+  });
 });
 
 describe('a file that changed while it was being edited', () => {

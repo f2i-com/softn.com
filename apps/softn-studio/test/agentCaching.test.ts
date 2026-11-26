@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { effectiveTokens, ANTHROPIC_CACHE_WEIGHTS } from '../src/lib/agent/budget';
 import { startAgentRun } from '../src/lib/agent/runAgent';
 import { useAIStore } from '../src/stores/aiStore';
+import { useVFSStore } from '../src/stores/vfsStore';
 import { assertScriptsPassed, fakeProvider, lastRun, OPENAI, resetAgent, say, seedApp, type Step } from './helpers/agentHarness';
 
 beforeEach(() => resetAgent());
@@ -172,5 +173,27 @@ describe('compaction', () => {
     for (let i = 1; i < 8; i++) expect(content(provider.bodies[i]).startsWith(content(provider.bodies[i - 1]).slice(0, -1))).toBe(true);
     expect(content(provider.bodies[8]).startsWith(content(provider.bodies[7]).slice(0, -1))).toBe(false);
     expect(content(provider.bodies[9]).startsWith(content(provider.bodies[8]).slice(0, -1))).toBe(true);
+  });
+
+  // The compaction took the file's text out of the conversation, and the run went on counting it
+  // as read whole: a write_file of it from memory replaced lines the model no longer had.
+  it('does not count a file as read whole once the conversation no longer holds it', async () => {
+    seedApp();
+    useVFSStore.getState().createFile('ui/week.ui', big('first'));
+    fakeProvider('anthropic', [
+      { calls: [{ name: 'read_file', input: { path: 'ui/week.ui' } }] },
+      { calls: [{ name: 'edit_file', input: { path: 'ui/week.ui', old_string: 'first line 0', new_string: 'second line 0' } }] },
+      ...Array.from({ length: 7 }, () => list),
+      (body: Record<string, unknown>) => {
+        expect(JSON.stringify(body.messages)).toMatch(/\[read_file result from step 1, \d+ lines; ui\/week\.ui has been changed since\./);
+        return { calls: [{ name: 'write_file', input: { path: 'ui/week.ui', content: '<App>\n  <Text>From memory</Text>\n</App>' } }] };
+      },
+      { calls: [{ name: 'finish', input: { summary: 'ok' } }] },
+    ]);
+    say('Change the week');
+    await startAgentRun();
+    const write = lastRun().run.entries.find((e) => e.kind === 'tool' && e.name === 'write_file');
+    expect(write && write.kind === 'tool' ? write.status : null).toBe('error');
+    expect(useVFSStore.getState().readFile('ui/week.ui')).toContain('second line 0');
   });
 });

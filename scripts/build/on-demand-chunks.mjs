@@ -95,6 +95,38 @@ export const threeAddonChunks = [
  */
 export const vendorThreeGroup = { name: 'vendor-three', test: /node_modules[\\/]three[\\/]build[\\/]/ };
 
+/**
+ * Libraries every host bundles, each under a name of its own, so that the same
+ * library comes out of each app's build as the same file. Every app here is
+ * built on its own, and Rolldown otherwise merged a library into whichever chunk
+ * first needed it: React's DOM renderer into each app's entry, the peer-sync
+ * stack (yjs, lib0, y-webrtc, simple-peer) into the sync runtime's chunk and
+ * the camera scanner (@yudiel/react-qr-scanner, barcode-detector,
+ * webrtc-adapter) into the QR reader's. Those chunks import core, which each
+ * app tree-shakes its own way, so they never matched, and the site kept one
+ * copy of each library per app (shared-assets.mjs keeps one file of a name and
+ * content, not two). As a group of its own a library imports nothing that
+ * differs between the apps, so the builds agree on its bytes and its name, and
+ * a visitor who opens a second app has it already.
+ *
+ * React is ahead of the others, so the scanner's React import is React's chunk
+ * and not a second copy inside the scanner's (a group takes the dependencies of
+ * what it captures unless a group ahead of it has them). The sync and scanner
+ * groups are reached only through their features' dynamic imports, like the
+ * chunks they came out of: onDemandGlobIgnores keeps them out of softn-web's
+ * precache as it keeps those.
+ */
+export const vendorReactGroup = { name: 'vendor-react', test: /node_modules[\\/](?:react|react-dom|scheduler)[\\/]/, priority: 20 };
+export const vendorSyncGroup = { name: 'vendor-sync', test: /node_modules[\\/](?:yjs|lib0|y-protocols|y-webrtc|y-indexeddb|simple-peer)[\\/]/, priority: 10 };
+export const vendorQrScannerGroup = {
+  name: 'vendor-qr-scanner',
+  test: /node_modules[\\/](?:@yudiel[\\/]react-qr-scanner|barcode-detector|webrtc-adapter|sdp|zxing-wasm)[\\/]/,
+  priority: 10,
+};
+
+/** The groups every SoftN host's build splits its chunks by, Three.js included. */
+export const sharedChunkGroups = [vendorThreeGroup, vendorReactGroup, vendorSyncGroup, vendorQrScannerGroup];
+
 /** Core's shared JavaScript/Python engine. Vite fingerprints the same file under
  * /assets/ in a standalone build and /shared/assets/ on the combined site. */
 export const fullEngineGlob = '**/assets/zipp_wasm_bg-*.wasm';
@@ -116,6 +148,10 @@ export const onDemandGlobIgnores = [
   fullEngineGlob,
   '**/assets/zxing_reader-*.wasm',
   '**/assets/vendor-three-*.js',
+  // The libraries of the sync runtime and the QR reader (vendorSyncGroup,
+  // vendorQrScannerGroup), fetched with the chunks below that import them.
+  '**/assets/vendor-sync-*.js',
+  '**/assets/vendor-qr-scanner-*.js',
   '**/assets/webgl-scene-host-*.js',
   '**/assets/local-backend-transport-*.js',
   '**/assets/device-bridge-*.js',

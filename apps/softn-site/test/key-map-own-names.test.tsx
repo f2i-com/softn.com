@@ -84,11 +84,39 @@ describe('the key map and the names every object has', () => {
     expect(savedKey('constructor')).toBe(KEY_A);
   });
 
+  it('restores the key of an app whose slug is the name of a backup field', () => {
+    // An app called "Version" or "Format" has that slug. The backup's own
+    // fields were passed over by name inside its `keys` too, so their keys
+    // were neither restored nor reported: the restore said nothing about them.
+    const backup = JSON.stringify({ format: 'softn-edit-keys', version: 1, keys: { version: KEY_A, format: KEY_B } });
+    const result = importKeys(backup);
+    expect(result.added.sort()).toEqual(['format', 'version']);
+    expect(savedKey('version')).toBe(KEY_A);
+    expect(savedKey('format')).toBe(KEY_B);
+    // A map at the top of the file (an older backup) still skips the two fields quietly.
+    const top = importKeys(JSON.stringify({ format: 'softn-edit-keys', version: 1, snake: KEY_B }));
+    expect(top.rejected).toEqual([]);
+    expect(top.added).toEqual(['snake']);
+  });
+
   it('does not tell every visitor that the app is theirs', async () => {
     await act(async () => root.render(<AppPage slug="constructor" categories={[]} route={{ path: '/app/constructor', query: new URLSearchParams() }} />));
     expect(container.querySelector('h1')?.textContent).toBe('Constructor');
     expect(container.textContent).not.toContain('This browser holds the edit key');
     expect(container.querySelector('a.cta-edit')).toBeNull();
+  });
+
+  it('knows the app is yours when the link spelled its name loosely', async () => {
+    // The directory answers `/app/Space Invaders` with the app whose slug is
+    // `space-invaders`, and the page moves the address there; the key kept for
+    // that slug was looked up under the address's spelling, so the owner saw
+    // "Yours to update?" and no Update button.
+    getApp.mockImplementation(async () => ({ ...detail('space-invaders'), name: 'Space Invaders' }));
+    rememberKey('space-invaders', KEY_A);
+    await act(async () => root.render(<AppPage slug="Space Invaders" categories={[]} route={{ path: '/app/Space Invaders', query: new URLSearchParams() }} />));
+    expect(container.querySelector('h1')?.textContent).toBe('Space Invaders');
+    expect(container.querySelector<HTMLAnchorElement>('a.cta-edit')?.getAttribute('href')).toBe('/publish?update=space-invaders');
+    expect(container.textContent).toContain('This browser holds the edit key');
   });
 
   it('opens the update page of such an app with an empty key field', async () => {

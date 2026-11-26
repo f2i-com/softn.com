@@ -16,6 +16,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { HistoryPanel, describeUnit, groupHistory } from '../src/components/panels/HistoryPanel';
 import { useVFSStore } from '../src/stores/vfsStore';
+import { useAIStore } from '../src/stores/aiStore';
 import { openExampleInStores } from '../src/examples';
 import { openImportedInStores } from '../src/lib/importedProject';
 
@@ -161,6 +162,38 @@ describe('HistoryPanel', () => {
     expect(store().files.has('logic/main.logic')).toBe(false);
     act(() => named('Redo')!.click());
     expect(store().readFile('logic/main.logic')).toBe('let x = 1');
+  });
+
+  // Revert AI changes takes back the AI's turns since the newest change of the person's, and
+  // was offered whenever there had been one: with a hand edit on top, pressing it did nothing
+  // and said nothing. Each AI turn has its own Revert for that.
+  it('offers Revert AI changes only while the newest change is the AI’s', () => {
+    store().createFile('ui/main.ui', '<App/>');
+    store().applyTransaction([{ op: 'create', path: 'logic/main.logic', content: 'let x = 1' }], 'ai', 'turn-1');
+    store().updateFile('ui/main.ui', '<App theme="dark"/>', 'user');
+    mount();
+    const named = (name: string) => Array.from(container.querySelectorAll('button')).find((b) => b.textContent?.trim() === name);
+    expect(named('Revert AI changes')).toBeUndefined();
+    expect(container.querySelector('li[data-history-unit="turn-1"] button')).not.toBeNull();
+  });
+
+  // Every other change by hand waits while a run works, and so does what the history changes:
+  // Undo last, pressed to take back the person's own edit, took the step the AI had just made.
+  it('changes nothing while the AI is working, and says why', () => {
+    store().createFile('ui/main.ui', '<App/>');
+    store().applyTransaction([{ op: 'create', path: 'logic/main.logic', content: 'let x = 1' }], 'ai', 'turn-1');
+    useAIStore.getState().setAgentState('building');
+    try {
+      mount();
+      const named = (name: string) => Array.from(container.querySelectorAll('button')).find((b) => b.textContent?.trim() === name);
+      act(() => named('Undo last')!.click());
+      act(() => named('Revert AI changes')!.click());
+      act(() => container.querySelector<HTMLButtonElement>('li[data-history-unit="turn-1"] button')!.click());
+      expect(store().readFile('logic/main.logic')).toBe('let x = 1');
+      expect(container.textContent).toMatch(/The AI is working/);
+    } finally {
+      useAIStore.getState().setAgentState('idle');
+    }
   });
 
   it('describes many files added in one step as one unit', () => {

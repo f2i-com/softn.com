@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { coreWorkerAssetPlugin } from './core-worker-assets.mjs';
+import { buildSync } from 'esbuild';
+import { coreWorkerAssetPlugin, minifyWorkerModules } from './core-worker-assets.mjs';
 import { repoRoot as root } from '../lib/paths.mjs';
 
 function fixture(t) {
@@ -138,4 +139,42 @@ test('production omits the core dist mirror while retaining the worker dependenc
   for (const [relative, bytes] of Object.entries(files)) {
     assert.deepEqual(fs.readFileSync(path.join(destination, relative)), bytes);
   }
+});
+
+/** What esbuild reads a module as exporting and importing. */
+function interfaceOf(text) {
+  const { metafile } = buildSync({ stdin: { contents: text, loader: 'js' }, write: false, bundle: false, format: 'esm', metafile: true, outfile: 'x.js', logLevel: 'silent' });
+  const output = Object.values(metafile.outputs)[0];
+  return { exports: [...output.exports].sort(), imports: output.imports.map((entry) => `${entry.kind} ${entry.path}`).sort() };
+}
+
+test('production minifies the readable worker modules it copies, keeping what each exports, imports and names by URL', t => {
+  const { temp, core } = fixture(t);
+  // A module as core's build writes one: readable, commented, importing its neighbours.
+  const body = Array.from({ length: 120 }, (_, i) => `// Helper ${i}, spelled out.\nfunction helperNumber${i}(argumentValue) {\n  const doubledValue = argumentValue * 2;\n  return doubledValue + ${i};\n}\n`).join('');
+  const readable = `import { shared } from '../chunk-ABCDEFGH.js';\n${body}\nexport async function loadThing() {\n  const lazy = await import('../chunk-LAZY1234.js');\n  return [shared, lazy, new URL('kernels.wasm', import.meta.url).href, helperNumber1(2)];\n}\nexport { helperNumber0 as first };\n`;
+  fs.writeFileSync(path.join(core, 'runtime', 'script-worker.js'), readable);
+  fs.writeFileSync(path.join(core, 'chunk-ABCDEFGH.js'), 'export const shared = 1;');
+  fs.writeFileSync(path.join(core, 'chunk-LAZY1234.js'), 'export default 2;');
+  const output = path.join(temp, 'minified');
+  coreWorkerAssetPlugin({ coreDistRoot: core }).writeBundle({ dir: output });
+  const copied = fs.readFileSync(path.join(output, 'assets', 'core-runtime', 'runtime', 'script-worker.js'), 'utf8');
+  assert.ok(copied.length < readable.length / 2, `${copied.length} of ${readable.length} bytes`);
+  assert.deepEqual(interfaceOf(copied), interfaceOf(readable));
+  assert.match(copied, /new URL\("kernels\.wasm",import\.meta\.url\)/);
+  // Its neighbours, too small to be worth it, and the binaries and licences are as they were.
+  assert.equal(fs.readFileSync(path.join(output, 'assets', 'core-runtime', 'chunk-ABCDEFGH.js'), 'utf8'), 'export const shared = 1;');
+  assert.deepEqual(fs.readFileSync(path.join(output, 'assets', 'core-runtime', 'runtime/models/kernels.wasm')), Buffer.from([0, 97, 115, 109, 0, 255, 254]));
+});
+
+test('a worker module the minifier cannot read, or one already minified, is copied as it is', t => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'softn-worker-minify-'));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const broken = `export const a = 1;\n${'// filler\n'.repeat(600)}this is not JavaScript (\n`;
+  const tight = `export const b=${JSON.stringify('x'.repeat(6000))};`;
+  fs.writeFileSync(path.join(temp, 'broken.js'), broken);
+  fs.writeFileSync(path.join(temp, 'tight.js'), tight);
+  assert.deepEqual(minifyWorkerModules(temp, ['broken.js', 'tight.js']), []);
+  assert.equal(fs.readFileSync(path.join(temp, 'broken.js'), 'utf8'), broken);
+  assert.equal(fs.readFileSync(path.join(temp, 'tight.js'), 'utf8'), tight);
 });

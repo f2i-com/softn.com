@@ -159,6 +159,9 @@ export function Draggable({
   const handlePointerDown = React.useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
       if (disabled) return;
+      // The main button only: a right-click began a drag, and the menu it
+      // opened took the release, so the element followed the cursor.
+      if (e.button !== 0) return;
       // One drag at a time, by the pointer that began it. A second finger
       // began a second drag beside the first: both moved the element, and
       // unmount removed only the newer listeners, so the older went on
@@ -184,6 +187,14 @@ export function Draggable({
       // Use document-level listeners for reliable tracking
       const handleMove = (ev: PointerEvent) => {
         if (ev.pointerId !== pointerId) return;
+        // A mouse moving with its button up was let go of where this could
+        // not hear it (outside the window, over a menu, in another app): the
+        // drag ends where it was, rather than following the cursor until the
+        // next click.
+        if (ev.pointerType === 'mouse' && (ev.buttons & 1) === 0) {
+          handleUp(ev);
+          return;
+        }
         ev.preventDefault();
 
         const dx = ev.clientX - startPointerRef.current.x;

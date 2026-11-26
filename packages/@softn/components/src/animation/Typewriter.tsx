@@ -105,9 +105,12 @@ export function Typewriter({
           setDisplayedText(currentText.slice(0, charIndexRef.current));
           timeoutRef.current = setTimeout(tick, speed);
         } else {
-          // Finished typing this text
-          onCompleteRef.current?.();
-          if (currentTextIndex === texts.length - 1 && !shouldLoop) {
+          // Finished typing this text. All of them are typed once the last
+          // is, which is when `onComplete` is for (at the end of each cycle,
+          // when they loop): it was called after every one.
+          const typedAll = currentTextIndex >= texts.length - 1;
+          if (typedAll) onCompleteRef.current?.();
+          if (typedAll && !shouldLoop) {
             // The last text, no loop: done, and left showing. Only a single
             // text stopped here; the last of several was deleted, and the
             // Typewriter ended blank.

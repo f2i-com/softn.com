@@ -80,8 +80,10 @@ export function Tabs({
   // Per instance: two Tabs with a `general` tab each gave two elements the id
   // `tab-general`, and each tablist's aria-controls pointed into the other.
   const idPrefix = useId();
-  const tabId = (key: string) => `${idPrefix}-tab-${key}`;
-  const panelId = (key: string) => `${idPrefix}-panel-${key}`;
+  // The key escaped: `aria-controls` and `aria-labelledby` are lists split at
+  // spaces, and a tab keyed "Billing info" pointed at two ids, neither its panel.
+  const tabId = (key: string) => `${idPrefix}-tab-${encodeURIComponent(key)}`;
+  const panelId = (key: string) => `${idPrefix}-panel-${encodeURIComponent(key)}`;
   const [internalActiveKey, setInternalActiveKey] = useState(defaultActiveKey);
   const [hoveredKey, setHoveredKey] = useState<string | null>(null);
   const tabRefs = useRef<Map<string, HTMLButtonElement>>(new Map());

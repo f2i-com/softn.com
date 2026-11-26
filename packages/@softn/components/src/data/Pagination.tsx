@@ -6,6 +6,7 @@
 
 import * as React from 'react';
 import { choice } from '../utils/choice';
+import { nameList } from '../utils/lists';
 
 export interface PaginationProps {
   currentPage: number;
@@ -59,6 +60,11 @@ export function Pagination({
     if (typeof givenOnPageChange === 'function') givenOnPageChange(page);
   };
   const sizes = choice(sizeStyles, size, 'md');
+  // The page sizes as a list, or as text a page writes (`"10, 25"`): `.map`
+  // of text threw in render. What is not a count of rows is not offered.
+  const sizeOptions = (Array.isArray(pageSizeOptions) ? pageSizeOptions : nameList(pageSizeOptions))
+    .map(Number)
+    .filter((option) => Number.isFinite(option) && option > 0);
   // Page counts arrive from data: zero, negative, fractional or not a number
   // at all. Read them as a whole count and a page inside it, so Next is not
   // left enabled past the last page and the page list never gets a negative
@@ -270,7 +276,7 @@ export function Pagination({
             value={pageSize}
             onChange={(e) => onPageSizeChange(Number(e.target.value))}
           >
-            {pageSizeOptions.map((option) => (
+            {sizeOptions.map((option) => (
               <option key={option} value={option}>
                 {option}
               </option>

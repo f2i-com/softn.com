@@ -75,7 +75,10 @@ export function AnimatedNumber({
         cancelAnimationFrame(animationFrameRef.current);
         animationFrameRef.current = null;
       }
-      if (reducedMotion) {
+      // A duration that is no time (zero, negative, not a number, or one that
+      // never ends) shows the value at once: a negative one never made any
+      // progress, and asked for a frame forever on its first number.
+      if (reducedMotion || !(Number.isFinite(duration) && duration > 0)) {
         setDisplayValue(to);
         previousValueRef.current = to;
         return;

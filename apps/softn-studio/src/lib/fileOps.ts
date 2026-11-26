@@ -266,6 +266,7 @@ export async function addFiles(incoming: readonly IncomingFile[], folder: string
     return out;
   }
   // Read first: it takes time, and the project may change meanwhile.
+  const projectId = useWorkspaceStore.getState().projectId;
   const read: Array<{ given: string; name: string; within: string; bytes: Uint8Array }> = [];
   for (const { file, name, within } of incoming) {
     const given = name ?? file.name;
@@ -281,8 +282,9 @@ export async function addFiles(incoming: readonly IncomingFile[], folder: string
     }
   }
   if (read.length === 0) return out;
-  // A run that began while the files were being read has the project now.
-  const began = busyReason();
+  // A run that began while the files were being read has the project now; and another project
+  // opened meanwhile is not the one they were brought to.
+  const began = busyReason() ?? (useWorkspaceStore.getState().projectId !== projectId ? 'Another project was opened while the files were being read, so they were not added to it. Add them again where you want them.' : null);
   if (began) {
     out.refused.push(began);
     return out;
@@ -411,13 +413,18 @@ export function renameEntry(path: string, isDir: boolean, typed: string, emptyFo
   const fixed = fixedPlaceReason(path, isDir);
   if (fixed) return refused(fixed);
   if (isPrivateEntry(path)) return refused(PRIVATE_REASON);
+  const unchanged: FileOpDone = { ok: true, label: '', said: '', transactionId: null, focus: path, notes: [], caution: false };
+  // Its own name is no rename, whatever cleaning it would make of it. Cleaned first, a name the
+  // project already had and no name typed here could be (.htaccess, "photo (1).jpg") was taken
+  // for another one, and the file was renamed: by F2 too, which asks here whether it may be.
+  if (typed.trim() === nameOf(path)) return unchanged;
   const verdict = typedName(typed);
   if (!verdict.ok) return refused(verdict.reason);
   const files = useVFSStore.getState().files;
   const folder = folderOf(path);
   const to = joinPath(folder, verdict.name);
   const was = nameOf(path);
-  if (to === path) return { ok: true, label: '', said: '', transactionId: null, focus: path, notes: [], caution: false };
+  if (to === path) return unchanged;
   // Its own name in another case is free to it; any other name that is taken is not.
   const taken = takenKeys([...files.keys()].filter((other) => !(isDir ? other.startsWith(`${path}/`) : other === path)), emptyFolders.filter((empty) => empty !== path && !empty.startsWith(`${path}/`)));
   if (taken.has(canonicalKey(to))) return refused(`There is already a ${verdict.name} in ${folderWords(folder)}.`);

@@ -218,6 +218,10 @@ export function loadBundleContents({ manifest, manifestBytes, files, dropped, sy
       logicSrc: parsed.logicSrc,
       imports,
       originalSource: source, // Preserve original source for preview
+      // The verdict on this text, reached in reading it. Left out, it was
+      // reached again for the Files row, the canvas, Code and the first
+      // edit, each the whole check over: a fifth of a second for a large page.
+      sourceFidelity: parsed.fidelity,
       ...(startsWithByteOrderMark(found.bytes) ? { bom: true } : {}),
     });
 

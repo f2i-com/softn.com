@@ -43,7 +43,9 @@ export interface ComputedDeclaration {
 }
 
 /** A character that can stand in a name, as the engine reads names. */
-const NAME_CHARACTER = /[\p{ID_Continue}$]/u;
+const NAME_CHARACTER = /[\p{ID_Continue}$\u{200c}\u{200d}]/u;
+/** A character a name can begin with. */
+const NAME_START = /[\p{ID_Start}$_]/u;
 
 /** The name or number whose last character is at `at`. */
 function wordEndingAt(code: string, at: number): { word: string; start: number } {
@@ -71,8 +73,9 @@ const CONTINUING_WORD = /(?:instanceof|in)(?![\p{ID_Continue}$])/uy;
  * Whether a `/` read after `last` begins a regular expression. After a value
  * — a name, a number, a closing bracket, a string — it divides; after an
  * operator, an opening bracket or nothing at all, it begins a pattern.
+ * (code-text.ts reads by the same rule.)
  */
-function startsRegExp(code: string, last: number, lastClosedLiteral: boolean): boolean {
+export function startsRegExp(code: string, last: number, lastClosedLiteral: boolean): boolean {
   if (last === -1) return true;
   if (lastClosedLiteral) return false;
   const ch = code[last];
@@ -89,7 +92,7 @@ function startsRegExp(code: string, last: number, lastClosedLiteral: boolean): b
  * that reaches the end of its line has no end, and stops there, so the line
  * break is still read as one.
  */
-function regExpEnd(code: string, at: number): number {
+export function regExpEnd(code: string, at: number): number {
   let j = at + 1;
   let inClass = false;
   while (j < code.length && code[j] !== '\n') {
@@ -182,6 +185,10 @@ export function extractComputedDeclarations(code: string): ComputedDeclaration[]
   let i = 0;
   // How many `{` are open: zero at the top of the script.
   let blockDepth = 0;
+  // The last character read outside comments and white space, and whether it
+  // closed a string or a regular expression: what a `/` is read by.
+  let last = -1;
+  let lastClosedLiteral = false;
 
   while (i < len) {
     const ch = code[i];
@@ -201,6 +208,18 @@ export function extractComputedDeclarations(code: string): ComputedDeclaration[]
       continue;
     }
 
+    // A regular expression, passed over whole, as inside a `$:` expression
+    // below: a quote in one (`s.replace(/"/g, '')`) was read as a string
+    // that ran on to the next quote, and every `$:` it ran over was never
+    // found; a brace in one (`/[{]/`) was counted as a block, and every `$:`
+    // after it was taken for one written inside a function.
+    if (ch === '/' && startsRegExp(code, last, lastClosedLiteral)) {
+      i = regExpEnd(code, i);
+      last = i - 1;
+      lastClosedLiteral = true;
+      continue;
+    }
+
     // Skip string literals
     if (ch === '"' || ch === "'" || ch === '`') {
       const quote = ch;
@@ -209,6 +228,8 @@ export function extractComputedDeclarations(code: string): ComputedDeclaration[]
         if (code[i] === '\\' && i + 1 < len) i++; // skip escaped char (with bounds check)
         i++;
       }
+      last = Math.min(i, len - 1);
+      lastClosedLiteral = true;
       if (i < len) i++; // skip closing quote (with bounds check)
       continue;
     }
@@ -225,9 +246,14 @@ export function extractComputedDeclarations(code: string): ComputedDeclaration[]
         // Skip whitespace
         while (j < len && (code[j] === ' ' || code[j] === '\t')) j++;
 
-        // Extract variable name
+        // Extract variable name: a name as the engine reads one, `$total`,
+        // `café` and `tổng` among them, where `\w` stopped at the first
+        // letter past ASCII and found no declaration at all.
         const nameStart = j;
-        while (j < len && /\w/.test(code[j])) j++;
+        if (j < len && NAME_START.test(code[j])) {
+          j++;
+          while (j < len && NAME_CHARACTER.test(code[j])) j++;
+        }
         const name = code.substring(nameStart, j);
 
         if (name) {
@@ -309,36 +335,93 @@ export function extractComputedDeclarations(code: string): ComputedDeclaration[]
           }
         }
         // Past the `;` or the line end that closed it; a closing bracket is
-        // left for the count of open blocks above.
+        // left for the count of open blocks above. What follows begins a
+        // statement, where a `/` begins a regular expression.
         i = code[j] === ')' || code[j] === ']' || code[j] === '}' ? j : j + 1;
+        last = -1;
+        lastClosedLiteral = false;
         continue;
       }
     }
 
+    if (!isSpace(ch)) {
+      last = i;
+      lastClosedLiteral = false;
+    }
     i++;
   }
 
   return results;
 }
 
-/** An expression with its comments and quoted strings blanked, so a word in either is not taken for a name. */
+/** `/\s/.test(ch)`, without a regular expression for the ASCII that most code is. */
+function isSpace(ch: string): boolean {
+  const code = ch.charCodeAt(0);
+  if (code < 0x80) return code === 32 || (code >= 9 && code <= 13);
+  return /\s/.test(ch);
+}
+
+/**
+ * An expression with its comments and quoted strings blanked, so a word in
+ * either is not taken for a name. A template literal's text is blanked too,
+ * and what its `${…}` hold is read as the code it is: read as code, the
+ * apostrophe of `` `It's ${count}` `` began a string that ran to the end of
+ * the expression, and `count`, and every name after it, were not read.
+ */
 function withoutCommentsAndStrings(expression: string): string {
   let out = '';
   let i = 0;
-  while (i < expression.length) {
+  const n = expression.length;
+  // The braces open in code, and the count each open `${` began at.
+  let depth = 0;
+  const resumes: number[] = [];
+  /** Pass over a template's text from `i`: to its closing backtick, or into its next `${`. */
+  const templateText = (): void => {
+    while (i < n) {
+      const c = expression[i];
+      if (c === '\\') {
+        i += 2;
+      } else if (c === '`') {
+        i++;
+        return;
+      } else if (c === '$' && expression[i + 1] === '{') {
+        resumes.push(depth);
+        depth++;
+        i += 2;
+        out += ' ';
+        return;
+      } else {
+        i++;
+      }
+    }
+  };
+  while (i < n) {
     const ch = expression[i];
     if (ch === '/' && expression[i + 1] === '/') {
-      while (i < expression.length && expression[i] !== '\n') i++;
+      while (i < n && expression[i] !== '\n') i++;
     } else if (ch === '/' && expression[i + 1] === '*') {
       const end = expression.indexOf('*/', i + 2);
-      i = end === -1 ? expression.length : end + 2;
+      i = end === -1 ? n : end + 2;
       out += ' ';
     } else if (ch === '"' || ch === "'") {
       i++;
-      while (i < expression.length && expression[i] !== ch) i += expression[i] === '\\' ? 2 : 1;
+      while (i < n && expression[i] !== ch) i += expression[i] === '\\' ? 2 : 1;
       i++;
       out += '""';
+    } else if (ch === '`') {
+      i++;
+      out += '""';
+      templateText();
+    } else if (ch === '}' && resumes.length > 0 && resumes[resumes.length - 1] === depth - 1) {
+      // The `}` that ends a `${…}`: back to the template's text.
+      resumes.pop();
+      depth--;
+      i++;
+      out += ' ';
+      templateText();
     } else {
+      if (ch === '{') depth++;
+      else if (ch === '}') depth--;
       out += ch;
       i++;
     }

@@ -3,7 +3,7 @@ import { LANGUAGE_LABEL, languageForPath } from '@softn/components/highlight';
 import { Icon } from '../common/Icon';
 import { CodeView } from './CodeView';
 import { useAIStore } from '../../stores/aiStore';
-import { useEditStore } from '../../stores/editStore';
+import { asTyped, useEditStore } from '../../stores/editStore';
 import { useVFSStore } from '../../stores/vfsStore';
 import { beginHandEdit, confirmLeaveDraft, handEditRefusal, reloadHandEdit, saveHandEdit, type HandSave } from '../../lib/handEdit';
 import '../../styles/code.css';
@@ -189,7 +189,7 @@ export function FileEditor({ path, onClose, onPreview }: { path: string; onClose
         ref={area}
         className="st-fileedit-area"
         aria-label={`Edit ${path}`}
-        value={draft.text}
+        value={asTyped(draft.text)}
         onChange={(event) => change(event.target.value)}
         onKeyDown={onKeyDown}
         spellCheck={false}

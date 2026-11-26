@@ -129,13 +129,16 @@ export const ASSET_CLASSIFICATIONS: Record<string, AssetClassification> = {
 export function classifyAsset(path: string): AssetClassification {
   const dot = path.lastIndexOf('.');
   const ext = dot < 0 ? '' : path.slice(dot + 1).toLowerCase();
-  return (
-    ASSET_CLASSIFICATIONS[ext] ?? {
-      kind: 'binary',
-      mime: 'application/octet-stream',
-      binary: true,
-    }
-  );
+  // The registry's own entries only: `notes.constructor` found Object's
+  // constructor here, which has no `binary`, so its bytes were read as text
+  // and handed out with no type at all.
+  return Object.hasOwn(ASSET_CLASSIFICATIONS, ext)
+    ? ASSET_CLASSIFICATIONS[ext]
+    : {
+        kind: 'binary',
+        mime: 'application/octet-stream',
+        binary: true,
+      };
 }
 
 /**

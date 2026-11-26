@@ -2706,6 +2706,12 @@ function tagLight(light: THREE.Light, spec: Scene3DLight): void {
     light.target.updateMatrixWorld();
     if (!spec.position) light.position.set(0, 1, 0);
   }
+  // So does a torch the camera no longer carries: it went on shining along
+  // the line the camera last looked down.
+  if (light.userData.__softnAttach === 'camera' && spec.attach !== 'camera' && light instanceof THREE.SpotLight) {
+    light.target.position.set(0, 0, 0);
+    light.target.updateMatrixWorld();
+  }
   light.userData.__softnLightType = spec.type;
   light.userData.__softnAttach = spec.attach;
   light.userData.__softnFollow = spec.type === 'directional' ? spec.follow : undefined;
@@ -2817,6 +2823,11 @@ const useBeforePaint = typeof window !== 'undefined' ? useLayoutEffect : useEffe
 /** `value` where it is a number that is one (not NaN, not without end), and `otherwise` where it is not. */
 function finiteOr(value: unknown, otherwise: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : otherwise;
+}
+
+/** Whether a point is somewhere: each of its three numbers one that is. */
+function isPlace(point: { x: number; y: number; z: number }): boolean {
+  return Number.isFinite(point.x) && Number.isFinite(point.y) && Number.isFinite(point.z);
 }
 
 /** `value` as a whole number of at least one, held to a size a shadow map can be asked for; `otherwise` where it is none. */
@@ -3232,7 +3243,10 @@ function applyAnimationSpec(
     action.setLoop(THREE.LoopRepeat, Infinity);
     action.clampWhenFinished = spec.clampWhenFinished ?? false;
   }
-  action.timeScale = spec.speed ?? 1;
+  // A speed that is not a number is 1, as for every clip at once: given to
+  // the action, it left the clip's time not a number, and the model stood at
+  // the clip's last key for good, whatever speed it was given after.
+  action.timeScale = finiteOr(spec.speed, 1);
   // `time` and `progress` hold the clip at a point in it: a paused action is
   // still drawn, at whatever time it is given. `time` counts from the clip's
   // first key, `progress` from the clip's own nought as it always did.
@@ -3524,11 +3538,18 @@ let _modelLoadCounter = 0;
  */
 const ENVIRONMENT_ASSET = '\u0000environment';
 
+/**
+ * `objects` left out: one list for every render. A new `[]` each render was a
+ * new list to reconcile, and a scene drawn from `staticObjects` alone went
+ * over all of them whenever the page was drawn again.
+ */
+const NO_OBJECTS: Scene3DObject[] = [];
+
 export function Scene3D({
   width: widthProp = 800,
   height: heightProp = 600,
   fill = false,
-  objects = [],
+  objects = NO_OBJECTS,
   staticObjects,
   lights,
   camera: cameraProp,
@@ -3807,13 +3828,13 @@ export function Scene3D({
   const firstFrameArmedRef = useRef(false);
   const firstFrameFiredRef = useRef(false);
   const requiredAssetsRef = useRef<RequiredAssets | null>(null);
-  if (!requiredAssetsRef.current) {
-    requiredAssetsRef.current = new RequiredAssets(() => {
+  const awaitAssets = () =>
+    new RequiredAssets(() => {
       markInstant(MARK_ASSETS_READY);
       firstFrameArmedRef.current = true;
       onAssetsReadyRef.current?.();
     });
-  }
+  if (!requiredAssetsRef.current) requiredAssetsRef.current = awaitAssets();
   const onClickRef = useRef(onClick);
   onClickRef.current = onClick;
   const onMissRef = useRef(onMiss);
@@ -4827,7 +4848,11 @@ export function Scene3D({
             cam.position.lerpVectors(camLinear.posFrom, camTargetRef.current, camLinear.posT / camLinear.posMs);
           }
         } else if (smoothing > 0) {
-          cam.position.lerp(camTargetRef.current, 1 - Math.pow(1 - Math.min(0.95, smoothing), dtScale));
+          // A camera that was put nowhere (a place that was not a number)
+          // has nothing to be eased from: it is put where it is going, as it
+          // is with no smoothing. Eased, it stayed nowhere for good.
+          if (isPlace(cam.position)) cam.position.lerp(camTargetRef.current, 1 - Math.pow(1 - Math.min(0.95, smoothing), dtScale));
+          else cam.position.copy(camTargetRef.current);
         }
       }
 
@@ -4850,7 +4875,8 @@ export function Scene3D({
             look.lerpVectors(camLinear.lookFrom, want, camLinear.lookT / camLinear.lookMs);
           }
         } else if (smoothing > 0) {
-          look.lerp(want, 1 - Math.pow(1 - Math.min(0.95, smoothing), dtScale));
+          if (isPlace(look)) look.lerp(want, 1 - Math.pow(1 - Math.min(0.95, smoothing), dtScale));
+          else look.copy(want);
         } else {
           look.copy(want);
         }
@@ -5048,6 +5074,10 @@ export function Scene3D({
       standingRef.current = false;
       meshMap.forEach((entry) => discardEntry(scene, entry));
       meshMap.clear();
+      // Nor is what it was still waiting for waited on by the scene made in
+      // its place (StrictMode makes every scene twice): that one names the
+      // models it opens with itself, a group's models by names of their own.
+      if (!requiredAssetsRef.current?.isReady) requiredAssetsRef.current = awaitAssets();
       geometryPool.forEach((lease) => lease.geom.dispose());
       geometryPool.clear();
       // Nor is a camera of one of its models left to look through.
@@ -5076,6 +5106,8 @@ export function Scene3D({
       skyTextureRef.current = null;
       backgroundKeyRef.current = null;
       ownBackgroundRef.current = null;
+      // The fog was this scene's too: a scene made in its place has none until it is given it.
+      lastFogRef.current = '';
       // A chain still being fetched must not be installed on a dead renderer.
       effectsVersionRef.current += 1;
       if (effectsRigRef.current) {
@@ -5372,8 +5404,18 @@ export function Scene3D({
       viewSizeRef.current = { width: w, height: h };
       shapeCamera(cam, cameraShapeRef.current, w, h);
     };
+    // The screen changing shape while the scene fills it (a phone turned on
+    // its side): the size effect stands aside while it is full screen, and
+    // the canvas stayed the shape the screen had when it went full screen.
+    const onResize = () => {
+      if (wrapperRef.current && document.fullscreenElement === wrapperRef.current) onFsChange();
+    };
     document.addEventListener('fullscreenchange', onFsChange);
-    return () => document.removeEventListener('fullscreenchange', onFsChange);
+    window.addEventListener('resize', onResize);
+    return () => {
+      document.removeEventListener('fullscreenchange', onFsChange);
+      window.removeEventListener('resize', onResize);
+    };
   }, [width, height]);
 
   // Update renderer size
@@ -5925,8 +5967,11 @@ export function Scene3D({
       // `cameraSmoothing` the view turns to it from where it looks now, which
       // is where the mouse left it: the point it was last aimed at is from
       // before mouse look began, and turning from there swung the view away
-      // and back, even to a `lookAt` it was already facing.
-      lookNow.copy(cam.getWorldDirection(new THREE.Vector3()).multiplyScalar(5).add(cam.position));
+      // and back, even to a `lookAt` it was already facing. The camera of
+      // now: one of another kind may have taken the place of the camera
+      // there was when mouse look began, which nothing has turned since.
+      const viewer = cameraRef.current ?? cam;
+      lookNow.copy(viewer.getWorldDirection(new THREE.Vector3()).multiplyScalar(5).add(viewer.position));
       aimingRef.current = false;
       lastCamLookAtRef.current = '';
       lookContinuesRef.current = true;

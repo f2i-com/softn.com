@@ -254,6 +254,53 @@ describe('PublishModal', () => {
     expect(onPublished).toHaveBeenCalledWith(expect.objectContaining({ slug: 'star-hopper', version: 2 }), true);
   });
 
+  it('is not closed by Escape while the app is going up, so its edit key is shown', async () => {
+    // Close and the backdrop are held while publishing; Escape was not. A
+    // publish that went on after the dialog closed showed its key to nobody,
+    // and reopening the dialog cleared it: with storage refusing the key, the
+    // only proof the app is the author's was gone.
+    const editKey = 'c'.repeat(40);
+    let answer: (response: Response) => void = () => {};
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === '/api/categories') return new Response(JSON.stringify({ ok: true, categories: CATEGORIES }), { status: 200 });
+      if (url === '/api/apps' && init?.method === 'POST') return new Promise<Response>((resolve) => { answer = resolve; });
+      return new Response(JSON.stringify({ ok: false, error: `Unexpected ${url}` }), { status: 404 });
+    });
+    const onClose = vi.fn();
+    const bytes = makeBundle({ name: 'Slow Upload', category: 'games' });
+    act(() =>
+      root.render(
+        <PublishModal isOpen={true} onClose={onClose} projectName="Slow Upload" buildBundle={() => ({ bytes, fileName: 'slow.softn' })} />,
+      ),
+    );
+    await settle();
+    const submitBtn = [...host.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.textContent === 'Publish app')!;
+    await act(async () => {
+      submitBtn.click();
+    });
+    await settle(2);
+    expect(host.textContent).toContain('Publishing…');
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect(onClose).not.toHaveBeenCalled();
+    await act(async () => {
+      answer(new Response(JSON.stringify({
+        ok: true,
+        app: { slug: 'slow-upload', name: 'Slow Upload', category: 'games', version: 1, urls: { page: '/app/slow-upload', run: '/play/slow-upload' } },
+        editKey,
+        page: '/app/slow-upload',
+      }), { status: 201 }));
+    });
+    await settle();
+    expect(host.textContent).toContain(editKey);
+    // Once it is up, Escape closes as before.
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it('offers the standalone /publish fallback when the directory API is offline', async () => {
     fetchMock.mockRejectedValue(new TypeError('Failed to fetch'));
     const onClose = vi.fn();

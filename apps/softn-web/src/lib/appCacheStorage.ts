@@ -73,9 +73,12 @@ export function appDataStores(origin: string): AppDataStoreKeys[] {
   ];
 }
 
-/** The keys of one store of a build: under its prefix, and its own. */
-export function storeKeys({ prefix, owns }: Pick<AppDataStoreKeys, 'prefix' | 'owns'>): string[] {
-  return keysWithPrefix(prefix).filter((key) => owns(key.slice(prefix.length)));
+/**
+ * The keys of one store of a build: under its prefix, and its own. `all`: every
+ * stored key, read once already (`storedKeys`), for a caller asking of many builds.
+ */
+export function storeKeys({ prefix, owns }: Pick<AppDataStoreKeys, 'prefix' | 'owns'>, all?: readonly string[]): string[] {
+  return keysWithPrefix(prefix, all).filter((key) => owns(key.slice(prefix.length)));
 }
 
 /** The outcome of moving or copying one app's stored keys to another identity. */
@@ -94,7 +97,8 @@ export interface DataTransferResult {
   code?: string;
 }
 
-export function keysWithPrefix(prefix: string): string[] {
+export function keysWithPrefix(prefix: string, all?: readonly string[]): string[] {
+  if (all) return all.filter((key) => key.startsWith(prefix));
   // Snapshot the keys first: writing to localStorage while iterating its
   // indices is how you skip half of them.
   const keys: string[] = [];
@@ -103,6 +107,21 @@ export function keysWithPrefix(prefix: string): string[] {
     if (key && key.startsWith(prefix)) keys.push(key);
   }
   return keys;
+}
+
+/**
+ * Every stored key, read once, for a reader that asks the same of many builds
+ * in one go: Home, which asks of each build on each card whether it holds
+ * data, and walked every key for each question, six times for an older build
+ * on every drawing. Undefined where storage cannot be read: each question then
+ * reads, and fails, as it always has.
+ */
+export function storedKeys(): string[] | undefined {
+  try {
+    return keysWithPrefix('');
+  } catch {
+    return undefined;
+  }
 }
 
 export function describeError(err: unknown): string {
@@ -270,11 +289,14 @@ export function forgetSyncNotes(origin: string): void {
   }
 }
 
-/** Whether a build has any stored state of its own, in either store, i.e. whether it has been used. */
-export function hasStoredData(origin: string | undefined): boolean {
+/**
+ * Whether a build has any stored state of its own, in either store, i.e.
+ * whether it has been used. `all`: every stored key, read once (`storedKeys`).
+ */
+export function hasStoredData(origin: string | undefined, all?: readonly string[]): boolean {
   if (!origin) return false;
   try {
-    return appDataStores(origin).some((store) => storeKeys(store).length > 0);
+    return appDataStores(origin).some((store) => storeKeys(store, all).length > 0);
   } catch {
     return false;
   }
@@ -291,13 +313,13 @@ export function hasStoredData(origin: string | undefined): boolean {
  * hasStoredData every build of an app that seeds had data, and "Bring my data
  * forward" was never offered for one. Anything that cannot be read is taken
  * as data of its own, which only withholds the offer. Read during render, so
- * it reads each key once.
+ * it reads each key once. `all`: every stored key, read once (`storedKeys`).
  */
-export function holdsNothingOfItsOwn(origin: string | undefined): boolean {
+export function holdsNothingOfItsOwn(origin: string | undefined, all?: readonly string[]): boolean {
   if (!origin) return true;
   try {
     for (const store of appDataStores(origin)) {
-      const rests = storeKeys(store).map((key) => key.slice(store.prefix.length));
+      const rests = storeKeys(store, all).map((key) => key.slice(store.prefix.length));
       if (store.store === 'local') {
         if (rests.length > 0) return false;
         continue;

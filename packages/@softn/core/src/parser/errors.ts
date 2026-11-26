@@ -25,11 +25,11 @@ export class SoftNParseError extends Error {
     result += `  at line ${this.loc.line}, column ${this.loc.column}\n`;
 
     if (this.source) {
-      const lines = this.source.split('\n');
+      const lines = sourceLines(this.source);
       const line = lines[this.loc.line - 1];
       if (line) {
         result += `\n  ${this.loc.line} | ${line}\n`;
-        result += `    | ${' '.repeat(this.loc.column - 1)}^\n`;
+        result += `    | ${caretPad(this.loc.column)}^\n`;
       }
     }
 
@@ -117,6 +117,24 @@ export class InvalidCollectionError extends SoftNParseError {
 }
 
 /**
+ * A page's lines as an excerpt quotes them, counted as the lexer counts them
+ * (by LF), with no `\r` left at the end of one saved with CR LF to send the
+ * caret line back over the quoted one.
+ */
+function sourceLines(source: string): string[] {
+  return source.split('\n').map((line) => (line.endsWith('\r') ? line.slice(0, -1) : line));
+}
+
+/**
+ * The spaces before the caret under column `column`. A token that begins
+ * with the line break before it (words after an element) is at column 0,
+ * and `' '.repeat(-1)` threw out of the error's own report.
+ */
+function caretPad(column: number): string {
+  return ' '.repeat(Math.max(0, column - 1));
+}
+
+/**
  * Create error context for better error messages
  */
 export function createErrorContext(
@@ -124,7 +142,7 @@ export function createErrorContext(
   loc: SourceLocation,
   contextLines: number = 2
 ): string {
-  const lines = source.split('\n');
+  const lines = sourceLines(source);
   const startLine = Math.max(0, loc.line - 1 - contextLines);
   const endLine = Math.min(lines.length, loc.line + contextLines);
 
@@ -135,7 +153,7 @@ export function createErrorContext(
     result += `${prefix}${lineNum.toString().padStart(4)} | ${lines[i]}\n`;
 
     if (lineNum === loc.line) {
-      result += `       | ${' '.repeat(loc.column - 1)}^\n`;
+      result += `       | ${caretPad(loc.column)}^\n`;
     }
   }
 

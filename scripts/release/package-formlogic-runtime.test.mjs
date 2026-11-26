@@ -16,6 +16,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { readArchive } from '../lib/archive.mjs';
+import { COPIES_FORMAT, materializeCopies } from '../lib/archive-copies.mjs';
 import { containerEngineBundle, isZippEngineWasm, isZippTorchPackageWasm, wasmExportNames, wasmImportNames } from '../lib/zipp-engine-copy.mjs';
 import { PACKAGES, archiveName, packageById, root } from './release-packages.mjs';
 import { HOSTED_ENGINES_PROTOCOL, LOGIC_LANGUAGES_PROTOCOL, RUNTIME_ENGINES, RUNTIME_FEATURES } from '../../apps/formlogic-host/src/engineInit.ts';
@@ -116,17 +117,28 @@ test('the archive the assembler writes keeps the contract', { skip: process.env.
     const name = archiveName('formlogic-runtime', { tag });
     const zip = fs.readFileSync(path.join(out, name));
     assert.equal(fs.readFileSync(path.join(out, `${name}.sha256`), 'utf8').trim(), `${sha256(zip)}  ${name}`, 'the sidecar names the archive and its digest');
-    const { entries, problems } = readArchive(zip);
+    const { entries: stored, problems } = readArchive(zip);
     assert.deepEqual(problems, []);
+
+    // softn-release.json: the tag, the commit, the engine, the protocols, and every other file.
+    const release = JSON.parse(stored.get('softn-release.json').data.toString('utf8'));
+    assert.equal(release.formatVersion, COPIES_FORMAT);
+    // The files several trees carry are stored once and filled back in, as FormLogic fills them in:
+    // the engine of native-runtime/ is zipp/'s, its container engines the hosted runtime's.
+    for (const [copy, from] of Object.entries(release.copies)) {
+      assert.ok(!stored.has(copy), `${copy} is not stored again`);
+      assert.ok(stored.has(from), `${copy}'s bytes are stored, at ${from}`);
+    }
+    assert.equal(release.copies['native-runtime/wasm/zipp_wasm_bg.wasm'], 'zipp/zipp_wasm_bg.wasm');
+    for (const engine of ['zipp-php', 'zipp-rust', 'zipp-typescript']) {
+      assert.match(release.copies[`native-runtime/wasm/container/${engine}.wasm`] ?? '', new RegExp(`^hosted-runtime/assets/container-runtime/[^/]+/engines/${engine}\\.wasm$`));
+    }
+    const entries = materializeCopies(stored, release);
     const bytes = (n) => {
       const e = entries.get(n);
       assert.ok(e, `${n} is in the archive`);
       return Buffer.isBuffer(e) ? e : e.data;
     };
-
-    // softn-release.json: the tag, the commit, the engine, the protocols, and every other file.
-    const release = JSON.parse(bytes('softn-release.json').toString('utf8'));
-    assert.equal(release.formatVersion, 1);
     assert.equal(release.tag, tag);
     assert.equal(release.version, '9.9.9');
     assert.match(release.commit, /^[0-9a-f]{40}$/);

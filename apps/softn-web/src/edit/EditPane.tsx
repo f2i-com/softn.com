@@ -389,7 +389,10 @@ export default function EditPane({ tabId, tab, host, shown }: EditPaneProps): Re
     const app = tabRef.current.appId;
     if (app && file !== null) noteEditorPlace(app, { file, caret: field?.selectionStart ?? 0 });
   }, [file]);
-  useEffect(() => {
+  // A layout effect, so that the editor put away notes the caret while its
+  // field is still there: by the time a passive effect's cleanup ran, the
+  // field was gone, and the caret was noted as at the start of the file.
+  useLayoutEffect(() => {
     leave();
     window.addEventListener('pagehide', leave);
     return () => {

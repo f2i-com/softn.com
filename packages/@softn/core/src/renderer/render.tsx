@@ -29,7 +29,9 @@ import { DROPPABLE_EVENT_PROPS, forEventProp } from '../runtime/droppable-calls'
 import { hostHoldsKeyboard } from '../runtime/key-capture';
 import {
   beginPass,
+  enterRow,
   keep,
+  leaveRow,
   recall,
   sameNodes,
   sameProps,
@@ -293,29 +295,50 @@ function reusableFragment(
   if (!active || typeof cacheKey !== 'string' || !Array.isArray(children)) {
     return React.createElement(React.Fragment, { key: reactKey }, children);
   }
-  const before = recall(active, cacheKey, node, kind);
+  const before = recall(active, node, kind);
   if (before && before.text === String(reactKey) && sameNodes(before.children, children)) {
-    keep(active, cacheKey, before);
+    keep(active, before);
     return before.result;
   }
   const result = React.createElement(React.Fragment, { key: reactKey }, children);
-  keep(active, cacheKey, { node, kind, result, children, text: String(reactKey) });
+  keep(active, { node, kind, result, children, text: String(reactKey) });
   return result;
 }
 
 /**
- * Generate a stable key for a template node based on its location
+ * One letter for each kind of node, for its key. A key holds the keys of
+ * everything around it, is made for every node of every drawing, kept on
+ * every element and compared by React wherever a list changes, so its length
+ * is paid for many times over: the kind's whole name and the words around
+ * the place in the source made the key of a row's text near a hundred
+ * characters.
+ */
+const NODE_KEY_CODES: Readonly<Record<TemplateNode['type'], string>> = {
+  Element: 'E',
+  Text: 'T',
+  Expression: 'X',
+  IfBlock: 'I',
+  EachBlock: 'B',
+  Slot: 'S',
+  TemplateSlot: 'P',
+};
+
+/**
+ * A stable key for a template node: its kind and its place in the source,
+ * after its parent's key. The same source gives the same keys, so a page
+ * read again after an edit keeps what React holds for it.
  */
 function generateNodeKey(node: TemplateNode, index: number, parentKey?: string): string {
   const prefix = parentKey ? `${parentKey}-` : '';
+  const code = NODE_KEY_CODES[node.type] ?? node.type;
 
   // Use source location if available for stable keys
   if (node.loc) {
-    return `${prefix}${node.type}-L${node.loc.line}-C${node.loc.column}`;
+    return `${prefix}${code}${node.loc.line}.${node.loc.column}`;
   }
 
   // Fallback to index-based key (less stable but better than nothing)
-  return `${prefix}${node.type}-${index}`;
+  return `${prefix}${code}#${index}`;
 }
 
 /**
@@ -578,7 +601,7 @@ function ShellElement({ shell, id, context, registry }: ShellProps & { id: numbe
   // A value, a tick or focus the code asked for is the drawn element's own
   // state, not markup: done to it once it is on the page.
   React.useLayoutEffect(() => shell.settle(id), [shell, id, version]);
-  return React.createElement(React.Fragment, null, renderElement(shell.elementFor(id), context, registry));
+  return React.createElement(React.Fragment, null, asDrawing(() => renderElement(shell.elementFor(id), context, registry)));
 }
 
 /** The page's body, as the code has made it. */
@@ -586,7 +609,23 @@ function ShellBody({ shell, template, context, registry }: ShellProps & { templa
   const subscribe = React.useCallback((onChange: () => void) => shell.subscribe(shell.bodyId, onChange), [shell]);
   const read = () => shell.version(shell.bodyId);
   React.useSyncExternalStore(subscribe, read, read);
-  return React.createElement(React.Fragment, null, renderNodes(shell.bodyFor(template), context, registry));
+  return React.createElement(React.Fragment, null, asDrawing(() => renderNodes(shell.bodyFor(template), context, registry)));
+}
+
+/**
+ * `draw()` as a part of the page being drawn (evaluate.ts `beginDrawing`).
+ * A ShellElement draws its element when React renders it, outside the one
+ * call that draws the rest of the page, and so outside its drawing: an
+ * attribute written `title={n++}` wrote state while the element was being
+ * drawn, which drew it again, without end.
+ */
+function asDrawing<T>(draw: () => T): T {
+  beginDrawing();
+  try {
+    return draw();
+  } finally {
+    endDrawing();
+  }
 }
 
 /**
@@ -883,6 +922,22 @@ const BOUND_STATE: Record<string, { prop: string; flag?: boolean; writes: Array<
   DPad: { prop: 'value', writes: [['onChange']] },
 };
 
+/**
+ * Whether an element is written with `autofocus`, in any spelling, as a
+ * property or a binding: the only places the name can come from.
+ */
+const focusAsked = new WeakMap<ElementNode, boolean>();
+function asksForFocus(node: ElementNode): boolean {
+  let asks = focusAsked.get(node);
+  if (asks === undefined) {
+    asks =
+      node.props.some((prop) => prop.name.toLowerCase() === 'autofocus') ||
+      node.bindings.some((binding) => binding.name.toLowerCase() === 'autofocus');
+    focusAsked.set(node, asks);
+  }
+  return asks;
+}
+
 /** Whether an element writes state itself: it has a `:bind`, or is a grid with `selectTo`. */
 function writesState(node: ElementNode): boolean {
   for (const binding of node.bindings) if (binding.name === 'bind') return true;
@@ -939,8 +994,9 @@ function renderElement(
           ? String((item as { id: unknown }).id)
           : (keys?.[index] ?? String(index));
 
-      // The same element, drawn for this pass rather than looped again.
-      return renderElement(node, iterContext, registry, `${key}-${itemKey}`, true);
+      // The same element, drawn for this pass rather than looped again, in
+      // a place of its own for the item (reuse.ts `enterRow`).
+      return inRow(node, itemKey, () => renderElement(node, iterContext, registry, `${key}-${itemKey}`, true));
     });
 
     return reusableFragment(node, 'each', key, key, renderedItems);
@@ -1384,13 +1440,13 @@ function renderElement(
 
     if (handlerExpr.type === 'CallExpression') {
       // Wrap in closure - execute the call when the event fires
-      props[reactEventProp(event.name)] = wrapEventHandler(event.name, () => {
+      props[boundHandlerName] = wrapEventHandler(event.name, () => {
         return evaluateExpression(handlerExpr, handlerContext);
       });
     } else if (handlerExpr.type === 'ArrowFunctionExpression') {
       // Arrow functions are already deferred - evaluate to get the function
       const handler = evaluateExpression(handlerExpr, handlerContext);
-      props[reactEventProp(event.name)] =
+      props[boundHandlerName] =
         typeof handler === 'function'
           ? wrapEventHandler(event.name, handler as EventHandler, event.quoted === true)
           : handler;
@@ -1398,7 +1454,7 @@ function renderElement(
       // Function reference - evaluate to get the function, wrap to ensure it's callable
       const handler = evaluateExpression(handlerExpr, handlerContext);
       if (typeof handler === 'function') {
-        props[reactEventProp(event.name)] = wrapEventHandler(event.name, handler as EventHandler);
+        props[boundHandlerName] = wrapEventHandler(event.name, handler as EventHandler);
       } else {
         // If not a function, wrap in a no-op to prevent errors.
         // Only warn if the script has finished loading — before that, functions
@@ -1406,11 +1462,11 @@ function renderElement(
         if (isDevelopment && context.scriptLoaded) {
           console.warn(`Event handler for ${event.name} is not a function:`, handler);
         }
-        props[reactEventProp(event.name)] = () => {};
+        props[boundHandlerName] = () => {};
       }
     } else {
       // Other expression types - wrap in closure for safety
-      props[reactEventProp(event.name)] = wrapEventHandler(event.name, () => {
+      props[boundHandlerName] = wrapEventHandler(event.name, () => {
         return evaluateExpression(handlerExpr, handlerContext);
       });
     }
@@ -1539,11 +1595,12 @@ function renderElement(
     coerceDeclaredProps(props, registry.getPropKinds(registry.resolveName(node.tag) ?? node.tag));
   }
   dropRawMarkupProp(props);
-  // Prevent DOM clobbering of internal `window.__*` host globals via either raw elements
-  // or registered components forwarding `id` / `name` to the DOM — including non-string
-  // values (e.g. `id={["__TAURI__"]}`) that React coerces with `String()`.
+  // One pass over the names, for two things.
   for (const attr of Object.keys(props)) {
     const lower = attr.toLowerCase();
+    // Prevent DOM clobbering of internal `window.__*` host globals via either raw elements
+    // or registered components forwarding `id` / `name` to the DOM — including non-string
+    // values (e.g. `id={["__TAURI__"]}`) that React coerces with `String()`.
     if (lower === 'id' || lower === 'name') {
       const val = props[attr];
       if (val !== undefined && val !== null) {
@@ -1557,12 +1614,11 @@ function renderElement(
           delete props[attr];
         }
       }
+      continue;
     }
-  }
-  // Fold any case-variant `STYLE` / `Style` prop into `props.style` so raw HTML elements
-  // cannot bypass CSS egress or top-layer checks via mixed-case attribute names.
-  for (const attr of Object.keys(props)) {
-    if (attr !== 'style' && attr.toLowerCase() === 'style') {
+    // Fold any case-variant `STYLE` / `Style` prop into `props.style` so raw HTML elements
+    // cannot bypass CSS egress or top-layer checks via mixed-case attribute names.
+    if (attr !== 'style' && lower === 'style') {
       const rawVariant = props[attr];
       delete props[attr];
       const parsedVariant =
@@ -1619,8 +1675,10 @@ function renderElement(
   // the person is using something of the host's (key-capture.ts
   // `hostHoldsKeyboard`): an app drew a field with it on a timer, and what
   // was being typed for the host went into the app. On an element or on a
-  // component, however the page spelled it.
-  if (hostHoldsKeyboard()) {
+  // component, however the page spelled it. Asked only of an element written
+  // with one: the question reads the page's focus, and was asked of every
+  // element of every drawing.
+  if (asksForFocus(node) && hostHoldsKeyboard()) {
     for (const attr of Object.keys(props)) {
       if (attr.toLowerCase() === 'autofocus') delete props[attr];
     }
@@ -1629,7 +1687,7 @@ function renderElement(
   // With everything this element would be made from in hand, see whether it
   // is what this place was made from last time; see reuse.ts.
   const active = typeof key === 'string' ? pass : null;
-  const before = active ? recall(active, key as string, node, 'element') : undefined;
+  const before = active ? recall(active, node, 'element') : undefined;
   const settled = active ? settleProps(props, before) : undefined;
   const drawn = childless ? NO_CHILDREN : (children as React.ReactNode[]);
   // While a host edits the app, which node drew each element is noted for it
@@ -1646,7 +1704,7 @@ function renderElement(
     sameProps(before.props, props, settled.styleUnchanged) &&
     sameNodes(before.children, drawn)
   ) {
-    keep(active, key as string, before);
+    keep(active, before);
     return before.result;
   }
 
@@ -1677,7 +1735,7 @@ function renderElement(
       : element;
 
   if (active && settled) {
-    keep(active, key as string, {
+    keep(active, {
       node,
       kind: 'element',
       result,
@@ -1861,13 +1919,13 @@ function renderSlot(
 function renderText(node: TextNode, key?: number | string): React.ReactNode {
   const active = pass;
   if (active && typeof key === 'string') {
-    const before = recall(active, key, node, 'text');
+    const before = recall(active, node, 'text');
     if (before) {
-      keep(active, key, before);
+      keep(active, before);
       return before.result;
     }
     const result = React.createElement(React.Fragment, { key }, node.content);
-    keep(active, key, { node, kind: 'text', result });
+    keep(active, { node, kind: 'text', result });
     return result;
   }
   // Use React.Fragment to properly handle text nodes
@@ -1895,13 +1953,13 @@ function renderExpression(
   const text = value == null || typeof value === 'boolean' ? '' : String(value);
   const active = pass;
   if (active && typeof key === 'string') {
-    const before = recall(active, key, node, 'expression');
+    const before = recall(active, node, 'expression');
     if (before && before.text === text) {
-      keep(active, key, before);
+      keep(active, before);
       return before.result;
     }
     const result = React.createElement(React.Fragment, { key }, text);
-    keep(active, key, { node, kind: 'expression', result, text });
+    keep(active, { node, kind: 'expression', result, text });
     return result;
   }
   return React.createElement(React.Fragment, { key }, text);
@@ -2189,12 +2247,29 @@ function renderEachBlock(
     if (node.keyExpression && iterContext.each) iterContext.each.key = itemKey;
 
     const rowKey = `${key}-item-${itemKey}`;
-    const children = renderNodes(node.body, iterContext, registry, rowKey);
-
-    return reusableFragment(node, 'row', rowKey, itemKey, children);
+    // Each row is a place of its own for what it draws (reuse.ts `enterRow`).
+    return inRow(node, itemKey, () =>
+      reusableFragment(node, 'row', rowKey, itemKey, renderNodes(node.body, iterContext, registry, rowKey))
+    );
   });
 
   return reusableFragment(node, 'each', key, key, renderedItems);
+}
+
+/**
+ * `draw()` for the row `key` of the loop `loop`, in the row's own scope of
+ * the render cache when there is one: what the row draws is found there
+ * by the node that drew it.
+ */
+function inRow<T>(loop: object, key: string, draw: () => T): T {
+  const active = pass;
+  if (!active) return draw();
+  const outer = enterRow(active, loop, key);
+  try {
+    return draw();
+  } finally {
+    leaveRow(active, outer);
+  }
 }
 
 /**
@@ -2282,7 +2357,21 @@ const REACT_EVENT_PROPS: Readonly<Record<string, string>> = {
   contextrestored: 'onContextRestored',
 };
 
+/**
+ * The React prop for each event name met so far: worked out for every event
+ * of every element at every drawing, it was a new string each time. Names
+ * come from what a page writes, so there are few of them, and the table
+ * stops growing at a size no page reaches.
+ */
+const reactEventProps = new Map<string, string>();
+
 /** The React prop name for an authored `@event`. */
 export function reactEventProp(name: string): string {
-  return REACT_EVENT_PROPS[name] ?? `on${capitalize(name)}`;
+  let prop = reactEventProps.get(name);
+  if (prop === undefined) {
+    // The table's own entries: `@constructor` found the function every object has.
+    prop = Object.hasOwn(REACT_EVENT_PROPS, name) ? REACT_EVENT_PROPS[name] : `on${capitalize(name)}`;
+    if (reactEventProps.size < 1024) reactEventProps.set(name, prop);
+  }
+  return prop;
 }

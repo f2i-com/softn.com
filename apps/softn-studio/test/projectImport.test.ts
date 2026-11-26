@@ -364,6 +364,21 @@ describe('which imported entries are text', () => {
     expect(entries.get('server/main.logic')).toContain('function listItems');
   });
 
+  // An older website's pages and notes are often Latin-1 or Windows-1252. Named as text, they
+  // were decoded as UTF-8 all the same: every character that did not decode became U+FFFD, the
+  // export wrote that in place of the file, and the file was not what it had been, for good.
+  it('keeps a file named as text whose bytes are not UTF-8 as those bytes, and says which', () => {
+    const page = new Uint8Array([...strToU8('<!doctype html><meta charset="iso-8859-1"><p>Caf'), 0xe9, ...strToU8('</p>')]);
+    const notes = new Uint8Array([0xff, 0xfe, 0x68, 0x00, 0x69, 0x00]);
+    const archive = zipSync({ 'index.html': page, 'notes/readme.txt': notes, 'about.html': strToU8('<p>café</p>') });
+    let kept: string[] = [];
+    const entries = new Map(readProjectArchive(archive, undefined, (names) => { kept = names; }).map((entry) => [entry.path, entry.content]));
+    expect(entries.get('index.html')).toEqual(page);
+    expect(entries.get('notes/readme.txt')).toEqual(notes);
+    expect(entries.get('about.html')).toBe('<p>café</p>');
+    expect(kept).toEqual(['index.html', 'notes/readme.txt']);
+  });
+
   it('keeps decoding the source formats Studio always read as text, which core has no entry for', () => {
     const archive = zipSync({
       'src/helper.ts': strToU8('export const a = 1;\n'),

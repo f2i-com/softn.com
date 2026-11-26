@@ -43,6 +43,11 @@ export interface ToolContext {
   sqliteBindings?: LoadedXdbBindings;
   /** A fresh transaction id for a write. */
   newTransactionId(): string;
+  /**
+   * Whether the call is still its run's: false once the run was stopped (Stop has told the
+   * model the call did not run) or discarded (another project has taken this one's place).
+   */
+  isCurrent?(): boolean;
 }
 
 export type ToolControl =
@@ -157,33 +162,63 @@ function resolveExisting(raw: string | undefined, files: Map<string, VFSFile>): 
   return { ok: true, path: verdict.path, file };
 }
 
-/** Why a write the "seen" rule refuses is refused, in words for the model. */
-function describeSeenRefusal(path: string, refusal: NonNullable<ReturnType<typeof checkWrite>>, tool: string): string {
+/** Whether one read_file can show the whole of a text: no more lines and characters than it shows at a time. */
+function readableWhole(text: string): boolean {
+  return text.length <= MAX_READ_CHARS && lineCount(text) <= MAX_READ_LINES;
+}
+
+/** Why a write the "seen" rule refuses is refused, in words for the model. `file` is the file as it is, for a refusal that depends on its length. */
+function describeSeenRefusal(path: string, refusal: NonNullable<ReturnType<typeof checkWrite>>, tool: string, file?: VFSFile): string {
   switch (refusal.kind) {
     case 'unseen':
       return `${path} exists and you have not read it in this run. Call read_file on it first${tool === 'write_file' ? ', or use edit_file for a change' : ''}.`;
     case 'partial':
+      // Told to read it whole, a model read, was refused, and read again until its steps ran out.
+      if (file && typeof file.content === 'string' && !readableWhole(file.content)) {
+        return `${path} is too long to be read whole (read_file shows ${MAX_READ_LINES} lines or ${MAX_READ_CHARS.toLocaleString('en-US')} characters at a time), so write_file cannot replace it. Change it with edit_file, one part at a time.`;
+      }
       return `You have read only part of ${path}. write_file replaces the whole file, so read it whole first (read_file without a line range), or change it with edit_file.`;
     case 'stale':
       return `${path} changed since you read it (v${refusal.suppliedVersion} → v${refusal.currentVersion}) — the person may have edited it. Read it again before changing it.`;
   }
 }
 
-/** Commit records as one transaction and refresh what the model is taken to have seen. */
-function commit(records: VFSChangeRecord[], ctx: ToolContext, seenAfter: Array<{ path: string; whole: boolean }>): string {
-  const id = ctx.newTransactionId();
+/**
+ * What a write leaves the model having seen of each file: `whole` when it wrote the file from
+ * its own text, part of it when it edited it. `generated` is a file a tool made the text of
+ * (the SQLite tools' manifest entry and seed dump, design_database's schema and manifest): the
+ * model was not shown that text, so it may edit the file as it is now, as a file it has read
+ * part of, and reads it before replacing it. Counted as read whole, a write_file of the
+ * manifest the model remembered took out the database the tool had just put in.
+ */
+export type SeenAfter = Array<{ path: string; whole: boolean; generated?: boolean }>;
+
+/**
+ * Commit records as one transaction and refresh what the model is taken to have seen. `began`
+ * is the project's files as the call found them, which the records were made from.
+ *
+ * A call that waits before it writes (the SQLite tools load their engine and open the
+ * database) may come back to a run that was stopped, which has told the model it did not run,
+ * or to another project, over whose files records made from this one's would be written. It
+ * writes nothing then, and nothing over a file that changed while it waited.
+ */
+function commit(records: VFSChangeRecord[], ctx: ToolContext, seenAfter: SeenAfter, began: Map<string, VFSFile>): string {
+  if (ctx.isCurrent && !ctx.isCurrent()) throw new Error('the run was stopped, or the project closed, while this ran, so nothing was written');
   const vfs = useVFSStore.getState();
+  const moved = records.find((record) => vfs.files.get(record.path) !== began.get(record.path));
+  if (moved) throw new Error(`${moved.path} changed while this ran, so nothing was written. Read it again, then repeat the call`);
+  const id = ctx.newTransactionId();
   vfs.applyTransaction(records, 'ai', id);
   const files = useVFSStore.getState().files;
   // A file made at a path is a new one: what was seen there was another file, which the person
   // may since have deleted or renamed away. Merged in, a whole read of that one made a partial
   // read of a file renamed there count as whole, and a write over it took lines never seen.
   for (const record of records) if (record.op === 'delete' || record.op === 'create') ctx.seen.delete(record.path);
-  for (const { path, whole } of seenAfter) {
+  for (const { path, whole, generated } of seenAfter) {
     const file = files.get(path);
     if (!file || typeof file.content !== 'string') continue;
     const previous = ctx.seen.get(path);
-    const complete = whole || (previous?.complete ?? false);
+    const complete = !generated && (whole || (previous?.complete ?? false));
     ctx.seen.set(path, { path, complete, version: file.version, shown: complete ? file.content.length : previous?.shown ?? 0, total: file.content.length });
   }
   return id;
@@ -251,12 +286,14 @@ export async function executeTool(call: AgentToolCall, ctx: ToolContext): Promis
           const target = resolveWritable(path, files, true);
           if (!target.ok) return fail(subject, target.reason);
           const current = files.get(path);
-          const refusal = checkWrite(path, ctx.seen, current, 'replace');
+          // Made from the file as it is, not from text the model sends: seen at all, and not
+          // changed since, is enough (as for edit_file).
+          const refusal = checkWrite(path, ctx.seen, current, 'edit');
           if (refusal) return fail(subject, describeSeenRefusal(path, refusal, 'design_database'));
           records.push({ op: current ? 'update' : 'create', path, content });
           diff.push(lineDiff(path, typeof current?.content === 'string' ? current.content : null, content));
         }
-        const transactionId = commit(records, ctx, records.map(r => ({ path: r.path, whole: false })));
+        const transactionId = commit(records, ctx, records.map(r => ({ path: r.path, whole: false, generated: true })), files);
         return { isError: false, subject, changed: true, diff, transactionId, content: `Created ${subject} in ${plan.path} and updated manifest.json. Read the new source to edit it.` };
       } catch (problem) { return fail(subject, (problem as Error).message); }
     }
@@ -264,28 +301,28 @@ export async function executeTool(call: AgentToolCall, ctx: ToolContext): Promis
       return await runSqliteListDatabases({
         files,
         bindings: ctx.sqliteBindings,
-        commit: (records, seenAfter) => commit(records, ctx, seenAfter),
+        commit: (records, seenAfter) => commit(records, ctx, seenAfter, files),
       });
     }
     case 'sqlite_schema': {
       return await runSqliteSchema(input, {
         files,
         bindings: ctx.sqliteBindings,
-        commit: (records, seenAfter) => commit(records, ctx, seenAfter),
+        commit: (records, seenAfter) => commit(records, ctx, seenAfter, files),
       });
     }
     case 'sqlite_query': {
       return await runSqliteQuery(input, {
         files,
         bindings: ctx.sqliteBindings,
-        commit: (records, seenAfter) => commit(records, ctx, seenAfter),
+        commit: (records, seenAfter) => commit(records, ctx, seenAfter, files),
       });
     }
     case 'sqlite_execute': {
       return await runSqliteExecute(input, {
         files,
         bindings: ctx.sqliteBindings,
-        commit: (records, seenAfter) => commit(records, ctx, seenAfter),
+        commit: (records, seenAfter) => commit(records, ctx, seenAfter, files),
       });
     }
     case 'list_files': {
@@ -387,10 +424,10 @@ export async function executeTool(call: AgentToolCall, ctx: ToolContext): Promis
       const applied = appliedMigrationRefusal(target.path, 'replace', content, files.keys());
       if (applied) return fail(target.path, applied);
       const refusal = checkWrite(target.path, ctx.seen, current, 'replace');
-      if (refusal) return fail(target.path, describeSeenRefusal(target.path, refusal, 'write_file'));
+      if (refusal) return fail(target.path, describeSeenRefusal(target.path, refusal, 'write_file', current));
       const before = current && typeof current.content === 'string' ? current.content : null;
       if (before === content) return { content: `${target.path} already has exactly this content; nothing changed.`, isError: false, subject: target.path };
-      const transactionId = commit([{ op: current ? 'update' : 'create', path: target.path, content }], ctx, [{ path: target.path, whole: true }]);
+      const transactionId = commit([{ op: current ? 'update' : 'create', path: target.path, content }], ctx, [{ path: target.path, whole: true }], files);
       const diff = lineDiff(target.path, before, content);
       return {
         content: `${current ? 'Replaced' : 'Created'} ${target.path} (${lineCount(content)} lines, +${diff.added} −${diff.removed}).`,
@@ -443,7 +480,7 @@ export async function executeTool(call: AgentToolCall, ctx: ToolContext): Promis
       }
       const next = replaceAll ? content.split(oldString).join(newString) : content.replace(oldString, () => newString);
       if (next === content) return { content: `${path} already has exactly this text; nothing changed.`, isError: false, subject: path };
-      const transactionId = commit([{ op: 'update', path, content: next }], ctx, [{ path, whole: false }]);
+      const transactionId = commit([{ op: 'update', path, content: next }], ctx, [{ path, whole: false }], files);
       const diff = lineDiff(path, content, next);
       return {
         content: `Edited ${path}: replaced ${replaceAll ? `${count} occurrence(s)` : '1 occurrence'} (+${diff.added} −${diff.removed} lines; now ${lineCount(next)} lines).`,
@@ -469,7 +506,7 @@ export async function executeTool(call: AgentToolCall, ctx: ToolContext): Promis
         return fail(found.path, describeSeenRefusal(found.path, { kind: 'stale', suppliedVersion: read.version, currentVersion: found.file.version }, 'delete_file'));
       }
       const before = typeof found.file.content === 'string' ? found.file.content : null;
-      const transactionId = commit([{ op: 'delete', path: found.path }], ctx, []);
+      const transactionId = commit([{ op: 'delete', path: found.path }], ctx, [], files);
       return {
         content: `Deleted ${found.path}.`,
         isError: false,
@@ -506,6 +543,7 @@ export async function executeTool(call: AgentToolCall, ctx: ToolContext): Promis
         ],
         ctx,
         read ? [{ path: to.path, whole: read.complete }] : [],
+        files,
       );
       return {
         content: `Renamed ${from.path} to ${to.path}. Update references to the old path (imports, <logic src>, manifest.json).`,

@@ -146,6 +146,21 @@ export function Tooltip({
   const variantStyle = choice(variantStyles, variant, 'dark');
   const sizeStyle = choice(sizeConfig, size, 'md');
 
+  // The page is told of a change, not of every show and hide: a tooltip
+  // passed over before its delay was up never opened and was said to have
+  // closed, and one focused and then pointed at was said to open twice.
+  // What it last said, kept to what it shows at each draw.
+  const toldOpen = useRef(isOpen);
+  toldOpen.current = isOpen;
+  const tellOpen = useCallback(
+    (next: boolean) => {
+      if (toldOpen.current === next) return;
+      toldOpen.current = next;
+      onOpenChange?.(next);
+    },
+    [onOpenChange]
+  );
+
   // Clear all timeouts
   const clearTimeouts = useCallback(() => {
     if (showTimeoutRef.current) {
@@ -174,16 +189,16 @@ export function Tooltip({
         if (controlledOpen === undefined) {
           setInternalOpen(true);
         }
-        onOpenChange?.(true);
+        tellOpen(true);
       }, showDelay);
     } else {
       setIsAnimating(true);
       if (controlledOpen === undefined) {
         setInternalOpen(true);
       }
-      onOpenChange?.(true);
+      tellOpen(true);
     }
-  }, [disabled, trigger, showDelay, controlledOpen, onOpenChange, clearTimeouts]);
+  }, [disabled, trigger, showDelay, controlledOpen, tellOpen, clearTimeouts]);
 
   // Hide tooltip
   const hide = useCallback(() => {
@@ -196,7 +211,7 @@ export function Tooltip({
         if (controlledOpen === undefined) {
           setInternalOpen(false);
         }
-        onOpenChange?.(false);
+        tellOpen(false);
         // Keep animating state for exit animation
         animationTimeoutRef.current = setTimeout(() => setIsAnimating(false), animationDuration);
       }, hideDelay);
@@ -204,10 +219,10 @@ export function Tooltip({
       if (controlledOpen === undefined) {
         setInternalOpen(false);
       }
-      onOpenChange?.(false);
+      tellOpen(false);
       animationTimeoutRef.current = setTimeout(() => setIsAnimating(false), animationDuration);
     }
-  }, [trigger, hideDelay, controlledOpen, onOpenChange, animationDuration, clearTimeouts]);
+  }, [trigger, hideDelay, controlledOpen, tellOpen, animationDuration, clearTimeouts]);
 
   // Toggle for click trigger
   const toggle = useCallback(() => {

@@ -214,6 +214,9 @@ export const KEYWORDS: Record<string, TokenType> = {
   void: TokenType.VOID,
 };
 
+/** KEYWORDS as a map, read for every word the lexer reads. */
+const KEYWORD_TYPES: ReadonlyMap<string, TokenType> = new Map(Object.entries(KEYWORDS));
+
 /**
  * Check if a string is a keyword
  */
@@ -221,8 +224,9 @@ export function lookupKeyword(identifier: string): TokenType {
   // Own keys only. KEYWORDS is a plain object, so `KEYWORDS['toString']` found
   // Object.prototype's method and `{toString}` lexed as a token of type
   // `function toString() …` — the parser rendered nothing for it, and the
-  // same went for `constructor`, `valueOf`, `__proto__`, and the rest.
-  return Object.hasOwn(KEYWORDS, identifier) ? KEYWORDS[identifier] : TokenType.IDENTIFIER;
+  // same went for `constructor`, `valueOf`, `__proto__`, and the rest. A Map
+  // has only what was put in it.
+  return KEYWORD_TYPES.get(identifier) ?? TokenType.IDENTIFIER;
 }
 
 /**

@@ -1,6 +1,6 @@
 import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { DEFAULT_URLS } from '@softn/brand';
-import { currentBuildId, groupByApp, hasStoredData, holdsNothingOfItsOwn, isOfflineReady, type CachedApp } from '../lib/appCache';
+import { currentBuildId, groupByApp, hasStoredData, holdsNothingOfItsOwn, isOfflineReady, storedKeys, type CachedApp } from '../lib/appCache';
 import { DirectoryShelf } from './DirectoryShelf';
 
 /*
@@ -150,6 +150,16 @@ export function Launcher({
   );
 
   const groups = useMemo(() => groupByApp(apps), [apps]);
+  // What each build holds is read as it is drawn, from every stored key read
+  // once for the drawing, and asked once of each build: a card asked of an
+  // older build up to six times, and each question walked every key.
+  const keys = storedKeys();
+  const used = new Map<string | undefined, boolean>();
+  const hasData = (origin: string | undefined): boolean => {
+    let has = used.get(origin);
+    if (has === undefined) used.set(origin, (has = hasStoredData(origin, keys)));
+    return has;
+  };
   const [search, setSearch] = useState('');
   const query = groups.length > 1 ? search.trim().toLowerCase() : '';
   const visibleGroups = query ? groups.filter(({ name }) => name.toLowerCase().includes(query)) : groups;
@@ -323,10 +333,16 @@ export function Launcher({
                   // Notes.
                   const app = group.current;
                   const olderVersions = group.versions.slice(1);
-                  // The most recently used older build that holds records of its
+                  // Offered while this build holds nothing of its own (below), from
+                  // the most recently used older build that holds records of its
                   // own: one opened once and never used holds only its seeds,
                   // and would be offered ahead of the one with the person's data.
-                  const dataSource = olderVersions.find((v) => !holdsNothingOfItsOwn(v.origin));
+                  // This build is asked first, and the older ones only if it holds
+                  // nothing: each question reads the records it is asked about.
+                  const dataSource =
+                    olderVersions.length > 0 && holdsNothingOfItsOwn(app.origin, keys)
+                      ? olderVersions.find((v) => !holdsNothingOfItsOwn(v.origin, keys))
+                      : undefined;
                   const offline = offlineStatus(app, installing);
                   const engines = offline.state === 'ready' ? installedEngines(app.offline?.features ?? []) : [];
                   const describedBy = `softn-launcher-card-${app.id}`;
@@ -389,7 +405,7 @@ export function Launcher({
                           back. Import replaces, whole or not at all, and never
                           leaves an app emptier than the file it was given. */}
                       <div className="softn-launcher-data">
-                        {hasStoredData(app.origin) && (
+                        {hasData(app.origin) && (
                           <button
                             type="button"
                             className="softn-launcher-data-btn"
@@ -436,11 +452,11 @@ export function Launcher({
                                       opened does. */}
                                   v{older.version}
                                   {older.version === app.version ? ` · ${formatDate(older.lastOpened)}` : ''}
-                                  {hasStoredData(older.origin) ? ' · has data' : ''}
+                                  {hasData(older.origin) ? ' · has data' : ''}
                                 </button>
                                 {/* Removing one asks the person to export its data
                                     first, so its data can be exported from here. */}
-                                {hasStoredData(older.origin) && (
+                                {hasData(older.origin) && (
                                   <button
                                     type="button"
                                     onClick={() => onExportData(older)}
@@ -454,12 +470,12 @@ export function Launcher({
                                   type="button"
                                   onClick={() => onRemove(older.id)}
                                   aria-label={
-                                    hasStoredData(older.origin)
+                                    hasData(older.origin)
                                       ? `Remove version ${older.version} and the data saved in it`
                                       : `Remove version ${older.version}`
                                   }
                                   title={
-                                    hasStoredData(older.origin)
+                                    hasData(older.origin)
                                       ? 'Remove this version. Anything saved in it goes too.'
                                       : 'Remove this version'
                                   }
@@ -477,7 +493,7 @@ export function Launcher({
                               own: nothing at all, or only the sample records its
                               bundle seeded as it opened, which bringing the data
                               forward replaces (the person is asked first). */}
-                          {holdsNothingOfItsOwn(app.origin) && dataSource && (
+                          {dataSource && (
                             <button
                               type="button"
                               className="softn-launcher-adopt"

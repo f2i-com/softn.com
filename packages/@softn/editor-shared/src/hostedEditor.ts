@@ -410,6 +410,8 @@ export function connectHostedEditor(handlers: { open(bytes: Uint8Array, name: st
   const receive = (event: MessageEvent) => {
     if (event.source !== window.parent || event.origin !== location.origin || event.data?.kind !== 'formlogic-editor-connect' || event.data?.protocol !== 1 || port || !event.ports[0]) return;
     port = event.ports[0]; currentPort = port;
+    // Answered: the ready message is not repeated, and its timer is let go.
+    window.clearInterval(timer);
     // The engine, once: what the host sent, or null for one that sent none. Its glue with it: a
     // host's own ZIPP is a glue and an engine together, so engine bytes without the glue they
     // need would start the wrong pair, and a glue without its engine nothing. A host that named a

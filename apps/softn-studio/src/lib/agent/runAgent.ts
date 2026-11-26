@@ -616,6 +616,12 @@ function settlePending(ctl: RunController, text: string): void {
   for (let i = pending.index; i < pending.calls.length; i++) {
     const call = pending.calls[i];
     pending.results.push({ id: call.id, name: call.name, content: text, isError: true, step: record(ctl)?.steps ?? 0 });
+    // A question or a deletion waiting on the person has its row: it said "Asking…" with a
+    // spinner on a stopped run, and was saved so. (A tool still at work updates its own row.)
+    const waiting = i === pending.index && (call.name === 'ask_user' || record(ctl)?.question?.callId === call.id);
+    if (waiting && record(ctl)?.entries.some((e) => e.kind === 'tool' && e.id === call.id && e.status === 'running')) {
+      updateEntry(ctl, call.id, { status: 'error', result: text });
+    }
   }
   ctl.turns.push({ role: 'tool', results: pending.results.map(({ step: _step, ...r }) => r) });
   ctl.pending = null;
@@ -676,6 +682,11 @@ export async function answerAgentQuestion(runId: string, answer: string | boolea
   const call = pending.calls[pending.index];
   const step = run.steps;
   activeRunId = ctl.id;
+  // Reverted while it waited, as it may be: the model is told with the answer that what it wrote
+  // is gone, as Continue tells it, and what it does from here is its to undo and revert. It
+  // carried on as though its files were still there, marked reverted over what it did next.
+  const wasReverted = run.reverted === true;
+  if (wasReverted) patch(ctl, (r) => ({ ...r, reverted: false }));
   setStatus(ctl, 'running');
   if (question.confirm) {
     const approved = answer === true || (typeof answer === 'string' && /^(y|yes|ok|allow|approve)/i.test(answer.trim()));
@@ -700,6 +711,8 @@ export async function answerAgentQuestion(runId: string, answer: string | boolea
     const entry = record(ctl)?.entries.find((e) => e.kind === 'tool' && e.id === call.id);
     if (entry) updateEntry(ctl, call.id, { status: 'ok', result: `You answered: ${text}` });
   }
+  const answered = wasReverted ? pending.results.find((r) => r.id === call.id) : undefined;
+  if (answered) answered.content += '\n\nBefore answering, the person reverted this run: every file it created is gone, and every file it changed or deleted is as it was before the run. Read a file again before you change it, and do again what the request still needs.';
   pending.index++;
   patch(ctl, (r) => ({ ...r, question: undefined }));
   const paused = await processCalls(ctl);
@@ -981,6 +994,40 @@ async function request(ctl: RunController, system: string, model: string, protoc
   }
 }
 
+/**
+ * The reply with an id of its own for every call. Some OpenAI-compatible servers give every
+ * call the same id ("0"), or one an earlier reply's call had: each step's row, its result and
+ * its Undo are found by the id, so a step with an earlier one's id was written over that one's
+ * row, and Undo on it put back the other step's change. A repeated id is given a new one, in
+ * the calls and in the reply's blocks as they are echoed back, so each result still answers
+ * the call it is for.
+ */
+function withUniqueCallIds(reply: AgentReply, turns: AgentTurn[]): AgentReply {
+  const used = new Set<string>();
+  for (const turn of turns) if (turn.role === 'assistant') for (const call of turn.calls) used.add(call.id);
+  let renamed = false;
+  const calls = reply.calls.map((call) => {
+    if (!used.has(call.id)) {
+      used.add(call.id);
+      return call;
+    }
+    renamed = true;
+    const id = `${call.id}_${newId().slice(0, 8)}`;
+    used.add(id);
+    return { ...call, id };
+  });
+  if (!renamed) return reply;
+  // The blocks' tool_use entries are the calls, in the same order (protocol.ts, decodeAnthropic).
+  let next = 0;
+  const anthropicContent = reply.anthropicContent?.map((block) => {
+    const b = block as { type?: unknown; name?: unknown; id?: unknown } | null;
+    if (!b || typeof b !== 'object' || b.type !== 'tool_use' || typeof b.name !== 'string') return block;
+    const call = calls[next++];
+    return call && b.id !== call.id ? { ...b, id: call.id } : block;
+  });
+  return { ...reply, calls, anthropicContent };
+}
+
 function checkSignature(report: CheckReport): string {
   return report.errors.map((e) => e.replace(/\d+/g, '#')).sort().join('\n');
 }
@@ -999,6 +1046,8 @@ async function runOneCall(ctl: RunController, call: AgentToolCall, step: number,
       env: environment,
       blueprint: useWorkspaceStore.getState().blueprint,
       newTransactionId: newId,
+      // Stopped (Stop answered this call as not run) or discarded (another project is open now).
+      isCurrent: () => ctl.alive && ctl.pending === pending,
     });
   } catch (err) {
     outcome = { content: `The tool failed: ${err instanceof Error ? err.message : String(err)}`, isError: true, subject: subjectGuess };
@@ -1318,11 +1367,19 @@ async function drive(ctl: RunController): Promise<void> {
     const { model, role } = modelFor(ctl);
     let protocol: ToolProtocol = ctl.textForRun.has(protocolKey(ctl.provider, model)) ? 'text' : protocolFor(ctl.provider, model);
     let system = (ctl.systems[protocol] ??= buildAgentSystemPrompt(protocol));
+    // A file whose text the conversation no longer holds is no longer counted as read whole:
+    // the model may still edit it as it is, and reads it again before replacing it.
+    const forget = (paths: Set<string>) => {
+      for (const path of paths) {
+        const read = ctl.seen.get(path);
+        if (read?.complete) ctl.seen.set(path, { ...read, complete: false, shown: 0 });
+      }
+    };
     if (contextSize(ctl, system) > CONTEXT_SOFT_LIMIT_TOKENS) {
-      compact(ctl, run.steps, true);
+      forget(compact(ctl, run.steps, true));
       ctl.compactedAt = run.steps;
     } else if (run.steps - ctl.compactedAt >= COMPACT_EVERY) {
-      compact(ctl, run.steps, false);
+      forget(compact(ctl, run.steps, false));
       ctl.compactedAt = run.steps;
     }
 
@@ -1448,6 +1505,7 @@ async function drive(ctl: RunController): Promise<void> {
     }
     ctl.truncations = 0;
 
+    reply = withUniqueCallIds(reply, ctl.turns);
     ctl.turns.push({ role: 'assistant', text: reply.text, calls: reply.calls, anthropicContent: protocol === 'anthropic' ? reply.anthropicContent : undefined });
     if (reply.text.trim()) addEntry(ctl, { kind: 'text', id: newId(), text: reply.text.trim(), at: Date.now() });
 

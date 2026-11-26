@@ -15,9 +15,20 @@
  * />
  */
 
-import React, { useState, useMemo, useCallback } from 'react';
+import React, { useMemo, useCallback } from 'react';
+import { describeMarkupEgress, isSafeUrl, useEgressConfig } from '@softn/core';
 import { recordRows } from '../utils/rows';
 import { outlineIcon } from '../utils/icons';
+
+/**
+ * Whether an avatar field holds an image's address rather than a name: an
+ * address an image is loaded from, or a path to an image file.
+ */
+function isImageAddress(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  const text = value.trim();
+  return /^(https?:|data:image\/|blob:)/i.test(text) || /\.(png|jpe?g|gif|webp|svg|avif|bmp|ico)(\?.*)?$/i.test(text);
+}
 
 /**
  * Get field value from item, handling both flat objects and XDB record format
@@ -97,6 +108,14 @@ function getInitials(name: string): string {
     .slice(0, 2);
 }
 
+/**
+ * An item under the pointer, lit by the stylesheet. Kept in state, the whole
+ * list was drawn again each time the pointer crossed into another item:
+ * about 8 ms a crossing for 300 items.
+ */
+const ITEM_CLASS = 'softn-smart-list-item';
+const ITEM_HOVER_CSS = `.${ITEM_CLASS}:hover { background: var(--color-gray-50, #1e1e23) !important; transform: translateX(4px) !important; border-radius: 0.375rem !important; }`;
+
 // Gradient colors for avatars (warm luxury palette)
 const avatarGradients = [
   'linear-gradient(135deg, var(--color-primary, #6366f1), var(--color-primary-600, #4f46e5))',
@@ -125,7 +144,9 @@ export function SmartList<T extends Record<string, unknown>>({
   className,
   style,
 }: SmartListProps<T>): React.ReactElement {
-  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
+  // Whether an avatar image may be fetched: the bundle's `net` grant, the
+  // question SmartCards and an `<img src>` ask.
+  const egress = useEgressConfig();
 
   // Ensure data is array
   const safeData = useMemo(() => recordRows<T>(data), [data]);
@@ -173,20 +194,21 @@ export function SmartList<T extends Record<string, unknown>>({
     ...style,
   };
 
+  // An item under the pointer is lit by the stylesheet (ITEM_HOVER_CSS).
   const getItemStyle = (index: number): React.CSSProperties => ({
     display: 'flex',
     alignItems: 'center',
     gap: '0.75rem',
     padding: variant === 'compact' ? '0.5rem' : '0.75rem 1rem',
-    background: hoveredIndex === index ? 'var(--color-gray-50, #1e1e23)' : 'transparent',
+    background: 'transparent',
     cursor: canSelect ? 'pointer' : 'default',
     transition: 'all 200ms cubic-bezier(0.16, 1, 0.3, 1)',
-    transform: hoveredIndex === index ? 'translateX(4px)' : 'none',
+    transform: 'none',
     borderBottom:
       dividers && index < displayData.length - 1
         ? '1px solid var(--color-border, rgba(255, 255, 255, 0.08))'
         : 'none',
-    borderRadius: hoveredIndex === index ? '0.375rem' : '0',
+    borderRadius: '0',
   });
 
   const emptyStyle: React.CSSProperties = {
@@ -206,6 +228,7 @@ export function SmartList<T extends Record<string, unknown>>({
 
   return (
     <div className={`softn-smart-list ${className || ''}`} style={containerStyle}>
+      <style>{ITEM_HOVER_CSS}</style>
       {displayData.length === 0 ? (
         <div style={emptyStyle}>{emptyMessage}</div>
       ) : (
@@ -220,6 +243,14 @@ export function SmartList<T extends Record<string, unknown>>({
             const tertiaryValue = tertiary ? getFieldValue(item, tertiary) : null;
             const badgeValue = badge ? getFieldValue(item, badge) : null;
             const avatarValue = avatar ? getFieldValue(item, avatar) : null;
+            // An avatar is a name, drawn as its initials, or an image's
+            // address, drawn as the image: the address was drawn as its own
+            // initials ("H"). An address that may not be fetched, or is no
+            // safe one, is the primary text's initials instead.
+            const avatarImage =
+              isImageAddress(avatarValue) && isSafeUrl(avatarValue, true) && describeMarkupEgress(avatarValue, egress).allowed
+                ? avatarValue
+                : null;
             const iconValue = icon ? getFieldValue(item, icon) : icon;
             const rowIcon = outlineIcon(iconValue, 18);
 
@@ -232,9 +263,8 @@ export function SmartList<T extends Record<string, unknown>>({
             return (
               <div
                 key={itemKey}
+                className={ITEM_CLASS}
                 style={getItemStyle(index)}
-                onMouseEnter={() => setHoveredIndex(index)}
-                onMouseLeave={() => setHoveredIndex(null)}
                 role={canSelect ? 'button' : undefined}
                 tabIndex={canSelect ? 0 : undefined}
                 onClick={() => void selectItem(item)}
@@ -253,7 +283,9 @@ export function SmartList<T extends Record<string, unknown>>({
                       background:
                         rowIcon
                           ? 'var(--color-gray-100, #3f3f46)'
-                          : avatarGradients[index % avatarGradients.length],
+                          : avatarImage
+                            ? `url("${avatarImage.replace(/["\\\r\n\f]/g, '\\$&')}") center/cover`
+                            : avatarGradients[index % avatarGradients.length],
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'center',
@@ -268,11 +300,13 @@ export function SmartList<T extends Record<string, unknown>>({
                   >
                     {rowIcon
                       ? rowIcon
-                      : avatarValue != null
-                        ? getInitials(String(avatarValue))
-                        : primaryValue != null
-                          ? getInitials(String(primaryValue))
-                          : null}
+                      : avatarImage
+                        ? null
+                        : avatarValue != null && !isImageAddress(avatarValue)
+                          ? getInitials(String(avatarValue))
+                          : primaryValue != null
+                            ? getInitials(String(primaryValue))
+                            : null}
                   </div>
                 )}
 

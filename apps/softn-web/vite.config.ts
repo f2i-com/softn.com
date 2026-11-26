@@ -9,7 +9,7 @@ import { scriptPolicyPlugin } from '../../scripts/build/script-policy.mjs';
 import { buildSourcemaps } from '../../scripts/build/sourcemaps.mjs';
 import { sharedRenderBuiltUrl, woff2OnlyFontsPlugin } from '../../scripts/build/shared-assets.mjs';
 import { devOnlyPublicPlugin } from '../../scripts/build/dev-only-public.mjs';
-import { onDemandGlobIgnores, onDemandRuntimeCaching, vendorThreeGroup } from '../../scripts/build/on-demand-chunks.mjs';
+import { onDemandGlobIgnores, onDemandRuntimeCaching, sharedChunkGroups } from '../../scripts/build/on-demand-chunks.mjs';
 
 const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {};
 
@@ -38,7 +38,11 @@ export default defineConfig({
     // What runs as script: this deployment's files only (scripts/build/script-policy.mjs).
     scriptPolicyPlugin(),
     // public/demos/ is the dev server's launcher catalogue; a build carries none.
-    devOnlyPublicPlugin(['demos']),
+    // Nor public/business-demos/, a local folder of bundles (ignored by git) that
+    // examples/modula-suite and scripts/demos/manage-data.mjs read from the
+    // checkout: nothing the runtime serves asks for it, and where it exists a
+    // build carried its 7 MB of bundles to /web/business-demos/.
+    devOnlyPublicPlugin(['demos', 'business-demos']),
     softnPwa({
       registerType: 'autoUpdate',
       // Nothing is named here on purpose. Everything in public/ is copied into
@@ -192,8 +196,10 @@ export default defineConfig({
     manifest: true,
     rolldownOptions: {
       output: {
+        // Three.js, React and the sync and scanner libraries under names of their own,
+        // so every app's build writes the same file for each (on-demand-chunks.mjs).
         codeSplitting: {
-          groups: [vendorThreeGroup],
+          groups: sharedChunkGroups,
         },
       },
     },

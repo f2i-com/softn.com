@@ -44,7 +44,7 @@ import { dropMachineMaps, dropSourceMaps } from '../lib/build-paths.mjs';
 import { buildSite as buildDocs } from '../../docs/scripts/build-docs.mjs';
 import { repoRoot as root } from '../lib/paths.mjs';
 import { npmCommand } from '../lib/npm.mjs';
-import { collectSharedAssets } from './shared-assets.mjs';
+import { collectSharedAssets, sharedNameOf } from './shared-assets.mjs';
 import { placeSharedContainerRuntime } from './container-runtime-assets.mjs';
 
 // Stage a build beside a running preview without emptying the directory it serves.
@@ -1030,7 +1030,15 @@ for (const app of APPS) {
   // Emit a compact manifest beside play/index.html so Pages::play() avoids per-request scandir()
   // and can emit exact <link rel="modulepreload"> / WASM preloads for v2 Web Container apps.
   const fullEngineName = kept.names.find((name) => /^zipp_wasm_bg-.*\.wasm$/.test(name));
-  const mountChunkName = kept.names.find((name) => /^mount-[A-Za-z0-9_-]{8}\.js$/.test(name));
+  // The play shell's own @softn/container/mount chunk, read from its build's manifest. Every
+  // app that runs web containers leaves a mount-<hash>.js here, and the first of them by name
+  // was what the hint named: in one build the runtime's 134-byte facade, which the play page
+  // never loads, while the shell's own 110 KB chunk went without its preload.
+  const playManifest = path.join(outDir, PLAY.into, '.vite', 'manifest.json');
+  const mountChunkName = fs.existsSync(playManifest)
+    ? sharedNameOf(JSON.parse(fs.readFileSync(playManifest, 'utf8')), /(?:^|\/)container\/dist\/mount\.js$/)
+    : null;
+  if (mountChunkName && !kept.names.includes(mountChunkName)) throw new Error(`The play shell's mount chunk ${mountChunkName} is not in ${SHARED_ASSETS}`);
   const sharedBase = `/${SHARED_ASSETS.replace(/^\/+|\/+$/g, '')}/`;
   const playRuntimeManifest = {
     runtimeBase: `${runtime.url.replace(/\/?$/, '/')}engines/`,

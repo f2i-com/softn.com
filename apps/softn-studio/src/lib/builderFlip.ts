@@ -45,7 +45,7 @@ import { describeFlipFailure, flipFrom, flipUrl, noteFlipTaken, readFlip, remove
 import { confirmLeaveDraft } from './handEdit';
 import { TO_BUILDER, leaveRunQuestion } from './leaveRun';
 import { canonicalKey, resolveProjectPath } from './paths';
-import { isTextEntry } from './projectImport';
+import { importedContent } from './projectImport';
 import { hasProjectContent, saveForRun, type OpenOutcome } from './projectSession';
 import { BUILDER_URL } from './siteUrls';
 
@@ -183,7 +183,6 @@ export async function planReturn(files: Map<string, VFSFile>, flip: FlipBack, en
   // Studio's spelling of each path: on a disk that folds case the Builder's `Pages/home.html` is Studio's `pages/home.html`.
   const spelled = new Map<string, string>();
   for (const path of files.keys()) if (!spelled.has(canonicalKey(path))) spelled.set(canonicalKey(path), path);
-  const decoder = new TextDecoder();
   const seen = new Set<string>();
 
   for (const path of [...flip.changed, ...flip.deleted]) {
@@ -217,7 +216,7 @@ export async function planReturn(files: Map<string, VFSFile>, flip: FlipBack, en
       continue;
     }
     // Text or bytes by the rule an import goes by, so the file is held as it would be had the bundle been opened here.
-    const content = isTextEntry(verdict.path, bytes) ? decoder.decode(bytes) : bytes;
+    const content = importedContent(verdict.path, bytes);
     if (now !== null && now === (await sha256Hex(bytesOf(content)))) {
       plan.same.push(path);
       continue;

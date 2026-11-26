@@ -77,7 +77,12 @@ export class StorageBudget {
     private readonly storage: CountedStorage,
     private readonly prefix: string,
     /** In characters of key and value, which is how the browser counts its own limit. */
-    readonly limit: number
+    readonly limit: number,
+    /**
+     * Which keys under the prefix are this budget's, by what follows the prefix, where another
+     * owner's keys can begin with it too (the default XDB store's `xdb:` begins every app's).
+     */
+    private readonly owns?: (rest: string) => boolean
   ) {
     const prefixes = changesUnder(storage);
     if (!prefixes.has(prefix)) prefixes.set(prefix, 0);
@@ -92,7 +97,8 @@ export class StorageBudget {
       const length = this.storage.length;
       for (let i = 0; i < length; i++) {
         const key = this.storage.key(i);
-        if (key?.startsWith(this.prefix)) sizes.set(key, key.length + (this.storage.getItem(key)?.length ?? 0));
+        if (!key?.startsWith(this.prefix) || (this.owns && !this.owns(key.slice(this.prefix.length)))) continue;
+        sizes.set(key, key.length + (this.storage.getItem(key)?.length ?? 0));
       }
     } catch {
       // An unreadable store has nothing of the app's to count.

@@ -28,6 +28,27 @@ const NEEDS_FULL_JS_ENGINE =
 
 let classicTierConfigured = false;
 
+/**
+ * Whether an app needs the full engine: its logic is Python, or its code
+ * reaches for what the lite engine lacks. Only the code files are read. A
+ * bundle's text entries are decoded when first read and not before
+ * (runtime-shell's bundleFiles), and this went through every entry with its
+ * text, so a bundle carrying a large data file had all of it decoded at load
+ * for a question about its code.
+ */
+export function needsFullEngine(
+  source: Pick<ReturnType<typeof processBundle>, 'languages' | 'source'>,
+  textFiles: ReadonlyMap<string, string>
+): boolean {
+  if (source.languages.includes('python')) return true;
+  if (NEEDS_FULL_JS_ENGINE.test(source.source)) return true;
+  for (const path of textFiles.keys()) {
+    if (/\.py$/i.test(path)) return true;
+    if (/\.(?:logic|ui|m?js|jsx|ts|tsx)$/i.test(path) && NEEDS_FULL_JS_ENGINE.test(textFiles.get(path) ?? '')) return true;
+  }
+  return false;
+}
+
 function tryConfigureClassicLiteEngine(
   source: ReturnType<typeof processBundle>,
   textFiles: Map<string, string>,
@@ -36,12 +57,7 @@ function tryConfigureClassicLiteEngine(
   if (classicTierConfigured) return;
   if (typeof window === 'undefined' || typeof fetch !== 'function' || typeof WebAssembly !== 'object') return;
   if ((import.meta as unknown as { env?: { MODE?: string } }).env?.MODE === 'test') return;
-  if (source.languages.includes('python')) return;
-  if (NEEDS_FULL_JS_ENGINE.test(source.source)) return;
-  for (const [path, content] of textFiles) {
-    if (/\.py$/i.test(path)) return;
-    if (/\.(?:logic|ui|m?js|jsx|ts|tsx)$/i.test(path) && NEEDS_FULL_JS_ENGINE.test(content)) return;
-  }
+  if (needsFullEngine(source, textFiles)) return;
   const liteUrl = `${containerRuntimeUrl()}engines/zipp-javascript-lite.wasm`;
   classicTierConfigured = true;
   try {

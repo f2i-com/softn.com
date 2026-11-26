@@ -168,7 +168,9 @@ export function importKeys(text: string, replace = false): KeyImportResult {
   }
   const next = keyMap(current);
   for (const [slug, key] of Object.entries(source)) {
-    if (slug === 'format' || slug === 'version') continue;
+    // The file's own fields, where its map is the file itself. Inside `keys`
+    // they are slugs like any other: an app called "Version" has that slug.
+    if (source === parsed && (slug === 'format' || slug === 'version') && !isEditKey(key)) continue;
     if (!/^[a-z0-9][a-z0-9-]{0,80}$/i.test(slug) || !isEditKey(key)) {
       result.rejected.push(slug);
       continue;

@@ -295,7 +295,14 @@ export function pluck<T>(items: T[], key: string): unknown[] {
 export function truncate(str: string, maxLength: number, suffix = '...'): string {
   if (!str || typeof str !== 'string') return '';
   if (str.length <= maxLength) return str;
-  return str.slice(0, maxLength - suffix.length) + suffix;
+  // Never below zero: `maxLength` under the suffix's length sliced from the
+  // end, `truncate("Alexander", 2)` was "Alexande...". And not between the
+  // two halves of a character written as a pair (most emoji), which left
+  // half of one before the suffix.
+  let end = Math.max(0, maxLength - suffix.length);
+  const last = str.charCodeAt(end - 1);
+  if (last >= 0xd800 && last <= 0xdbff) end--;
+  return str.slice(0, end) + suffix;
 }
 
 /**
@@ -317,12 +324,45 @@ export function capitalize(str: string): string {
  */
 export function titleCase(str: string): string {
   if (!str || typeof str !== 'string') return '';
-  return str.replace(/\b\w/g, (char) => char.toUpperCase());
+  // The first letter of each word, a word being letters, marks, digits and
+  // the apostrophes inside it. `\b\w` knew only ASCII and took an apostrophe
+  // for the end of a word: "don't" was "Don'T", and "élan" was "éLan".
+  return str.replace(/(^|[^\p{L}\p{M}\p{N}_'’])(\p{L})/gu, (_, before: string, letter: string) => before + letter.toUpperCase());
 }
 
 // ============================================================================
 // Number Helpers
 // ============================================================================
+
+/** How many formatters of one kind are kept (see keptFormatter). */
+const FORMATTERS_KEPT = 64;
+const numberFormats = new Map<string, Intl.NumberFormat>();
+const dateFormats = new Map<string, Intl.DateTimeFormat>();
+let relativeTimeFormat: Intl.RelativeTimeFormat | undefined;
+
+/**
+ * The formatter for `options`, made once and kept. A formatter costs tens of
+ * microseconds to make, and a page asks for one for every value it draws: a
+ * table of a thousand prices made a thousand on each drawing, which was most
+ * of the time the drawing took. Options are a few plain values, so their JSON
+ * is the key; ones that cannot be written so are given a formatter of their
+ * own, as every call was. The oldest goes past FORMATTERS_KEPT.
+ */
+function keptFormatter<F>(kept: Map<string, F>, options: object | undefined, make: () => F, also = ''): F {
+  let key: string;
+  try {
+    key = (options === undefined ? '' : JSON.stringify(options)) + also;
+  } catch {
+    return make();
+  }
+  let formatter = kept.get(key);
+  if (formatter === undefined) {
+    formatter = make();
+    if (kept.size >= FORMATTERS_KEPT) kept.delete(kept.keys().next().value as string);
+    kept.set(key, formatter);
+  }
+  return formatter;
+}
 
 /**
  * Format a number with locale-specific separators
@@ -344,7 +384,7 @@ export function formatNumber(
   // stay empty rather than claim a value the user never entered.
   const value = typeof num === 'string' ? (num.trim() === '' ? NaN : Number(num)) : num;
   if (typeof value !== 'number' || !Number.isFinite(value)) return '';
-  return new Intl.NumberFormat(undefined, options).format(value);
+  return keptFormatter(numberFormats, options, () => new Intl.NumberFormat(undefined, options)).format(value);
 }
 
 /**
@@ -425,7 +465,16 @@ export function formatDate(
     options = optionsOrStyle || { dateStyle: 'medium' };
   }
 
-  return new Intl.DateTimeFormat(undefined, options).format(dateObj);
+  return keptFormatter(dateFormats, options, () => new Intl.DateTimeFormat(undefined, options), zoneKey()).format(dateObj);
+}
+
+/**
+ * The device's offset from UTC now, beside a date formatter's options: a
+ * formatter takes the time zone when it is made, and a device moved to
+ * another zone is given new ones.
+ */
+function zoneKey(): string {
+  return `@${new Date().getTimezoneOffset()}`;
 }
 
 /**
@@ -443,7 +492,8 @@ export function formatTime(
   const dateObj = toDate(date);
   if (isNaN(dateObj.getTime())) return '';
 
-  return new Intl.DateTimeFormat(undefined, { timeStyle: style }).format(dateObj);
+  const options: Intl.DateTimeFormatOptions = { timeStyle: style };
+  return keptFormatter(dateFormats, options, () => new Intl.DateTimeFormat(undefined, options), zoneKey()).format(dateObj);
 }
 
 /**
@@ -476,7 +526,7 @@ export function timeAgo(date: string | Date | number): string {
   const months = Math.floor(days / 30);
   const years = Math.floor(days / 365);
 
-  const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
+  const rtf = (relativeTimeFormat ??= new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' }));
   const ago = (value: number, unit: Intl.RelativeTimeFormatUnit) =>
     rtf.format(-sign * value, unit);
 

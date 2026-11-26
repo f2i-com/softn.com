@@ -1,4 +1,4 @@
-import React, { Component, useCallback, useEffect, useId, useMemo, useRef, useState, type ErrorInfo } from 'react';
+import React, { Component, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ErrorInfo } from 'react';
 import type { AppAssetResolver, AppUpdateResult, ComposedBundleSource, EditMarks, LiveApp, PythonProject } from '@softn/core';
 import { PermissionBar, type ConsentRequest } from '@softn/runtime-shell/PermissionBar';
 import { requestedCapabilities } from '@softn/runtime-shell/consent';
@@ -107,6 +107,9 @@ const APP_BOX_STYLE: React.CSSProperties = {
   isolation: 'isolate',
 };
 
+/** What a run that has kept nothing for the permission bar's answer says of it. */
+const NOTHING_WAITING: { waiting: string[]; restartOnAllow: boolean } = { waiting: [], restartOnAllow: false };
+
 /** The loading screens' download panel, in their quieter text colour. */
 const LOAD_PROGRESS_STYLE: React.CSSProperties = { color: 'var(--dim)', width: 'min(320px, 80%)' };
 
@@ -176,7 +179,7 @@ export function AppRunner({ tabId, source, appName, appId, active, initialPage, 
   // What the app is waiting on the permission bar for, and whether allowing
   // will start it again, as its renderer says: the bar says both before it
   // is answered.
-  const [consentStatus, setConsentStatus] = useState<{ waiting: string[]; restartOnAllow: boolean }>({ waiting: [], restartOnAllow: false });
+  const [consentStatus, setConsentStatus] = useState<{ waiting: string[]; restartOnAllow: boolean }>(NOTHING_WAITING);
   // Another page of the bundle, after a link to it (`<a href="about.html">`):
   // the app composed with that page as its main one and run afresh, with its
   // records as they were. Without this a link was an address the host page has
@@ -253,6 +256,17 @@ export function AppRunner({ tabId, source, appName, appId, active, initialPage, 
   useEffect(() => {
     if (!source) setPage(null);
   }, [source]);
+  // And what the app was waiting on the bar for was that run's too, and so is
+  // the word of a page a link opened (a run of its own, below): a new run has
+  // kept nothing, and says so only once it keeps something. Held over, the bar
+  // went on saying the app was waiting, and after Allow the app's own backend
+  // went on refusing it as "withheld until permissions are approved". Before
+  // the new run's own effects, which are where it speaks.
+  const rendererKey = `${appId ?? appName}\n${page?.path ?? ''}`;
+  const emptied = !source;
+  useLayoutEffect(() => {
+    setConsentStatus(NOTHING_WAITING);
+  }, [rendererKey, emptied]);
   const shownPath = page?.path ?? null;
   const onShownPageRef = useRef(onShownPage);
   onShownPageRef.current = onShownPage;
@@ -594,7 +608,7 @@ export function AppRunner({ tabId, source, appName, appId, active, initialPage, 
                 // Another page is another run, and so is another identity: an
                 // app the person's first edit made their own copy of starts
                 // again as that copy, on its own saved data.
-                key={`${runtimeAppId}\n${page?.path ?? ''}`}
+                key={rendererKey}
                 source={shown.source}
                 onLink={followLink}
                 pagesOnly

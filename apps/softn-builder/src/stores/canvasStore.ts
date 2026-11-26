@@ -443,6 +443,9 @@ export const useCanvasStore = create<CanvasStore>((set, get) => {
         const end = branchEnd(newParent, newElements);
         if (side) at = side === 'start' ? 0 : end;
         newChildren.splice(Math.max(0, Math.min(at, end)), 0, id);
+        // Let go where it already is: nothing moves, and nothing is an edit.
+        const was = state.elements.get(targetParentId)?.children;
+        if (element.parentId === targetParentId && was && was.length === newChildren.length && was.every((cid, i) => cid === newChildren[i])) return state;
         newElements.set(targetParentId, { ...newParent, children: newChildren });
       }
 

@@ -132,6 +132,69 @@ function editorMarkup(markup: string, judge?: MarkupUrlJudge): string {
   return body.innerHTML;
 }
 
+/** Whether the editor shows nothing: no text, and no image or rule either. */
+function looksEmpty(editor: HTMLElement): boolean {
+  return !(editor.textContent ?? '').trim() && !editor.querySelector('img, hr');
+}
+
+/** Put `markup` in place of the selection in `editor`, with the caret after it. */
+function insertAtSelection(editor: HTMLElement, markup: string): void {
+  const selection = document.getSelection?.();
+  if (!selection || selection.rangeCount === 0) return;
+  const range = selection.getRangeAt(0);
+  if (!editor.contains(range.commonAncestorContainer)) return;
+  range.deleteContents();
+  const fragment = range.createContextualFragment(markup);
+  const last = fragment.lastChild;
+  range.insertNode(fragment);
+  if (last) range.setStartAfter(last);
+  range.collapse(true);
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
+const FRAGMENT_START = '<!--StartFragment-->';
+const FRAGMENT_END = '<!--EndFragment-->';
+
+/** What was copied or dragged, without the page it came from around it. */
+function copiedPart(html: string): string {
+  const start = html.indexOf(FRAGMENT_START);
+  const end = html.lastIndexOf(FRAGMENT_END);
+  return start >= 0 && end > start ? html.slice(start + FRAGMENT_START.length, end) : html;
+}
+
+/**
+ * Where a drop on `editor` at (`x`, `y`) on the screen puts what it carries:
+ * where it landed; where the browser cannot say, the selection the editor
+ * has, or its end.
+ */
+function dropRange(editor: HTMLElement, x: number, y: number): Range {
+  const at = document as Document & {
+    caretRangeFromPoint?: (x: number, y: number) => Range | null;
+    caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null;
+  };
+  let range: Range | null = null;
+  if (typeof at.caretRangeFromPoint === 'function') {
+    range = at.caretRangeFromPoint(x, y);
+  } else if (typeof at.caretPositionFromPoint === 'function') {
+    const position = at.caretPositionFromPoint(x, y);
+    if (position) {
+      range = document.createRange();
+      range.setStart(position.offsetNode, position.offset);
+      range.collapse(true);
+    }
+  }
+  if (range && editor.contains(range.startContainer)) return range;
+  const selection = document.getSelection?.();
+  if (selection && selection.rangeCount > 0 && editor.contains(selection.getRangeAt(0).commonAncestorContainer)) {
+    return selection.getRangeAt(0).cloneRange();
+  }
+  const end = document.createRange();
+  end.selectNodeContents(editor);
+  end.collapse(false);
+  return end;
+}
+
 function queryState(command: string): boolean {
   try {
     return typeof document.queryCommandState === 'function' && document.queryCommandState(command);
@@ -172,6 +235,16 @@ export function RichTextEditor({
   /** The toolbar is one tab stop; arrow keys move between its buttons. */
   const [toolbarIndex, setToolbarIndex] = useState(0);
   const toolbarRef = useRef<HTMLDivElement>(null);
+  /**
+   * Input events handled. A browser raises one for what `execCommand`
+   * changed, and that reports the change: a command that reported it again
+   * after called `onChange` twice for one edit.
+   */
+  const inputsHandled = useRef(0);
+  /** The markup last handed to `onChange`, and the judge it was read under. */
+  const reported = useRef<{ markup: string; judge: MarkupUrlJudge | undefined } | null>(null);
+  /** A drag began in this editor: what it drops is the editor's own markup, moved. */
+  const draggingOwn = useRef(false);
 
   const refreshPressed = useCallback(() => {
     const next: Record<string, boolean> = {};
@@ -211,7 +284,7 @@ export function RichTextEditor({
     if (!editor) return;
 
     editor.innerHTML = editorMarkup(initialContentRef.current, judge);
-    setIsEmpty(!(editor.textContent ?? '').trim());
+    setIsEmpty(looksEmpty(editor));
     // Once, at mount: the value effect below handles every later change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -221,31 +294,105 @@ export function RichTextEditor({
   useEffect(() => {
     if (value !== undefined && editorRef.current) {
       const currentHtml = editorRef.current.innerHTML;
-      const safe = editorMarkup(markupOf(value), judge);
+      const markup = markupOf(value);
+      // The markup this editor reported, handed back by a binding, was
+      // sanitized under this judge on its way out: sanitizing it again was
+      // the whole document read twice more at every keystroke, to find it
+      // the same.
+      const echoed = reported.current?.markup === markup && reported.current.judge === judge;
+      const safe = echoed ? markup : editorMarkup(markup, judge);
       // Compare against the sanitized form, or a value that only differs in the
       // parts sanitization strips would rewrite the DOM on every render and
       // move the caret to the start each time.
       if (currentHtml !== safe) {
         editorRef.current.innerHTML = safe;
-        setIsEmpty(!(editorRef.current.textContent ?? '').trim());
+        setIsEmpty(looksEmpty(editorRef.current));
       }
     }
   }, [value, judge]);
 
   const handleInput = useCallback(() => {
+    inputsHandled.current++;
     if (editorRef.current) {
-      const html = editorMarkup(editorRef.current.innerHTML, judge);
+      const current = editorRef.current.innerHTML;
+      const html = editorMarkup(current, judge);
       // Pasted HTML is not guaranteed to be inert. Only rewrite the DOM when
       // sanitization actually removed something so ordinary typing keeps its
       // selection and caret position.
-      if (html !== editorRef.current.innerHTML) {
+      if (html !== current) {
         editorRef.current.innerHTML = html;
       }
-      const textContent = editorRef.current.textContent || '';
-      setIsEmpty(!textContent.trim());
+      setIsEmpty(looksEmpty(editorRef.current));
+      reported.current = { markup: html, judge };
       onChange?.(html);
     }
   }, [onChange, judge]);
+
+  /**
+   * Markup from outside the editor, a paste's or a drop's, made safe and put
+   * in place of the selection, reported once. Put in as it came it was live
+   * in the document until the input handler cleaned it: a remote image in it
+   * had been asked for, whatever the bundle's `net` allows, and the cleaning
+   * rewrote the editor, which took the caret to the start and the undo
+   * history with it.
+   */
+  const insertMarkup = useCallback(
+    (html: string) => {
+      const editor = editorRef.current;
+      if (!editor) return;
+      const safe = editorMarkup(copiedPart(html), judge);
+      const before = inputsHandled.current;
+      let inserted = false;
+      try {
+        // Through the browser's editing, so it can be undone.
+        inserted = typeof document.execCommand === 'function' && document.execCommand('insertHTML', false, safe);
+      } catch {
+        inserted = false;
+      }
+      if (!inserted) insertAtSelection(editor, safe);
+      if (inputsHandled.current === before) handleInput();
+    },
+    [judge, handleInput]
+  );
+
+  /** A paste of markup is made safe first (insertMarkup); a paste of text is the browser's. */
+  const handlePaste = useCallback(
+    (e: React.ClipboardEvent<HTMLDivElement>) => {
+      const html = e.clipboardData?.getData('text/html');
+      if (!editorRef.current || !html || disabled || readOnly) return;
+      e.preventDefault();
+      insertMarkup(html);
+    },
+    [disabled, readOnly, insertMarkup]
+  );
+
+  /**
+   * A drop of markup from outside the editor, as a paste of it: a remote
+   * image dragged in from another page was dropped as it came, and fetched.
+   * Put in where the drop landed. A move of the editor's own markup within
+   * it is the browser's, which keeps the move and its undo; so is a drop of
+   * text alone.
+   */
+  const handleDrop = useCallback(
+    (e: React.DragEvent<HTMLDivElement>) => {
+      const own = draggingOwn.current;
+      draggingOwn.current = false;
+      const editor = editorRef.current;
+      const html = e.dataTransfer?.getData('text/html');
+      if (own || !editor || !html || disabled || readOnly) return;
+      e.preventDefault();
+      // Read before focus is given: giving it can move the selection.
+      const range = dropRange(editor, e.clientX, e.clientY);
+      editor.focus();
+      const selection = document.getSelection?.();
+      if (selection) {
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+      insertMarkup(html);
+    },
+    [disabled, readOnly, insertMarkup]
+  );
 
   /** Focus back in the editor, on the selection it had when the link field opened. */
   const restoreSelection = useCallback(() => {
@@ -290,13 +437,15 @@ export function RichTextEditor({
 
       editorRef.current?.focus();
 
+      const before = inputsHandled.current;
       if (command === 'formatBlock' && value) {
         document.execCommand(command, false, `<${value}>`);
       } else {
         document.execCommand(command, false, value);
       }
 
-      handleInput();
+      // Reported already where the browser raised `input` for it.
+      if (inputsHandled.current === before) handleInput();
       refreshPressed();
     },
     [disabled, readOnly, linking, closeLink, handleInput, refreshPressed]
@@ -331,6 +480,7 @@ export function RichTextEditor({
     const editor = editorRef.current;
     const range = linkRange.current;
     if (!editor) return;
+    const before = inputsHandled.current;
     if (!range || range.collapsed) {
       // Nothing was selected: the address is the link's text, where the
       // caret was (or at the end).
@@ -351,7 +501,7 @@ export function RichTextEditor({
       document.execCommand('createLink', false, href);
     }
     linkRange.current = null;
-    handleInput();
+    if (inputsHandled.current === before) handleInput();
     refreshPressed();
   }, [locked, linkText, restoreSelection, handleInput, refreshPressed]);
 
@@ -622,6 +772,14 @@ export function RichTextEditor({
           contentEditable={!disabled && !readOnly}
           style={editorStyle}
           onInput={handleInput}
+          onPaste={handlePaste}
+          onDragStart={() => {
+            draggingOwn.current = true;
+          }}
+          onDragEnd={() => {
+            draggingOwn.current = false;
+          }}
+          onDrop={handleDrop}
           onKeyDown={handleKeyDown}
           suppressContentEditableWarning
         />

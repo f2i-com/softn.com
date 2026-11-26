@@ -1193,8 +1193,12 @@ export function decodeRecordFiles(record: ProjectRecord): Array<{ path: string; 
 /** A record's files as a VFS map, for exporting a saved project without opening it. */
 export function recordFilesAsMap(record: ProjectRecord): Map<string, VFSFile> {
   const map = new Map<string, VFSFile>();
+  // Each file's own entry, the first under its path, found once: looked for in the whole list
+  // for every file, an app of ten thousand files took a tenth of a second to export.
+  const byPath = new Map<string, PersistedFile>();
+  for (const file of record.files) if (!byPath.has(file.path)) byPath.set(file.path, file);
   for (const { path, content } of decodeRecordFiles(record)) {
-    const original = record.files.find((f) => f.path === path);
+    const original = byPath.get(path);
     map.set(path, {
       path,
       content,

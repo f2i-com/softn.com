@@ -372,3 +372,22 @@ describe('the MIME type a file is stored with', () => {
     expect(store().files.get('assets/face.woff2')?.mimeType).toBe('font/woff2');
   });
 });
+
+describe('putting back an AI change from the undo journal', () => {
+  // The step deleted Logo.svg, and the person has made a logo.svg since: putting Logo.svg back
+  // would be a second spelling of one file, which the store refuses by throwing. The timeline's
+  // Undo and Revert run did not catch it, so pressing them did nothing and said nothing.
+  it('answers why it cannot be put back, rather than throwing, and changes nothing', () => {
+    const vfs = useVFSStore.getState();
+    vfs.hydrateFiles([{ path: 'Logo.svg', content: '<svg/>' }]);
+    vfs.applyTransaction([{ op: 'delete', path: 'Logo.svg' }], 'ai', 'step-1');
+    useVFSStore.getState().createFile('logo.svg', '<svg id="mine"/>');
+    const files = useVFSStore.getState().files;
+    let result: ReturnType<typeof vfs.revertJournaled> | undefined;
+    expect(() => { result = useVFSStore.getState().revertJournaled(['step-1']); }).not.toThrow();
+    expect(result).toEqual({ ok: false, reason: expect.stringMatching(/logo\.svg/) });
+    expect(useVFSStore.getState().files).toBe(files);
+    // The step's undo data is still there, for when the clash is gone.
+    expect(useVFSStore.getState().journal.map((entry) => entry.id)).toEqual(['step-1']);
+  });
+});

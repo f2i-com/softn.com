@@ -5,7 +5,6 @@ import { useWorkspaceStore, useVFSStore, useAIStore } from './stores';
 import { TopBar } from './components/toolbar/TopBar';
 import { LeftRail } from './components/layout/LeftRail';
 import { VisualCanvas, writeCanvasViewMode } from './components/canvas/VisualCanvas';
-import { StudioDataWorkspace } from './components/canvas/StudioDataWorkspace';
 import { createWebStarter, type WebStarter } from '@softn/editor-shared/webStarters';
 import { BottomDrawer } from './components/layout/BottomDrawer';
 import { StatusBar } from './components/layout/StatusBar';
@@ -77,6 +76,8 @@ import {
 const BriefWizard = lazy(() => import('./components/brief/BriefWizard').then((m) => ({ default: m.BriefWizard })));
 const SettingsPanel = lazy(() => import('./components/panels/SettingsPanel').then((m) => ({ default: m.SettingsPanel })));
 const BlueprintReview = lazy(() => import('./components/blueprint/BlueprintReview').then((m) => ({ default: m.BlueprintReview })));
+// The Data tab and its database editor (about 65 KB), the first time the tab opens.
+const StudioDataWorkspace = lazy(() => import('./components/canvas/StudioDataWorkspace').then((m) => ({ default: m.StudioDataWorkspace })));
 
 type View = 'dashboard' | 'brief' | 'editor';
 
@@ -119,13 +120,13 @@ function SkipToMain(): React.ReactElement {
 const App: React.FC = () => {
   const [view, setView] = useState<View>('dashboard');
   const [isHydrated, setIsHydrated] = useState(false);
-  const {
-    leftPanel,
-    leftPanelExpanded,
-    projectName,
-    blueprint,
-    blueprintApproved,
-  } = useWorkspaceStore();
+  // Each field on its own: taken as the whole store, every line of the log, every check and
+  // every change of the dirty flag drew the whole editor again, preview and panels included.
+  const leftPanel = useWorkspaceStore((s) => s.leftPanel);
+  const leftPanelExpanded = useWorkspaceStore((s) => s.leftPanelExpanded);
+  const projectName = useWorkspaceStore((s) => s.projectName);
+  const blueprint = useWorkspaceStore((s) => s.blueprint);
+  const blueprintApproved = useWorkspaceStore((s) => s.blueprintApproved);
   const isDataOpen = leftPanel === 'data' && leftPanelExpanded;
   const providerCount = useAIStore((s) => s.providers.length);
   const setupSkipped = useAIStore((s) => s.setupSkipped);
@@ -294,10 +295,11 @@ const App: React.FC = () => {
       // Try as ZIP first. The shared reader verifies sizes and checksums before
       // allocating entry buffers, so a small archive cannot inflate without a
       // bound just because it was opened in Studio rather than the runtime.
-      // Files the archive reader left out, said once the project is open.
+      // Files the archive reader left out, and files named as text kept as bytes, said once the project is open.
       let leftOut: string[] = [];
+      let notText: string[] = [];
       try {
-        const entryList = readProjectArchive(data, (names) => { leftOut = names; });
+        const entryList = readProjectArchive(data, (names) => { leftOut = names; }, (names) => { notText = names; });
         batch.push(...entryList);
         zipParsed = true;
       } catch (err) {
@@ -336,6 +338,9 @@ const App: React.FC = () => {
       openImportedInStores(file.name, batch, { name: openerName });
       for (const name of leftOut) {
         useWorkspaceStore.getState().addConsoleOutput(`${name} was left out: its name has two dots in a row, which SoftN takes for a way out of the bundle wherever it opens one. Add the file again under another name.`);
+      }
+      for (const name of notText) {
+        useWorkspaceStore.getState().addConsoleOutput(`${name} is not UTF-8 text, so it is kept as it came, byte for byte, and exported unchanged; Studio cannot show or edit it as text. To change it here, save it as UTF-8 and add it again.`);
       }
       setView('editor');
       void refreshRecent();
@@ -704,12 +709,14 @@ const App: React.FC = () => {
           )}
           {mobilePanel === 'data' && (
             <section style={styles.mobilePanel} aria-label="Data">
-              <StudioDataWorkspace
-                onOpenFile={(path) => {
-                  useWorkspaceStore.getState().setActiveFilePath(path);
-                  setMobilePanel('canvas');
-                }}
-              />
+              <Deferred>
+                <StudioDataWorkspace
+                  onOpenFile={(path) => {
+                    useWorkspaceStore.getState().setActiveFilePath(path);
+                    setMobilePanel('canvas');
+                  }}
+                />
+              </Deferred>
             </section>
           )}
           {mobilePanel === 'pages' && (
@@ -781,12 +788,14 @@ const App: React.FC = () => {
         <div style={styles.centerColumn} id={MAIN_ID} tabIndex={-1} aria-label="Work area">
           {isDataOpen && (
             <div style={{ flex: 1, minHeight: 0, display: 'flex', overflow: 'hidden' }}>
-              <StudioDataWorkspace
-                onOpenFile={(path) => {
-                  useWorkspaceStore.getState().setActiveFilePath(path);
-                  useWorkspaceStore.getState().setLeftPanel('files');
-                }}
-              />
+              <Deferred>
+                <StudioDataWorkspace
+                  onOpenFile={(path) => {
+                    useWorkspaceStore.getState().setActiveFilePath(path);
+                    useWorkspaceStore.getState().setLeftPanel('files');
+                  }}
+                />
+              </Deferred>
             </div>
           )}
           <div style={{ flex: 1, minHeight: 0, display: isDataOpen ? 'none' : 'flex', flexDirection: 'column' }}>

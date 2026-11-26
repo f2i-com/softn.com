@@ -1,3 +1,9 @@
+// react-dom's own entry beside its client, which requires it in any case. The
+// runtime, Studio and the Builder import both, and importing the same two makes
+// the play shell's React chunk (and the QR scanner's, which imports it) the
+// same file as theirs (scripts/build/on-demand-chunks.mjs): the site keeps it
+// once, and a browser that opened one keeps it for the other.
+import 'react-dom';
 import { createRoot } from 'react-dom/client';
 import { SingleApp } from '@softn/single-shell/SingleApp';
 import type { ConfigSource } from '@softn/single-shell/load';

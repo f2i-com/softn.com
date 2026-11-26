@@ -160,7 +160,6 @@ export function SmartCards<T extends Record<string, unknown>>({
   style,
 }: SmartCardsProps<T>): React.ReactElement {
   const [searchQuery, setSearchQuery] = useState('');
-  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
   const instanceId = useId().replace(/:/g, '');
   // Whether a record's image may be fetched at all: the scheme check below
   // stops `javascript:`, and this is the bundle's `net` grant, the same
@@ -259,21 +258,26 @@ export function SmartCards<T extends Record<string, unknown>>({
     gap: variant === 'compact' ? '0.75rem' : '1rem',
   };
 
-  const getCardStyle = (index: number): React.CSSProperties => ({
+  // A card under the pointer is lifted by the stylesheet below. Kept in state,
+  // every card was drawn again, its image's address checked again, each time
+  // the pointer crossed into another: about 14 ms a crossing for 300 cards.
+  const cardStyle: React.CSSProperties = {
     background: variant === 'outline' ? 'transparent' : 'var(--color-surface, #16161a)',
-    border: `1px solid ${hoveredIndex === index ? 'var(--color-border-hover, rgba(255, 255, 255, 0.14))' : 'var(--color-border, rgba(255, 255, 255, 0.08))'}`,
+    border: '1px solid var(--color-border, rgba(255, 255, 255, 0.08))',
     borderRadius: 'var(--radius-lg, 0.75rem)',
     padding: variant === 'compact' ? '1rem' : '1.25rem',
     cursor: canSelect ? 'pointer' : 'default',
     transition: 'all 250ms cubic-bezier(0.16, 1, 0.3, 1)',
-    transform: hoveredIndex === index ? 'translateY(-3px)' : 'none',
-    boxShadow:
-      hoveredIndex === index
-        ? '0 8px 24px rgba(0, 0, 0, 0.2), 0 2px 8px rgba(0, 0, 0, 0.1)'
-        : variant === 'elevated'
-          ? '0 4px 12px rgba(0, 0, 0, 0.15)'
-          : 'none',
-  });
+    transform: 'none',
+    boxShadow: variant === 'elevated' ? '0 4px 12px rgba(0, 0, 0, 0.15)' : 'none',
+  };
+  const hoverCss = `
+    .${gridClassName} > .softn-smart-card:hover {
+      border-color: var(--color-border-hover, rgba(255, 255, 255, 0.14)) !important;
+      transform: translateY(-3px) !important;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2), 0 2px 8px rgba(0, 0, 0, 0.1) !important;
+    }
+  `;
 
   const emptyStyle: React.CSSProperties = {
     gridColumn: '1 / -1',
@@ -304,7 +308,7 @@ export function SmartCards<T extends Record<string, unknown>>({
 
   return (
     <div className={`softn-smart-cards ${className || ''}`} style={containerStyle}>
-      <style>{responsiveCss}</style>
+      <style>{responsiveCss + hoverCss}</style>
       {searchable && (
         <div style={searchWrapperStyle}>
           <span style={searchIconStyle}>
@@ -336,9 +340,8 @@ export function SmartCards<T extends Record<string, unknown>>({
               return (
                 <div
                   key={itemKey}
-                  style={getCardStyle(index)}
-                  onMouseEnter={() => setHoveredIndex(index)}
-                  onMouseLeave={() => setHoveredIndex(null)}
+                  className="softn-smart-card"
+                  style={cardStyle}
                   role={canSelect ? 'button' : undefined}
                   tabIndex={canSelect ? 0 : undefined}
                   onClick={() => void selectItem(item)}
@@ -367,9 +370,8 @@ export function SmartCards<T extends Record<string, unknown>>({
             return (
               <div
                 key={itemKey}
-                style={getCardStyle(index)}
-                onMouseEnter={() => setHoveredIndex(index)}
-                onMouseLeave={() => setHoveredIndex(null)}
+                className="softn-smart-card"
+                style={cardStyle}
                 role={canSelect ? 'button' : undefined}
                 tabIndex={canSelect ? 0 : undefined}
                 onClick={() => void selectItem(item)}

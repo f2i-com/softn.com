@@ -56,19 +56,14 @@ export type PreviewCompositionResult =
  * there.
  */
 export function composePreviewProject(files: Map<string, VFSFile>, mainPath: string): PreviewCompositionResult {
-  const text = new Map<string, string>();
-  for (const [rawPath, file] of files) {
-    if (typeof file.content !== 'string') continue;
-    const path = normalizeProjectPath(rawPath);
-    if (!path || isPrivatePath(path)) continue;
-    text.set(path, file.content);
-  }
+  const project = projectTexts(files);
+  const { text } = project;
 
   try {
     const logicPaths = manifestLogicPaths(files);
-    const app = appAround(text, mainPath, getBundleEntryPath(files));
-    const page = composeBundleSource(text, mainPath, logicPaths);
-    const composed = app ? withAppLogic(page, composeBundleSource(text, app, logicPaths)) : page;
+    const app = appAround(project, mainPath, getBundleEntryPath(files));
+    const page = composedOnce(project, mainPath, logicPaths);
+    const composed = app ? withAppLogic(page, composedOnce(project, app, logicPaths)) : page;
     const outer = app ? outerDataBlocks(text, mainPath, app) : '';
     return {
       ok: true,
@@ -90,6 +85,53 @@ export function composePreviewProject(files: Map<string, VFSFile>, mainPath: str
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
+}
+
+/**
+ * What composing a page reads of one set of files, and what the composer made of each page
+ * asked for. A page the app imports is composed with the whole app around it (withAppLogic),
+ * and the logic check composes every page after each change (lib/logicCheck.ts): the app was
+ * composed again for every one of its pages, and a change to an app of a hundred pages held the
+ * page for seconds. Kept with the map of files it was made from, while the map holds the same
+ * files (the store replaces the map on any change).
+ */
+interface ProjectTexts {
+  of: Map<string, VFSFile>;
+  text: Map<string, string>;
+  composed: Map<string, { ok: true; value: ComposedBundleSource } | { ok: false; error: unknown }>;
+  closures: Map<string, string[]>;
+}
+
+const projects = new WeakMap<Map<string, VFSFile>, ProjectTexts>();
+
+function projectTexts(files: Map<string, VFSFile>): ProjectTexts {
+  const known = projects.get(files);
+  if (known && known.of.size === files.size && [...files].every(([path, file]) => known.of.get(path) === file)) return known;
+  const text = new Map<string, string>();
+  for (const [rawPath, file] of files) {
+    if (typeof file.content !== 'string') continue;
+    const path = normalizeProjectPath(rawPath);
+    if (!path || isPrivatePath(path)) continue;
+    text.set(path, file.content);
+  }
+  const project: ProjectTexts = { of: new Map(files), text, composed: new Map(), closures: new Map() };
+  projects.set(files, project);
+  return project;
+}
+
+/** The composer's page, made once for these files; what it refuses is refused each time it is asked. */
+function composedOnce(project: ProjectTexts, path: string, logicPaths: string[]): ComposedBundleSource {
+  let made = project.composed.get(path);
+  if (!made) {
+    try {
+      made = { ok: true, value: composeBundleSource(project.text, path, logicPaths) };
+    } catch (error) {
+      made = { ok: false, error };
+    }
+    project.composed.set(path, made);
+  }
+  if (!made.ok) throw made.error;
+  return made.value;
 }
 
 /** A page and every page it imports, itself first, each once. */
@@ -127,9 +169,14 @@ function dataBlocksOf(source: string): string[] {
  * logic of the app around it. A page nothing imports is not part of the app,
  * and is given nothing: what it reads without declaring is empty.
  */
-function appAround(text: ReadonlyMap<string, string>, page: string, entry: string | null): string | null {
+function appAround(project: ProjectTexts, page: string, entry: string | null): string | null {
   if (!entry || entry === page || !isPagePath(entry)) return null;
-  return importClosure(text, entry).includes(page) ? entry : null;
+  let closure = project.closures.get(entry);
+  if (!closure) {
+    closure = importClosure(project.text, entry);
+    project.closures.set(entry, closure);
+  }
+  return closure.includes(page) ? entry : null;
 }
 
 /**

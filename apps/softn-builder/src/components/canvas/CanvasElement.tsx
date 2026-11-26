@@ -53,6 +53,13 @@ function ownChildrenArea(wrapper: HTMLElement): HTMLElement | null {
 /** How far to either side of an element's words the pointer still counts as on them: a label is a small thing to aim at. */
 const NEAR_WORDS = 16;
 
+/** Where a drop being shown is, to one element (see `dropPlace`): beside it, into it, and on which side of its words. */
+const LINE_BEFORE = 1;
+const LINE_AFTER = 2;
+const DROP_INTO = 4;
+const INTO_START = 8;
+const INTO_END = 16;
+
 /**
  * Where the words of the element drawn in `item` are, as the browser laid
  * them out, or null where that is not known (nothing is drawn, or there is
@@ -551,9 +558,9 @@ export const CanvasElement = React.memo(function CanvasElement({
       // Move an existing canvas element
       if (state.draggedElementId && state.draggedElementId !== elementId && indicator) {
         e.stopPropagation();
-        const historyState = useHistoryStore.getState();
-        historyState.push(state.elements, state.rootId);
         state.moveElement(state.draggedElementId, indicator.parentId, indicator.index, indicator.side);
+        // A step to undo, when something moved: let go where it was, it is none.
+        if (useCanvasStore.getState().elements !== state.elements) useHistoryStore.getState().push(state.elements, state.rootId);
         state.setDraggedElementId(null);
         state.setDropIndicator(null);
         return;
@@ -702,23 +709,27 @@ export const CanvasElement = React.memo(function CanvasElement({
     [elementId, onTreeFocusChange]
   );
 
-  // Drop indicator state
-  const dropIndicator = useCanvasStore((s) => s.dropIndicator);
-  const { showLineBefore, showLineAfter, showDropInto } = useMemo(() => {
-    if (!element) return { showLineBefore: false, showLineAfter: false, showDropInto: false };
-    const parent = element.parentId
-      ? useCanvasStore.getState().elements.get(element.parentId)
-      : null;
-    const idx = parent?.children.indexOf(elementId) ?? -1;
-    return {
-      showLineBefore: dropIndicator?.parentId === element.parentId && dropIndicator?.index === idx,
-      showLineAfter:
-        dropIndicator?.parentId === element.parentId &&
-        dropIndicator?.index === idx + 1 &&
-        idx === (parent?.children.length ?? 0) - 1,
-      showDropInto: dropIndicator?.parentId === elementId,
-    };
-  }, [dropIndicator, element, elementId]);
+  // Where the drop being shown is, as it concerns this element: a line
+  // before it, a line after it (the last of what holds it), or into it. A
+  // number, so that a moving indicator draws again only the elements whose
+  // answer changed: the indicator itself was taken here, and every element
+  // on the canvas was drawn again at each move of a drag.
+  const dropPlace = useCanvasStore((s) => {
+    const drop = s.dropIndicator;
+    if (!drop) return 0;
+    let place = drop.parentId !== elementId ? 0 : drop.side === 'start' ? DROP_INTO | INTO_START : drop.side === 'end' ? DROP_INTO | INTO_END : DROP_INTO;
+    const parentId = s.elements.get(elementId)?.parentId;
+    if (parentId && drop.parentId === parentId) {
+      const siblings = s.elements.get(parentId)?.children ?? [];
+      const idx = siblings.indexOf(elementId);
+      if (drop.index === idx) place |= LINE_BEFORE;
+      if (drop.index === idx + 1 && idx === siblings.length - 1) place |= LINE_AFTER;
+    }
+    return place;
+  });
+  const showLineBefore = (dropPlace & LINE_BEFORE) !== 0;
+  const showLineAfter = (dropPlace & LINE_AFTER) !== 0;
+  const showDropInto = (dropPlace & DROP_INTO) !== 0;
 
   // Determine if we should show that this element can receive drops
   if (!element) return null;
@@ -1139,7 +1150,7 @@ export const CanvasElement = React.memo(function CanvasElement({
     zIndex: 20,
   };
 
-  const dropSide = showDropInto ? dropIndicator?.side : undefined;
+  const dropSide = (dropPlace & INTO_START) !== 0 ? 'start' : (dropPlace & INTO_END) !== 0 ? 'end' : undefined;
 
   return (
     <div ref={wrapperRef} style={styles.wrapper}>

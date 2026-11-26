@@ -115,6 +115,16 @@ export const FORMATTING_ELEMENTS = new Set([
 ]);
 
 /**
+ * Whether text is only the white space HTML lays a page out with (space,
+ * tab, line feed, form feed, carriage return), which draws nothing between
+ * tags. A no-break space is not such space: it is drawn, and in a table it
+ * is moved before it, as other words are.
+ */
+export function isLayoutSpace(text: string): boolean {
+  return /^[ \t\n\f\r]*$/.test(text);
+}
+
+/**
  * A run of `children` that `belongs` says is one group's, each in a new
  * element named `tag` (whitespace between them kept inside it).
  */
@@ -133,7 +143,7 @@ function wrapRuns(children: TemplateNode[], tag: string, belongs: (node: Templat
       }
       group.children.push(...space, child);
       space = [];
-    } else if (child.type === 'Text' && child.content.trim() === '') {
+    } else if (child.type === 'Text' && isLayoutSpace(child.content)) {
       space.push(child);
     } else {
       out.push(...space, child);
@@ -160,7 +170,7 @@ export function wrapTableRows(children: TemplateNode[]): TemplateNode[] {
 /** Whether a node draws table rows and nothing else: a `<tr>`, or a `#each` or `#if` of them. */
 function isTableRow(node: TemplateNode): boolean {
   const onlyRows = (nodes: TemplateNode[]): boolean => {
-    const drawn = nodes.filter((child) => !(child.type === 'Text' && child.content.trim() === ''));
+    const drawn = nodes.filter((child) => !(child.type === 'Text' && isLayoutSpace(child.content)));
     return drawn.length > 0 && drawn.every(isTableRow);
   };
   if (node.type === 'Element') return node.tag === 'tr';

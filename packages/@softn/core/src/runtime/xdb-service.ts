@@ -357,15 +357,79 @@ function matchesFilter(record: XDBRecord, filter: Record<string, unknown>): bool
   return Object.entries(filter).every(([key, value]) => Object.prototype.hasOwnProperty.call(data, key) && data[key] === value);
 }
 
-/** Records with the field missing (or null) last, in either order. */
+/**
+ * Records in the order they were made (`created_at`), as browser storage keeps
+ * a collection: the native store lists one newest first (crates/softn-xdb
+ * `get_collection`, `ORDER BY created_at DESC`), and the desktop's cache took
+ * that order, so an unsorted list there was reversed after every restart and a
+ * record made since went below the oldest. Records made at one time keep the
+ * order given (SQLite's index gives those in the order they were written).
+ */
+function inOrderMade(records: readonly XDBRecord[]): XDBRecord[] {
+  return records
+    .map((record, index) => ({ record, index, at: stampTime(record.created_at) }))
+    .sort((a, b) => a.at - b.at || a.index - b.index)
+    .map(({ record }) => record);
+}
+
+/**
+ * Where a value's type sorts among the others, as a document store orders them: numbers, text,
+ * objects, lists, then true and false. `a < b` between a number and a word is false both ways,
+ * so a field holding both (a price typed in one form and imported as text from another) said
+ * each record was after the other, and the list came back in the order it was stored.
+ */
+function typeRank(value: unknown): number {
+  switch (typeof value) {
+    case 'number':
+      return 0;
+    case 'string':
+      return 1;
+    case 'boolean':
+      return 4;
+    default:
+      return Array.isArray(value) ? 3 : 2;
+  }
+}
+
+/** Two values of a field, neither missing: by type (typeRank), then within it. */
+function compareValues(a: unknown, b: unknown): number {
+  const rank = typeRank(a);
+  const other = typeRank(b);
+  if (rank !== other) return rank - other;
+  // Objects and lists, which `<` reads as the same text, by what they hold.
+  if (rank === 2 || rank === 3) {
+    a = JSON.stringify(a);
+    b = JSON.stringify(b);
+  }
+  return (a as number) < (b as number) ? -1 : (a as number) > (b as number) ? 1 : 0;
+}
+
+/**
+ * A query's filter, sort, offset and limit over a collection's live records (a list the caller
+ * owns: it is sorted in place). Restricted to `record.data`, so no option reaches a record's
+ * internal fields.
+ */
+function applyQuery(records: XDBRecord[], options?: XDBQueryOptions): XDBRecord[] {
+  if (options?.filter) {
+    const filter = options.filter;
+    records = records.filter((record) => matchesFilter(record, filter));
+  }
+  if (options?.sort) records.sort(byField(options.sort.field, options.sort.order));
+  if (options?.offset !== undefined) records = records.slice(options.offset);
+  if (options?.limit !== undefined) records = records.slice(0, options.limit);
+  return records;
+}
+
+/** Records with the field missing (or null) last, in either order, and in the order stored. */
 function byField(field: string, order: 'asc' | 'desc'): (a: XDBRecord, b: XDBRecord) => number {
   return (a, b) => {
     const aVal = fieldOf(a, field);
     const bVal = fieldOf(b, field);
     if (aVal === bVal) return 0;
-    if (aVal === undefined || aVal === null) return 1;
-    if (bVal === undefined || bVal === null) return -1;
-    const comparison = (aVal as number) < (bVal as number) ? -1 : 1;
+    const aMissing = aVal === undefined || aVal === null;
+    const bMissing = bVal === undefined || bVal === null;
+    if (aMissing || bMissing) return aMissing === bMissing ? 0 : aMissing ? 1 : -1;
+    const comparison = compareValues(aVal, bVal);
     return order === 'desc' ? -comparison : comparison;
   };
 }
@@ -500,7 +564,11 @@ export class XDBService {
     // app use too (storage-budget.ts).
     try {
       if (typeof localStorage !== 'undefined' && this.storage === localStorage) {
-        this.budget = new StorageBudget(localStorage, `${prefix}:`, RECORD_STORAGE_BUDGET);
+        // Its own keys: a collection's (whose name has no colon, nor has the copy of a damaged
+        // one), or one beside them (`metaKey`, `<prefix>::<name>`). The default store's `xdb:`
+        // begins every app's keys too (`xdb:<app>:<collection>`), and its budget took in every
+        // app's records, so its first write was refused once the apps held its share between them.
+        this.budget = new StorageBudget(localStorage, `${prefix}:`, RECORD_STORAGE_BUDGET, (rest) => rest.startsWith(':') || !rest.includes(':'));
       }
     } catch {
       // No browser store here to share.
@@ -637,15 +705,22 @@ export class XDBService {
           coll = new Map();
           this.memoryStore.set(collection, coll);
         }
-        for (const r of records) {
-          const existing = coll.get(r.id);
-          // A deletion made here, newer than SQLite's copy (its native write still on the way), stays.
-          if (existing?.deleted && stampTime(existing.updated_at) >= stampTime(r.updated_at)) continue;
-          // Server record wins if local doesn't exist or is older
-          if (!existing || stampTime(existing.updated_at) <= stampTime(r.updated_at)) {
-            coll.set(r.id, r);
-          }
+        // In the order the records were made, as browser storage keeps them (inOrderMade), and
+        // what only the cache holds (made here while the store loaded) after them. The Map is
+        // refilled in place: a write still on its way holds it, to set its answer in.
+        const held = new Map(coll);
+        coll.clear();
+        for (const r of inOrderMade(records)) {
+          const existing = held.get(r.id);
+          held.delete(r.id);
+          // A deletion made here, newer than SQLite's copy (its native write still on the way),
+          // stays; otherwise the server record wins unless the local one is newer.
+          const keep = existing !== undefined && (existing.deleted
+            ? stampTime(existing.updated_at) >= stampTime(r.updated_at)
+            : stampTime(existing.updated_at) > stampTime(r.updated_at));
+          coll.set(r.id, keep ? existing : r);
         }
+        for (const [id, record] of held) coll.set(id, record);
         this.knownCollections.add(collection);
         this.hydrationFailed.delete(collection);
         this.emit({ type: 'refresh', collection, records: this.getCollectionData(collection), reload: true });
@@ -775,10 +850,28 @@ export class XDBService {
   private native<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
     const promise = tauriInvoke<T>(cmd, this.tauriArgs(args));
     this.pendingNative.add(promise);
-    this.updateUnloadGuard();
-    const settle = () => { this.pendingNative.delete(promise); this.updateUnloadGuard(); };
+    this.pendingChanged();
+    const settle = () => { this.pendingNative.delete(promise); this.pendingChanged(); };
     promise.then(settle, settle);
     return promise;
+  }
+
+  private pendingNotifyScheduled = false;
+
+  /**
+   * The native writes in flight changed: the unload guard at once, and the status's listeners
+   * (the notice's "Saving N changes…") once this task is done, for a burst of writes together.
+   * They were never told: the line did not appear while a write was on its way, and one that
+   * another change of status showed stayed after the write had landed.
+   */
+  private pendingChanged(): void {
+    this.updateUnloadGuard();
+    if (this.pendingNotifyScheduled || this.statusListeners.size === 0) return;
+    this.pendingNotifyScheduled = true;
+    queueMicrotask(() => {
+      this.pendingNotifyScheduled = false;
+      if (!this.destroyed) this.notifyStatus();
+    });
   }
 
   /**
@@ -1455,7 +1548,10 @@ export class XDBService {
           const currentOptimistic = c.get(optimisticRecord.id);
           c.delete(optimisticRecord.id);
 
-          // Store ID mapping so in-flight updates/deletes can resolve the real ID
+          // Store ID mapping so in-flight updates/deletes can resolve the real ID. Bounded as the
+          // stamps kept by record are: an entry for every record ever made here, the removed
+          // ones too, grew without end in an app that makes and prunes records all day.
+          if (this.optimisticIdMap.size >= 10_000) this.optimisticIdMap.clear();
           this.optimisticIdMap.set(optimisticRecord.id, serverRecord.id);
 
           // A delete that raced the create is applied now, after it: the row
@@ -1606,10 +1702,15 @@ export class XDBService {
         const coll = this.getOrCreateCollection(record.collection);
         const cached = coll.get(record.id);
         if (!cached || stampTime(cached.updated_at) < stampTime(record.updated_at)) coll.set(record.id, record);
+        // The native store finds a record by id alone: one of another collection is none of
+        // this one's, as `get` and browser storage answer.
+        if (record.collection !== collection) return this.get(collection, id);
         const held = coll.get(record.id)!;
         return held.deleted ? null : held;
       } catch {
-        return null;
+        // Not in SQLite, or not yet (a record made here whose native create has not landed),
+        // or the call failed: what the cache holds, as `get` answers. It answered null.
+        return this.get(collection, id);
       }
     }
 
@@ -1621,30 +1722,7 @@ export class XDBService {
    * Get all records in a collection with optional filtering
    */
   query(collection: string, options?: XDBQueryOptions): XDBRecord[] {
-    let records = this.getCollectionData(collection);
-
-    // Apply filter (restricted to record.data to prevent access to internal metadata)
-    if (options?.filter) {
-      const filter = options.filter;
-      records = records.filter((record) => matchesFilter(record, filter));
-    }
-
-    // Apply sort (restricted to record.data fields)
-    if (options?.sort) {
-      records.sort(byField(options.sort.field, options.sort.order));
-    }
-
-    // Apply offset
-    if (options?.offset !== undefined) {
-      records = records.slice(options.offset);
-    }
-
-    // Apply limit
-    if (options?.limit !== undefined) {
-      records = records.slice(0, options.limit);
-    }
-
-    return records;
+    return applyQuery(this.getCollectionData(collection), options);
   }
 
   /**
@@ -1666,8 +1744,9 @@ export class XDBService {
         // Build a set of server IDs for cleanup
         const serverIds = new Set(records.map(r => r.id));
         // Merge: server records update cache, but preserve optimistic records
-        // (those with IDs not known to the server yet) and don't revive locally deleted records
-        for (const r of records) {
+        // (those with IDs not known to the server yet) and don't revive locally deleted records.
+        // One new here goes after the rest, in the order made (inOrderMade).
+        for (const r of inOrderMade(records)) {
           const existing = coll.get(r.id);
           // Not a record deleted here after SQLite's copy (the delete is async, the backend
           // stale); one SQLite holds newer (a peer brought it back) is the cache's again: the
@@ -1711,32 +1790,9 @@ export class XDBService {
    * Query records with options, asynchronously from backend
    */
   async queryAsync(collection: string, options?: XDBQueryOptions): Promise<XDBRecord[]> {
-    if (this.useTauri) {
-      // Get all from backend then filter locally
-      // (Future: could add filter/sort support to backend)
-      let records = await this.getAllAsync(collection);
-
-      // Apply filter
-      if (options?.filter) {
-        const filter = options.filter;
-        records = records.filter((record) => matchesFilter(record, filter));
-      }
-
-      // Apply sort
-      if (options?.sort) {
-        records.sort(byField(options.sort.field, options.sort.order));
-      }
-
-      // Apply offset and limit
-      if (options?.offset !== undefined) {
-        records = records.slice(options.offset);
-      }
-      if (options?.limit !== undefined) {
-        records = records.slice(0, options.limit);
-      }
-
-      return records;
-    }
+    // Get all from backend then filter locally
+    // (Future: could add filter/sort support to backend)
+    if (this.useTauri) return applyQuery(await this.getAllAsync(collection), options);
 
     return this.query(collection, options);
   }
@@ -1792,9 +1848,11 @@ export class XDBService {
       // address: the change is kept in the cache and the create callback
       // sends it, merged, once the row exists. Sending it now could only fail.
       if (!this.pendingCreateIds.has(id)) {
-        // Async update via Tauri - fire and forget
+        // Async update via Tauri - fire and forget. Named: SQLite finds a record by id alone, and
+        // the cache can hold one under an id SQLite keeps in another collection (a peer's record
+        // the native store refused as that collection's), whose record took the edit.
         this.native<XDBRecord>('update_record', {
-          payload: { id: resolvedId, data, updated_at: applied?.updated_at, remove: removedFields(data) },
+          payload: { id: resolvedId, data, updated_at: applied?.updated_at, remove: removedFields(data), collection: touched },
         })
           .then((serverRecord) => {
             this.nativeWriteLanded(serverRecord.collection);
@@ -1867,11 +1925,16 @@ export class XDBService {
   async updateAsync(id: string, data: Partial<Record<string, unknown>>): Promise<XDBRecord | null> {
     storableText(data);
     if (this.useTauri) {
+      // A record made here whose native create has not landed has no row to change yet: SQLite
+      // refused the change as not found, and it was lost. Made as update() makes it, in the
+      // cache, for the create to send once the row exists.
+      if (this.pendingCreateIds.has(id)) return this.update(id, data);
       try {
         // Stamped after the cache's copy and a room's, as update() stamps it.
         const held = this.cachedLive(id);
+        // Named, as update() names it: SQLite finds a record by id alone.
         const record = await this.native<XDBRecord>('update_record', {
-          payload: { id, data, updated_at: held ? this.stampAfter(held) : undefined, remove: removedFields(data) },
+          payload: { id, data, updated_at: held ? this.stampAfter(held) : undefined, remove: removedFields(data), collection: held?.collection },
         });
         // Taken only while the cache holds what this update started from, as
         // update() weighs its answer: a delete() or an edit made meanwhile
@@ -1935,6 +1998,7 @@ export class XDBService {
       this.native<XDBRecord>('update_record', {
         payload: { id: record.id, data, updated_at: updatedRecord.updated_at, collection, remove: removedFields(data) },
       }).then((serverRecord) => {
+        this.nativeWriteLanded(collection);
         if (serverRecord.collection !== collection || serverRecord.id !== record.id) return;
         // A newer edit/deletion wins even if the older request finishes last.
         if (coll.get(record.id) === updatedRecord) {
@@ -1942,7 +2006,9 @@ export class XDBService {
           this.emit({ type: 'update', collection, record: serverRecord });
         }
       }).catch((err) => {
-        console.error('[XDB] Failed to persist collection update in Tauri:', err);
+        // Reported where the host's notice bar looks, as update() reports it: only logged, the
+        // storage status said the change was saved.
+        this.nativeWriteFailed('update a record', collection, err);
       });
       return updatedRecord;
     }
@@ -2012,8 +2078,8 @@ export class XDBService {
       // the tombstone below stays in the cache and the create callback
       // deletes the row once SQLite has written it.
       if (!this.pendingCreateIds.has(id)) {
-        // Async delete via Tauri - fire and forget
-        this.native<boolean>('delete_record', { id: resolvedId, updatedAt: tombstone?.record.updated_at })
+        // Async delete via Tauri - fire and forget. Named, as update() names it.
+        this.native<boolean>('delete_record', { id: resolvedId, updatedAt: tombstone?.record.updated_at, collection: touched })
           .then(() => {
             this.nativeWriteLanded(touched);
             // Announced once, below, when the cache took the delete: told
@@ -2073,6 +2139,9 @@ export class XDBService {
    */
   async deleteAsync(id: string): Promise<boolean> {
     if (this.useTauri) {
+      // As updateAsync: a record whose native create has not landed is deleted as delete()
+      // deletes it, and its create callback deletes the row SQLite writes.
+      if (this.pendingCreateIds.has(id)) return this.delete(id);
       // Not held here: while the store loads, once it has (SQLite deleted it alone, and server
       // sync never heard of it); loaded without it, not deleted, as `delete` has it.
       if (!this.cachedLive(id)) {
@@ -2091,8 +2160,10 @@ export class XDBService {
       try {
         const held = this.cachedLive(id);
         const stamp = held ? this.stampAfter(held) : undefined;
-        await this.native<boolean>('delete_record', { id, updatedAt: stamp });
+        // Named, as delete() names it: SQLite finds a record by id alone.
+        await this.native<boolean>('delete_record', { id, updatedAt: stamp, collection: held?.collection });
         for (const [collection, coll] of this.memoryStore) {
+          if (held !== undefined && collection !== held.collection) continue;
           const record = coll.get(id);
           if (record) {
             const deleted = { ...record, deleted: true, updated_at: stamp ?? this.stampAfter(record) };
@@ -2207,16 +2278,7 @@ export class XDBService {
    */
   hardDeleteMany(collection: string, ids: Iterable<string>): number {
     this.assertWritable(collection, true);
-    if (this.useTauri) {
-      let removed = 0;
-      this.suppressNotifications();
-      try {
-        for (const id of ids) if (this.hardDelete(collection, id)) removed++;
-      } finally {
-        this.resumeNotifications();
-      }
-      return removed;
-    }
+    if (this.useTauri) return this.hardDeleteManyNative(collection, ids);
 
     const wanted = new Set(ids);
     const records = this.getAllCollectionData(collection);
@@ -2236,6 +2298,64 @@ export class XDBService {
     }
     this.noteUnheardRemovals(collection, gone);
     for (const record of gone) {
+      this.noteEditedAfter(collection, record.id, record.updated_at);
+      this.notifyMutation('delete', collection, record.id);
+    }
+    return gone.length;
+  }
+
+  /**
+   * `hardDeleteMany` on the desktop: each record removed as `hardDelete` removes one, and what
+   * SQLite holds of them tombstoned in one native call (upsert_records), as delete_record writes
+   * each. A delete_record a record rewrote the collection's whole CRDT document in SQLite every
+   * time, so a prune of thousands of records held the native store for minutes.
+   */
+  private hardDeleteManyNative(collection: string, ids: Iterable<string>): number {
+    const coll = this.memoryStore.get(collection);
+    // In the order asked for (oldest first, for a prune), each once.
+    const gone: XDBRecord[] = [];
+    for (const id of new Set(ids)) {
+      const record = coll?.get(id);
+      if (record) gone.push(record);
+    }
+    if (gone.length <= 1) return gone.length === 1 && this.hardDelete(collection, gone[0].id) ? 1 : 0;
+    // Records still being created have no row yet: their create callbacks delete the rows SQLite
+    // writes, never put them back in the cache, and announce nothing (hardDelete).
+    const unborn = new Set<string>();
+    const tombstones: XDBRecord[] = [];
+    for (const record of gone) {
+      coll!.delete(record.id);
+      if (this.pendingCreateIds.has(record.id)) {
+        unborn.add(record.id);
+        this.abandonedCreates.add(record.id);
+      } else {
+        tombstones.push({ ...record, deleted: true, updated_at: editStamp(record.updated_at) });
+      }
+    }
+    if (tombstones.length > 0) {
+      this.native<string[]>('upsert_records', { records: tombstones })
+        .then((refused) => {
+          if (Array.isArray(refused) && refused.length > 0) {
+            this.nativeWriteFailed('remove a record', collection, new Error(`${refused.length === 1 ? 'a record' : `${refused.length} records`} of another collection here`));
+          } else {
+            this.nativeWriteLanded(collection);
+          }
+        })
+        .catch((err) => this.nativeWriteFailed('remove a record', collection, err));
+    }
+    // Announced together, as one refresh; `removed`, as hardDelete announces each.
+    this.suppressNotifications();
+    try {
+      for (const record of gone) {
+        this.noteRemovedForGood(collection, record.id);
+        this.emit({ type: 'delete', collection, record, removed: true });
+      }
+    } finally {
+      this.resumeNotifications();
+    }
+    const told = gone.filter((record) => !unborn.has(record.id));
+    this.noteUnheardRemovals(collection, told);
+    for (const record of told) {
       this.noteEditedAfter(collection, record.id, record.updated_at);
       this.notifyMutation('delete', collection, record.id);
     }
@@ -2558,13 +2678,15 @@ export class XDBService {
    * store as tombstones in one call (upsert_records), as delete_record writes each. A pull's
    * deletions were removed a record at a time, each re-reading and rewriting the collection,
    * and on the desktop each a native call that rewrote its stored document.
+   * `fromPeer` as for `removeRecord`: what a room's peers removed, which peer sync
+   * removed a record at a time, each read and write of the collection again.
    */
-  removeRecords(collection: string, ids: readonly string[]): void {
+  removeRecords(collection: string, ids: readonly string[], options: { fromPeer?: boolean } = {}): void {
     if (ids.length <= 1) {
-      if (ids.length === 1) this.removeRecord(collection, ids[0]);
+      if (ids.length === 1) this.removeRecord(collection, ids[0], options);
       return;
     }
-    this.assertWritable(collection, true);
+    this.assertWritable(collection, options.fromPeer !== true);
     if (this.useTauri) {
       const coll = this.memoryStore.get(collection);
       const tombstones: XDBRecord[] = [];
@@ -2573,7 +2695,7 @@ export class XDBService {
         const removed = coll?.get(id);
         if (!removed) {
           // Not held here: the native store is asked by id, as before.
-          this.removeRecord(collection, id);
+          this.removeRecord(collection, id, options);
           continue;
         }
         coll!.delete(id);
@@ -3289,9 +3411,10 @@ export class XDBService {
   async sync(collection?: string): Promise<void> {
     if (this.useTauri) {
       try {
+        // Requests to peers, not writes: not counted as unsaved work (`native`).
         if (collection) {
           // Sync specific collection
-          await this.native<boolean>('request_sync', { collection });
+          await tauriInvoke<boolean>('request_sync', this.tauriArgs({ collection }));
           debug(`[XDB] Requested P2P sync for collection: ${collection}`);
         } else {
           // Sync all collections in batches to avoid flooding IPC/network
@@ -3299,7 +3422,7 @@ export class XDBService {
           const BATCH_SIZE = 5;
           for (let i = 0; i < collections.length; i += BATCH_SIZE) {
             const batch = collections.slice(i, i + BATCH_SIZE);
-            await Promise.all(batch.map((col) => this.native<boolean>('request_sync', { collection: col })));
+            await Promise.all(batch.map((col) => tauriInvoke<boolean>('request_sync', this.tauriArgs({ collection: col }))));
           }
           debug(`[XDB] Requested P2P sync for all ${collections.length} collections`);
         }
@@ -3323,7 +3446,9 @@ export class XDBService {
   async getNetworkStatus(): Promise<XDBNetworkStatus> {
     if (this.useTauri) {
       try {
-        return await this.native('get_network_status');
+        // A read, not unsaved work (`native`): counted as a write, the notice said a change was
+        // being saved, and leaving the page asked for confirmation, while the status was read.
+        return await tauriInvoke<XDBNetworkStatus>('get_network_status', this.tauriArgs());
       } catch (err) {
         console.error('[XDB] Failed to get network status:', err);
         return { ...OFFLINE_NETWORK_STATUS };

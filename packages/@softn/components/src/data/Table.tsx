@@ -239,7 +239,7 @@ export function Table<T extends Record<string, unknown>>({
 }: TableProps<T>): React.ReactElement {
   const sizes = choice(sizeStyles, size, 'md');
   // Bound to rows that have not arrived, the table is empty, not an error.
-  const given = presentRows<T>(rawData);
+  const given = React.useMemo(() => presentRows<T>(rawData), [rawData]);
   const columns = recordRows<Column<T>>(rawColumns);
   const captionId = React.useId();
 
@@ -293,10 +293,16 @@ export function Table<T extends Record<string, unknown>>({
   // column's `render` is handed it, and a row with no key field is keyed by
   // it. They were given the row's place on screen, and a page that wrote
   // `rows[index]` in its handler opened or removed another record.
-  const order = React.useMemo(() => {
-    const by = sortsItself ? columns.find((column) => column.key === activeColumn && column.sortable) : undefined;
-    return by ? sortOrder(given, (row) => row[by.key], activeDirection) : null;
-  }, [given, columns, sortsItself, activeColumn, activeDirection]);
+  //
+  // Worked out again when the rows, the column sorted by or the direction
+  // change, and not for a new list of the same columns: a page writes
+  // `columns={[...]}` inline, a new list on every draw, and every draw of the
+  // page sorted every row again.
+  const sortKey = sortsItself ? columns.find((column) => column.key === activeColumn && column.sortable)?.key : undefined;
+  const order = React.useMemo(
+    () => (sortKey !== undefined ? sortOrder(given, (row) => row[sortKey], activeDirection) : null),
+    [given, sortKey, activeDirection]
+  );
 
   const getRowKey = (row: T, index: number): string => {
     if (typeof rowKey === 'function') {

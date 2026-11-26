@@ -414,8 +414,12 @@ function bringIn(collected: ProjectRecord, merge: MergeOutcome): MergeParts {
         noteRunFromAnotherTab(message.run.id, status === 'running' || status === 'waiting' ? 'working' : status === 'paused' ? 'paused' : 'ended');
       }
       messages = [...messages];
-      if (!message) messages.splice(index, 1);
-      else if (index >= 0) messages[index] = message;
+      // Gone from the merge and not here either (one of the other tab's, left out of a merged chat
+      // at the most it keeps): there is nothing to take out. Taken out at place -1, this tab's
+      // newest message went instead.
+      if (!message) {
+        if (index >= 0) messages.splice(index, 1);
+      } else if (index >= 0) messages[index] = message;
       else added.push(message);
       applied.messages.push(id);
     }

@@ -110,6 +110,26 @@ describe('a new folder', () => {
 });
 
 describe('files from the computer', () => {
+  // Reading a large file takes a while. What was read was put in whatever project was open when
+  // the reading ended: another project, opened meanwhile, got the first one's pictures.
+  it('are not put in another project opened while they were being read', async () => {
+    useWorkspaceStore.setState({ projectId: 'first' });
+    let release!: () => void;
+    const slow: PickedFile = { name: 'photo.png', size: PNG.byteLength, arrayBuffer: () => new Promise((resolve) => { release = () => resolve(PNG.buffer.slice(0) as ArrayBuffer); }) };
+    const adding = addFiles([{ file: slow }], null);
+    // Another project is opened.
+    useWorkspaceStore.setState({ projectId: 'second' });
+    vfs().reset();
+    vfs().hydrateFiles([{ path: 'manifest.json', content: '{"name":"Second"}' }]);
+    release();
+    const result = await adding;
+    expect(result.done).toBeNull();
+    expect(result.added).toEqual([]);
+    expect(result.refused).toEqual([expect.stringMatching(/another project was opened/i)]);
+    expect(paths()).toEqual(['manifest.json']);
+    expect(vfs().history).toEqual([]);
+  });
+
   it('go where each belongs when no folder was pointed at, as one unit', async () => {
     const result = await addFiles([{ file: picked('photo.png') }, { file: picked('contact.html', '<h1>Contact</h1>') }, { file: picked('theme.mp3', new Uint8Array([1, 2])) }], null);
     expect(result.refused).toEqual([]);

@@ -21,5 +21,13 @@ fn base_engine_config() -> wasmtime::Config {
     // compatibility check: a runner built in a shell with that variable set
     // would refuse its own guest everywhere else.
     config.wasm_backtrace_details(wasmtime::WasmBacktraceDetails::Disable);
+    // No backtraces at all: guest.rs answers a failed run from the trap's code
+    // alone (Trap::Interrupt, UnreachableCodeReached, ...), which the trap
+    // table gives, and never reads a WasmBacktrace. The address map that would
+    // place a backtrace's frames in the guest was 1.7 MB of the precompiled
+    // guest, in every runner, that no answer or log line ever used; and a
+    // failed run no longer walks the guest's stack to record frames.
+    config.generate_address_map(false);
+    config.wasm_backtrace_max_frames(None);
     config
 }

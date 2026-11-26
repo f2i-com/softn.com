@@ -577,7 +577,10 @@ function scrubUrlsIn(
     const entries = value as unknown[];
     let copy: unknown[] | null = null;
     for (let i = 0; i < entries.length; i++) {
-      const next = scrubUrlsIn(entries[i], depth + 1, blocked, policy, seen, assetResolver);
+      const entry = entries[i];
+      // Text, a number, a function: nothing inside it to judge.
+      if (entry === null || typeof entry !== 'object') continue;
+      const next = scrubUrlsIn(entry, depth + 1, blocked, policy, seen, assetResolver);
       if (next !== entries[i]) {
         if (!copy) copy = entries.slice();
         copy[i] = next;
@@ -617,6 +620,8 @@ function scrubUrlProp(
     if (safe === undefined && typeof value !== 'boolean') blocked.push(describeUrlValue(value));
     return safe;
   }
+  // Text, a number, a function: nothing inside it to judge.
+  if (value === null || typeof value !== 'object') return value;
   return scrubUrlsIn(value, depth, blocked, policy, seen, assetResolver);
 }
 
@@ -629,10 +634,14 @@ export function sanitizeComponentUrlProps(
 ): void {
   const blocked: string[] = [];
 
-  const seen: Scrubbed = new Map();
+  // Made when a list or a record is first met: most props are text, numbers
+  // and handlers, and this ran for every component of every drawing.
+  let seen: Scrubbed | null = null;
   for (const name of Object.keys(props)) {
-    const next = scrubUrlProp(name, props[name], 0, blocked, policy, seen, assetResolver);
-    if (next !== props[name]) props[name] = next;
+    const value = props[name];
+    if ((value === null || typeof value !== 'object') && !COMPONENT_URL_PROPS.has(urlPropName(name))) continue;
+    const next = scrubUrlProp(name, value, 0, blocked, policy, (seen ??= new Map()), assetResolver);
+    if (next !== value) props[name] = next;
   }
 
   if (blocked.length > 0 && isDevelopment) {

@@ -154,8 +154,8 @@ export interface OpenBundleHost {
   hideOpening: (tabId: string) => void;
   /** The cache's records changed; Home lists them. */
   appsChanged: (apps: CachedApp[]) => void;
-  /** Something to tell the person about an open that went ahead: a line of the runtime's own, over the app. */
-  notify?: (text: string) => void;
+  /** Something to tell the person about an open that went ahead: a line of the runtime's own, over the app in `tabId`. */
+  notify?: (text: string, tabId: string) => void;
   /** Make the app openable without a network, in the background. */
   installOffline: (
     tabId: string,
@@ -256,6 +256,8 @@ export async function openBundle(host: OpenBundleHost, request: OpenBundleReques
   // for before it was.
   let edited = false;
   let ownAsk: string | undefined;
+  /** What to tell the person about this open, said over its tab once there is one. */
+  let notice: string | undefined;
 
   // Whether the placeholder this load was given has since been closed.
   //
@@ -318,7 +320,7 @@ export async function openBundle(host: OpenBundleHost, request: OpenBundleReques
             edited = (await (await import('../edit/drafts')).layDraft(identity, textFiles)).laid;
           } catch (problem) {
             console.warn('[SoftN Web] The changes made to this app in the editor could not be read, and it is opened without them:', problem);
-            host.notify?.('This app is open without the changes you made to it in the editor: they could not be loaded just now. They are still saved; open it again when you are online.');
+            notice = 'This app is open without the changes you made to it in the editor: they could not be loaded just now. They are still saved; open it again when you are online.';
           }
         }
       }
@@ -693,6 +695,8 @@ export async function openBundle(host: OpenBundleHost, request: OpenBundleReques
     // being prepared. Finish its tab in the background without stealing focus.
     if (isForeground() && (!placeholderId || host.activeTabId() === placeholderId)) host.setActiveTabId(tabId);
     if (loadingOwner) host.hideOpening(loadingOwner);
+    // Said over this app, and not over whichever app is on screen: it is about this one.
+    if (notice) host.notify?.(notice, tabId);
 
     // Make the app openable without a network, in the background. It is
     // on screen already; nothing waits on this, and the outcome is a word

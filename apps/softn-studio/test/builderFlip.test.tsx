@@ -383,6 +383,16 @@ describe('Back to Studio', () => {
     expect(plan.skipped.map((skipped) => skipped.path)).toEqual(['builder/blueprint.json', '../escape.txt', 'pages/missing.html']);
   });
 
+  // Decoded as UTF-8 whatever its bytes, a Latin-1 note came back with U+FFFD in place of each
+  // accented letter, and that is what Studio then kept and exported.
+  it('keeps a file named as text whose bytes are not UTF-8 as those bytes', async () => {
+    const projectId = openExampleInStores(READING_LIST);
+    const latin1 = Uint8Array.from([...strToU8('Caf'), 0xe9, 0x0a]);
+    const flip: FlipBack = { kind: 'return', projectId, changed: ['notes/menu.txt'], deleted: [], sent: {} };
+    const plan = await planReturn(files(), flip, new Map([['notes/menu.txt', latin1]]));
+    expect(plan.records).toEqual([{ op: 'create', path: 'notes/menu.txt', content: latin1 }]);
+  });
+
   it('opens the project the return is of when another is open, and opens the work as a new project when that one is gone', async () => {
     openExampleInStores(READING_LIST);
     const id = await builderReturn('another-project', { 'pages/home.html': EDITED, 'manifest.json': '{}' }, ['pages/home.html'], [], { 'pages/home.html': HOME });

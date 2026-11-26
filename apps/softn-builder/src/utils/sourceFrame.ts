@@ -75,13 +75,31 @@ export interface SourceComment extends CanvasComment {
   followedAt: number | null;
 }
 
-function safeTokenize(source: string): Token[] | null {
+/**
+ * The tokens of the last few sources read, the newest last. Reading a page
+ * frames it, finds its comments and checks its expressions, and the check
+ * frames it again and writes it back: each of those tokenized the whole file
+ * anew, twelve times over for one page opened. The tokens are only read.
+ */
+const recentTokens: Array<{ source: string; tokens: Token[] | null }> = [];
+const RECENT_TOKENS = 4;
+
+/** `source` tokenized, or null when the lexer cannot read it. The array is shared: read it, never change it. */
+export function tokensOf(source: string): Token[] | null {
+  const held = recentTokens.find((entry) => entry.source === source);
+  if (held) return held.tokens;
+  let tokens: Token[] | null;
   try {
-    return tokenize(source);
+    tokens = tokenize(source);
   } catch {
-    return null;
+    tokens = null;
   }
+  recentTokens.push({ source, tokens });
+  if (recentTokens.length > RECENT_TOKENS) recentTokens.shift();
+  return tokens;
 }
+
+const safeTokenize = tokensOf;
 
 /** Every comment the lexer finds outside `<logic>`, `<script>` and `<style>`, in order; null when it cannot read the file. */
 export function commentsOf(source: string): SourceComment[] | null {
@@ -192,8 +210,23 @@ function declaringBlocks(source: string, doc: SoftNDocument, anchors: ReadonlySe
   return blocks;
 }
 
+/**
+ * Each document's frame, with the source it was framed from: a page read is
+ * framed for its comments, for the check of what it holds and for writing it
+ * back, each time from the same parse. A frame is only read.
+ */
+const frames = new WeakMap<SoftNDocument, { source: string; frame: SourceFrame | null }>();
+
 /** The three stretches of `source`, or null when it has no template to write. */
 export function frameSource(source: string, doc: SoftNDocument): SourceFrame | null {
+  const held = frames.get(doc);
+  if (held && held.source === source) return held.frame;
+  const frame = frameOf(source, doc);
+  frames.set(doc, { source, frame });
+  return frame;
+}
+
+function frameOf(source: string, doc: SoftNDocument): SourceFrame | null {
   const roots = contentNodes(doc.template);
   if (roots.length === 0) return null;
   const reasons: string[] = [];

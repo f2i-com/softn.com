@@ -25,12 +25,19 @@ import { validateProject } from './validator';
 /** How long the files must keep still before the engine is asked. */
 export const LOGIC_CHECK_DELAY_MS = 250;
 
-/** What the engine's answer depends on: the pages (and their inline logic), the logic files and the manifest. */
+/**
+ * Every script and component, wherever it is kept: a web container compiles its `.vue`
+ * components, and a page may link a script kept under assets/. Neither is a logic file by
+ * name, and an edit to one left the engine's last answer standing (see logicCheckKey).
+ */
+const SCRIPT = /\.(?:m?js|tsx?|mts|jsx|vue)$/i;
+
+/** What the engine's answer depends on: the pages (and their inline logic), the logic files and the scripts they run, and the manifest. */
 export function logicCheckKey(files: Map<string, VFSFile>): string {
   const parts: string[] = [];
   for (const [path, file] of files) {
     if (typeof file.content !== 'string') continue;
-    if (path === 'manifest.json' || isPagePath(path) || isLogicPath(path)) parts.push(`${path}\u0000${file.content}`);
+    if (path === 'manifest.json' || isPagePath(path) || isLogicPath(path) || SCRIPT.test(path)) parts.push(`${path}\u0000${file.content}`);
   }
   return parts.sort().join('\u0001');
 }

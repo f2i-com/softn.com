@@ -565,8 +565,10 @@ jobs:
           npm run package:formlogic-runtime -- --tag "$RELEASE_TAG" --runner-dir release-runner
           zip="release/softn-formlogic-runtime-$RELEASE_TAG.zip"
           unzip -tq "$zip"
+          # A file several trees carry is stored once; softn-release.json `copies` names where else it goes.
+          listed="$(unzip -Z1 "$zip"; unzip -p "$zip" softn-release.json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(Object.keys(JSON.parse(s).copies??{}).join("\n")))')"
           for entry in README.md INTEGRATION.md softn-release.json hosted-runtime/index.html hosted-runtime/host.html hosted-runtime/runtime-manifest.json app-editors/manifest.json app-editors/builder/index.html app-editors/studio/index.html native-runtime/host-protocol.json native-runtime/wasm/zipp_wasm_bg.wasm native-runtime/bin/softn-runner-linux-x86_64 native-runtime/bin/softn-runner-windows-x86_64.exe native-runtime/SOFTN-RUNNER-THIRD-PARTY-LICENSES.txt zipp/SOURCE.json zipp/zipp_wasm.d.ts zipp/RELEASE-SHA256SUMS zipp-web/SOURCE.json zipp-web/zipp_wasm_bg.wasm adapter/formlogic.ts; do
-            unzip -Z1 "$zip" | grep -x "$entry" >/dev/null
+            grep -Fqx "$entry" <<<"$listed"
           done
           test "$(unzip -p "$zip" softn-release.json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).tag))')" = "$RELEASE_TAG"
           recorded="$(unzip -p "$zip" softn-release.json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const z=JSON.parse(s).zipp;console.log(z.release+" "+z.sumsSha256)})')"

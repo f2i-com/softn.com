@@ -515,15 +515,23 @@ export function Input({
 
   return (
     <>
-      <style>{`
-        .softn-input-clear:hover {
-          background: var(--color-gray-200, rgba(255, 255, 255, 0.1)) !important;
-          color: var(--color-text, #e4e4e7) !important;
-        }
-        .softn-input-clear:active {
-          transform: scale(0.85);
-        }
-      `}</style>
+      {/*
+        The clear button's rules, only while there is a clear button (see
+        Button): every Input wrote them. The slot stays when it is empty, so
+        the field is the same element, caret and all, as the button comes
+        and goes with the text.
+      */}
+      {showClearButton && (
+        <style>{`
+          .softn-input-clear:hover {
+            background: var(--color-gray-200, rgba(255, 255, 255, 0.1)) !important;
+            color: var(--color-text, #e4e4e7) !important;
+          }
+          .softn-input-clear:active {
+            transform: scale(0.85);
+          }
+        `}</style>
+      )}
       <div style={inputWrapperStyle}>
         <div style={{ width: '100%' }}>
           {label && (

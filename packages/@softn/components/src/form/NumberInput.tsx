@@ -73,6 +73,32 @@ function toNumber(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+/** The decimal separator the reader's locale writes: "." or ",". */
+function localeDecimal(): string {
+  try {
+    return new Intl.NumberFormat().formatToParts(1.5).find((part) => part.type === 'decimal')?.value ?? '.';
+  } catch {
+    return '.';
+  }
+}
+
+/**
+ * The number typed text stands for. A phone in a region that writes 1,5
+ * offers a comma on the decimal keypad this field asks for, and no point:
+ * "1,5" was not a number, nothing was sent, and a decimal could not be typed
+ * at all. One comma with no point is the decimal point, unless it could be a
+ * thousands separator (three digits after it) where the locale writes the
+ * point as "." ("1,000" is a thousand there, and is left untaken as before).
+ * The full-width digits and signs an input method types in its full-width
+ * mode ("１２．５") are the digits they stand for.
+ */
+function typedNumber(given: string): number | null {
+  const text = given.replace(/[＋-．０-９]/g, (wide) => String.fromCharCode(wide.charCodeAt(0) - 0xfee0));
+  const comma = /^([-+]?\d*),(\d+)$/.exec(text.trim());
+  if (comma && (comma[2].length !== 3 || localeDecimal() === ',')) return toNumber(`${comma[1]}.${comma[2]}`);
+  return toNumber(text);
+}
+
 export function NumberInput({
   value,
   defaultValue,
@@ -157,7 +183,7 @@ export function NumberInput({
       commit(null);
       return;
     }
-    const parsed = toNumber(text);
+    const parsed = typedNumber(text);
     // Text that is not a number yet is kept as typed and not sent.
     if (parsed === null) return;
     // Out of range is sent when the field is left, settled into range; while
@@ -169,7 +195,7 @@ export function NumberInput({
   /** What is in the field becomes the number, settled into range: the field is done with. */
   const settleDraft = () => {
     if (draft === null) return;
-    const parsed = toNumber(draft);
+    const parsed = typedNumber(draft);
     setDraft(null);
     if (draft.trim() === '') commit(null);
     else if (parsed !== null) commit(settle(parsed));

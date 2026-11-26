@@ -119,10 +119,14 @@ const statusConfigs: Record<string, StatusConfig> = {
 function getInitials(given: string): string {
   // `name={user.id}` is a number for some stores; `.trim` of one threw.
   const parts = String(given).trim().split(/\s+/);
+  // The first character, whole: `charAt(0)` of an emoji or a name outside
+  // the basic plane is half of a surrogate pair, drawn as the replacement
+  // character.
+  const first = (part: string) => Array.from(part)[0] ?? '';
   if (parts.length === 1) {
-    return parts[0].charAt(0).toUpperCase();
+    return first(parts[0]).toUpperCase();
   }
-  return (parts[0].charAt(0) + parts[parts.length - 1].charAt(0)).toUpperCase();
+  return (first(parts[0]) + first(parts[parts.length - 1])).toUpperCase();
 }
 
 function stringToColor(given: string): string {

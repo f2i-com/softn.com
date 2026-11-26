@@ -50,6 +50,7 @@ import { usableBackendUrl } from './lib/hostedBackend';
 import { forgetEdits, peekEdits, restoreEdits } from './lib/editIndex';
 import { reopenTab } from './lib/reopenTab';
 import type { EditHost } from './edit/host';
+import type { AppUpdateResult } from '@softn/core';
 
 // The editor for a running app: its source beside it, changed while it runs.
 // Everything of it (the pane, the code editor, what traces an element to its
@@ -79,6 +80,73 @@ class EditorBoundary extends React.Component<{ children: React.ReactNode; onFail
     return this.state.failed ? null : this.props.children;
   }
 }
+
+/** What a tab's runner is handed of the runtime around it: the same functions on every drawing. */
+interface RunnerHost {
+  update: (tabId: string, result: AppUpdateResult) => void;
+  shownPage: (tab: OpenTab, path: string | null) => void;
+  pageChange: (tabId: string, page: string) => void;
+  ready: (tab: OpenTab) => void;
+  /** Stopping a long wait is Close: the download is aborted with the tab, and the way back is the one Close takes. */
+  cancelOpen: (tabId: string) => void;
+}
+
+/**
+ * One open app, drawn again when its tab changes or it comes on or off
+ * screen, and not for every drawing of the runtime around it. Every tab stays
+ * mounted and a drawing of one evaluates its whole page, so folding the bar
+ * away, a line on Home, a toast or a change made to another tab drew every
+ * open app again.
+ */
+const TabRunner = React.memo(function TabRunner({ tab, active, host }: { tab: OpenTab; active: boolean; host: RunnerHost }): React.ReactElement {
+  const id = tab.id;
+  const onUpdate = useCallback((result: AppUpdateResult) => host.update(id, result), [host, id]);
+  const onShownPage = useCallback((path: string | null) => host.shownPage(tab, path), [host, tab]);
+  const onPageChange = useCallback((page: string) => host.pageChange(id, page), [host, id]);
+  const onReady = useCallback(() => host.ready(tab), [host, tab]);
+  const onCancelOpen = useCallback(() => host.cancelOpen(id), [host, id]);
+  return (
+    <AppRunner
+      tabId={id}
+      source={tab.source}
+      appName={tab.name}
+      appId={tab.appId}
+      active={active}
+      initialPage={tab.initialPage}
+      permissions={tab.permissions}
+      importResolver={tab.importResolver}
+      assetResolver={tab.assetResolver}
+      logicBasePath={tab.logicBasePath}
+      preIncludedLogicPaths={tab.preIncludedLogicPaths}
+      python={tab.python}
+      textFiles={tab.textFiles}
+      parseProblem={tab.parseProblem}
+      executionPreference={tab.execution}
+      themeMode={tab.themeMode}
+      permissionConfig={tab.permissionConfig}
+      consent={tab.consent}
+      // The running app, for a host that hands it a newer version of
+      // its files while it is open (lib/liveUpdate.ts).
+      live={tab.live}
+      // For the editor, while it is open on this app: which node drew
+      // each element, what the app answered to a change, and which of
+      // its pages a link has put on screen.
+      editMarks={tab.editMarks}
+      onUpdate={onUpdate}
+      onShownPage={onShownPage}
+      onPageChange={onPageChange}
+      onReady={onReady}
+      onCancelOpen={onCancelOpen}
+      serverUrl={tab.serverUrl}
+      serverToken={tab.serverToken}
+      serverCollections={tab.serverCollections}
+      storageEndpoint={tab.directorySlug ? `/api/apps/${encodeURIComponent(tab.directorySlug)}/storage` : undefined}
+      webContainer={tab.webContainer}
+      bundleData={tab.bundleData}
+      backendUrl={tab.backendUrl}
+    />
+  );
+});
 
 // ── URL Routing Helpers ──────────────────────────────────────────
 
@@ -302,14 +370,20 @@ function App(): React.ReactElement {
   const [error, setError] = useState<Error | null>(null);
   const [loadingTabId, setLoadingTabId] = useState<string | null>(null);
   const [loadingFileName, setLoadingFileName] = useState('');
-  /** The last app asked for by address that has not opened: what "Try again" on the error card asks for again. */
+  /**
+   * The last app asked for by address that has not opened: what "Try again" on
+   * the error card asks for again. Forgotten once another app is asked for, a
+   * file or a saved app, whose card that then is.
+   */
   const [urlOpen, setUrlOpen] = useState<{ value: string; initialPage?: string } | null>(null);
   /**
    * One line of the runtime's own over a running app: something that did not
    * go as asked while the app itself goes on (its editor could not be
-   * loaded; it is open without the changes made to it).
+   * loaded; it is open without the changes made to it). One about an app
+   * (`tabId`) is said over that app alone: said over whichever app was on
+   * screen, it named "this app" over another one.
    */
-  const [appNotice, setAppNotice] = useState<string | null>(null);
+  const [appNotice, setAppNotice] = useState<{ text: string; tabId?: string } | null>(null);
   // Nothing here queues consent any more. A permission request used to park
   // processBundleData on a promise the modal resolved, which is why it needed a
   // queue at all — two bundles asking at once could strand each other's load.
@@ -347,7 +421,8 @@ function App(): React.ReactElement {
   // request for one already in flight joins it rather than starting its own —
   // the tab-reuse check below cannot help, because it can only recognise a tab
   // that has finished loading, and the whole point here is that this one has not.
-  const inFlightRef = useRef(new Map<string, Promise<string | null>>());
+  // Each with the placeholder it fills and the navigation its latest press claimed.
+  const inFlightRef = useRef(new Map<string, { load: Promise<string | null>; tabId: string; claim: { isForeground: () => boolean } }>());
   /** Downloads still running, by the placeholder tab they belong to. */
   const loadAbortsRef = useRef(new Map<string, AbortController>());
   /** Offline installs still running, by the tab whose open started them. */
@@ -550,7 +625,7 @@ function App(): React.ReactElement {
       },
       hideOpening: (tabId) => setLoadingTabId((current) => (current === tabId ? null : current)),
       appsChanged: setApps,
-      notify: setAppNotice,
+      notify: (text, tabId) => setAppNotice({ text, tabId }),
       installOffline: beginOfflineInstall,
       installContainerOffline: beginContainerInstall,
     }),
@@ -565,6 +640,9 @@ function App(): React.ReactElement {
   /** Open the bytes read from a local archive or web app folder. */
   const handleOpenFile = useCallback(
     async (data: Uint8Array, fileName: string, isForeground: () => boolean) => {
+      // Another app asked for: the address that did not open is not what the
+      // error card's "Try again" asks for now (see urlOpen).
+      setUrlOpen(null);
       await processBundleData({ data, fileName, isForeground });
     },
     [processBundleData]
@@ -639,15 +717,29 @@ function App(): React.ReactElement {
       // A load for this exact bundle is already running: join it. Without this,
       // a double-clicked demo card and StrictMode's doubled mount effect both
       // download the bundle twice and leave a placeholder nobody owns — the tab
-      // bar ends up with the running app beside a tab loading forever.
+      // bar ends up with the running app beside a tab loading forever. The
+      // press is still the person's latest navigation, so the load it joins
+      // takes it, and its tab is shown: Run, Home, then Run again on the same
+      // app used to join the download and leave Home on screen, and the app
+      // opened behind it.
       const joined = inFlightRef.current.get(url.href);
-      if (joined) return joined;
+      if (joined) {
+        joined.claim.isForeground = isForeground;
+        if (isForeground() && openTabsRef.current.some((t) => t.id === joined.tabId)) {
+          setError(null);
+          activeTabIdRef.current = joined.tabId;
+          setActiveTabId(joined.tabId);
+        }
+        return joined.load;
+      }
 
-      const run = async (): Promise<string | null> => {
-        // The same placeholder the /app/:name flow uses, so the download shows
-        // up in the tab bar instead of leaving the window blank until it lands.
-        // processBundleData adopts it once the real name is known.
-        const skeletonTabId = randomUUID();
+      // The same placeholder the /app/:name flow uses, so the download shows
+      // up in the tab bar instead of leaving the window blank until it lands.
+      // processBundleData adopts it once the real name is known.
+      const skeletonTabId = randomUUID();
+      const claim = { isForeground };
+      // Asked of whichever press now owns the load.
+      const run = async (isForeground: () => boolean): Promise<string | null> => {
         if (isForeground()) setError(null);
         // What the error card's "Try again" asks for again, should this open
         // fail: the address as it was given. Forgotten once the app is open.
@@ -782,12 +874,12 @@ function App(): React.ReactElement {
 
       // `load` is referenced inside its own initializer, which is safe because
       // the callback cannot run until the promise settles, long after binding.
-      const load: Promise<string | null> = run().finally(() => {
+      const load: Promise<string | null> = run(() => claim.isForeground()).finally(() => {
         // Only clear the entry if it is still this load's; a later request for
         // the same bundle owns the slot by then.
-        if (inFlightRef.current.get(url.href) === load) inFlightRef.current.delete(url.href);
+        if (inFlightRef.current.get(url.href)?.load === load) inFlightRef.current.delete(url.href);
       });
-      inFlightRef.current.set(url.href, load);
+      inFlightRef.current.set(url.href, { load, tabId: skeletonTabId, claim });
       return load;
     },
     [processBundleData, discardPlaceholder]
@@ -931,6 +1023,8 @@ function App(): React.ReactElement {
         setActiveTabId(existingTab.id);
         return;
       }
+      // Another app asked for (see handleOpenFile).
+      setUrlOpen(null);
       const load = { isForeground };
       openingCachedRef.current.set(app.id, load);
       void processBundleData({
@@ -1117,8 +1211,9 @@ function App(): React.ReactElement {
       // An open that was stopped is not one to offer again on some later
       // failure's card.
       if (closingTab && !closingTab.source) setUrlOpen(null);
-      // The editor goes with the app it was open on.
+      // The editor goes with the app it was open on, and so does a line about the app.
       setEditingTabId((current) => (current === tabId ? null : current));
+      setAppNotice((current) => (current?.tabId === tabId ? null : current));
 
       setOpenTabs((prev) => {
         const idx = prev.findIndex((t) => t.id === tabId);
@@ -1209,7 +1304,7 @@ function App(): React.ReactElement {
     setEditPane(lazyEditPane);
     // Some browsers remember a file that failed to arrive for as long as the
     // page is open, so pressing Edit again may not be enough: said as it is.
-    setAppNotice('The editor could not be loaded just now, so it is put away. Your apps are running as they were. Press Edit again when you are online; if it still does not open, reload this page.');
+    setAppNotice({ text: 'The editor could not be loaded just now, so it is put away. Your apps are running as they were. Press Edit again when you are online; if it still does not open, reload this page.' });
   }, []);
 
   // Put away, the editor hands the keyboard back to what opened it: Edit on
@@ -1453,7 +1548,7 @@ function App(): React.ReactElement {
             // the address's own app, or one a name in an old address still finds.
             const cachedApp = (await getCachedAppByAddress(wanted)) ?? (await getCachedAppByName(wanted));
             if (cachedApp) {
-              await processBundleData({
+              const opened = await processBundleData({
                 data: cachedApp.bundleData,
                 fileName: `${cachedApp.name}.softn`,
                 cachedAppId: cachedApp.id,
@@ -1461,6 +1556,8 @@ function App(): React.ReactElement {
                 directorySlug: cachedApp.directorySlug,
                 isForeground,
               });
+              // Open from the saved copy: the address has nothing left to try again.
+              if (opened) setUrlOpen(null);
             }
           }
         })
@@ -1590,10 +1687,27 @@ function App(): React.ReactElement {
    * opening. Opened from an app's page on the site: the way back there.
    * Opened here: the runtime's home.
    */
-  const closeAndLeave = (tabId: string): void => {
-    handleCloseTab(tabId, true);
-    if (backTo) window.location.assign(backTo);
-  };
+  const closeAndLeave = useCallback(
+    (tabId: string): void => {
+      handleCloseTab(tabId, true);
+      if (backTo) window.location.assign(backTo);
+    },
+    [handleCloseTab, backTo]
+  );
+
+  /** What each tab's runner is handed of this component: the same functions on every drawing (TabRunner). */
+  const runnerHost = useMemo<RunnerHost>(
+    () => ({
+      update: (tabId, result) => appUpdateRef.current?.(tabId, result),
+      shownPage: (tab, path) => {
+        if ((tab.shownPage ?? null) !== path) editHost.patch(tab.id, { shownPage: path ?? undefined });
+      },
+      pageChange: handlePageChange,
+      ready: announceReady,
+      cancelOpen: closeAndLeave,
+    }),
+    [editHost, handlePageChange, announceReady, closeAndLeave]
+  );
 
   /**
    * A skip link's press: focus where it points, made focusable for the
@@ -1679,9 +1793,9 @@ function App(): React.ReactElement {
         )}
 
         {/* A line of the runtime's own over the app, when there is one to say. */}
-        {!embedded && !isHome && appNotice && (
+        {!embedded && !isHome && appNotice && (appNotice.tabId === undefined || appNotice.tabId === activeTabId) && (
           <div className="softn-shell-notice softn-shell-notice--warning softn-shell-notice--over-app" role="status" data-softn-host="">
-            <span className="softn-shell-notice-text">{appNotice}</span>
+            <span className="softn-shell-notice-text">{appNotice.text}</span>
             <button type="button" className="softn-shell-notice-dismiss" onClick={() => setAppNotice(null)} aria-label="Dismiss">
               &times;
             </button>
@@ -1796,52 +1910,7 @@ function App(): React.ReactElement {
 
           {/* All open app tabs — stay mounted, toggled via display */}
           {openTabs.map((tab) => (
-            <AppRunner
-              key={tab.id}
-              tabId={tab.id}
-              source={tab.source}
-              appName={tab.name}
-              appId={tab.appId}
-              active={activeTabId === tab.id && !error}
-              initialPage={tab.initialPage}
-              permissions={tab.permissions}
-              importResolver={tab.importResolver}
-              assetResolver={tab.assetResolver}
-              logicBasePath={tab.logicBasePath}
-              preIncludedLogicPaths={tab.preIncludedLogicPaths}
-              python={tab.python}
-              textFiles={tab.textFiles}
-              parseProblem={tab.parseProblem}
-              executionPreference={tab.execution}
-              themeMode={tab.themeMode}
-              permissionConfig={tab.permissionConfig}
-              consent={tab.consent}
-              // The running app, for a host that hands it a newer version of
-              // its files while it is open (lib/liveUpdate.ts).
-              live={tab.live}
-              // For the editor, while it is open on this app: which node drew
-              // each element, what the app answered to a change, and which of
-              // its pages a link has put on screen.
-              editMarks={tab.editMarks}
-              onUpdate={(result) => appUpdateRef.current?.(tab.id, result)}
-              onShownPage={(path) => {
-                if ((tab.shownPage ?? null) !== path) editHost.patch(tab.id, { shownPage: path ?? undefined });
-              }}
-              onPageChange={(page) => handlePageChange(tab.id, page)}
-              onReady={() => announceReady(tab)}
-              // Stopping a long wait is Close: the download is aborted with
-              // the tab, and the way back is the one Close takes.
-              onCancelOpen={() => closeAndLeave(tab.id)}
-              serverUrl={tab.serverUrl}
-              serverToken={tab.serverToken}
-              serverCollections={tab.serverCollections}
-              storageEndpoint={
-                tab.directorySlug ? `/api/apps/${encodeURIComponent(tab.directorySlug)}/storage` : undefined
-              }
-              webContainer={tab.webContainer}
-              bundleData={tab.bundleData}
-              backendUrl={tab.backendUrl}
-            />
+            <TabRunner key={tab.id} tab={tab} active={activeTabId === tab.id && !error} host={runnerHost} />
           ))}
         </div>
         {/* Kept while its app is open, and drawn while that app is the one on

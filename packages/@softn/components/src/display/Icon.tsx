@@ -47,7 +47,12 @@ export function Icon({
     : ({ 'aria-hidden': true } as const);
   // What custom markup may fetch: a `<use href="https://…">` is a request to
   // that host, judged by the bundle's `net` like any other.
-  const judge = markupUrlJudge(useEgressConfig());
+  //
+  // Cleaned once for each markup and policy, not on every draw: cleaning
+  // parses the markup at least twice, and a list of custom icons parsed all
+  // of them again whenever anything on the page changed.
+  const egress = useEgressConfig();
+  const cleanSvg = React.useMemo(() => (svg ? sanitizeSvg(svg, markupUrlJudge(egress)) : ''), [svg, egress]);
   const pxSize = typeof size === 'number' ? `${size}px` : size;
 
   const wrapperStyle: React.CSSProperties = {
@@ -73,7 +78,7 @@ export function Icon({
         className={className}
         style={wrapperStyle}
         {...a11y}
-        dangerouslySetInnerHTML={{ __html: sanitizeSvg(svg, judge) }}
+        dangerouslySetInnerHTML={{ __html: cleanSvg }}
       />
     );
   }

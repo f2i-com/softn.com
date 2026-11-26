@@ -100,6 +100,7 @@ import {
   closesElement,
   copyElement,
   endsBefore,
+  isLayoutSpace,
   wrapTableRows,
 } from './tree-construction';
 
@@ -440,6 +441,8 @@ export class Parser {
   private inHead: boolean = false;
   /** The text of a document's `<title>`. */
   private title: string | undefined;
+  /** How many diagnostics there were when an expression reached the end of the page unclosed. */
+  private reportedAtEnd: number | undefined;
 
   constructor(source: string) {
     this.source = source;
@@ -604,12 +607,12 @@ export class Parser {
             pushTemplate(controlFlow);
           }
         } else if (this.curTokenIs(TokenType.TEXT)) {
-          if (this.curToken.literal.trim() === '') {
+          if (isLayoutSpace(this.curToken.literal)) {
             heldSpace = this.currentLoc();
           } else {
             // Words after a declaration begin the template: the space they
             // were given for following a tag is not theirs.
-            const literal = afterTemplateNode ? this.curToken.literal : this.curToken.literal.replace(/^\s+/, '');
+            const literal = afterTemplateNode ? this.curToken.literal : this.curToken.literal.replace(/^[ \t\n\f\r]+/, '');
             pushTemplate(createTextNode(literal, this.currentLoc()));
           }
           this.nextToken();
@@ -628,6 +631,24 @@ export class Parser {
     for (const block of this.nestedBlocks.splice(0)) place(block);
     if (this.title !== undefined) doc.title = this.title;
 
+    // A `{` never closed reads the rest of the page as its expression. In a
+    // component, its missing end tag is said, and inside the expression a
+    // template literal left open is; but at the top of the page, and in an
+    // element whose end tag may be left out (`<p>`, `<li>`, `<td>`), nothing
+    // was, and the page simply ended there.
+    const open = this.lexer.unclosedExpression();
+    if (
+      open &&
+      this.reportedAtEnd === this.diagnostics.length &&
+      !this.diagnostics.some((diagnostic) => diagnostic.loc.start >= open.start)
+    ) {
+      this.diagnostics.push({
+        message: 'This "{" has no closing "}", so the rest of the page, from here to its end, was read as its expression',
+        severity: 'error',
+        loc: open,
+      });
+    }
+
     // Attach diagnostics if any were collected
     if (this.diagnostics.length > 0) {
       doc.diagnostics = this.diagnostics;
@@ -641,6 +662,11 @@ export class Parser {
    */
   private parseTopLevelElement(): TopLevelElement | null {
     this.expectToken(TokenType.TAG_OPEN);
+
+    // A custom element named after a block, a document's wrapper or a head
+    // element (`<data-grid>`, `<style-box>`, `<title-bar>`, `<body-text>`) is
+    // an element like any other: each was read by its first word.
+    if (this.tagNameGoesOn()) return this.parseElement();
 
     // A page written as a whole HTML document.
     const name = this.isPropertyName() ? normalizeTagName(this.curToken.literal) : '';
@@ -682,6 +708,8 @@ export class Parser {
    * dropped and the page drew "Unknown component" in its place.
    */
   private blockAhead(): 'script' | 'logic' | 'style' | null {
+    // `<style-box>` and `<logic-panel>` are custom elements (see tagNameGoesOn).
+    if (this.tagNameGoesOn()) return null;
     if (this.curTokenIs(TokenType.SCRIPT)) return 'script';
     if (this.curTokenIs(TokenType.LOGIC)) return 'logic';
     if (this.curTokenIs(TokenType.STYLE)) return 'style';
@@ -1544,6 +1572,15 @@ export class Parser {
   }
 
   /**
+   * Whether the tag name under the cursor goes on past its first word with a
+   * hyphen, as a custom element's does (`<data-grid>`): what readTagName
+   * joins, and what the lexer reads as no block (NAME_GOES_ON there).
+   */
+  private tagNameGoesOn(): boolean {
+    return this.source[this.curToken.end] === '-' && /[\w$]/.test(this.source[this.curToken.end + 1] ?? '');
+  }
+
+  /**
    * Read a tag name: a word, or words joined by hyphens, as a custom element
    * is named (`<my-card>`). The lexer reads a hyphen as a minus, so the
    * pieces are joined here, where they touch, as an attribute's name is.
@@ -1854,7 +1891,7 @@ export class Parser {
     } else if (this.curTokenIs(TokenType.TAG_OPEN)) {
       const next = this.tagNameAhead();
       if (!isHtmlElementTag(next) || RUBY_ANNOTATIONS.has(next) || (SPECIAL_ELEMENTS.has(next) && !REOPENS_FORMATTING.has(next))) return [];
-    } else if (!this.curTokenIs(TokenType.EXPR_START) && !(this.curTokenIs(TokenType.TEXT) && this.curToken.literal.trim() !== '')) {
+    } else if (!this.curTokenIs(TokenType.EXPR_START) && !(this.curTokenIs(TokenType.TEXT) && !isLayoutSpace(this.curToken.literal))) {
       return [];
     }
     let first = this.activeFormatting.length;
@@ -2106,7 +2143,7 @@ export class Parser {
 
   /** Whether a child written straight in a table goes before it (TABLE_CONTENT; an input only when hidden). */
   private fostersOut(child: TemplateNode): boolean {
-    if (child.type === 'Text') return child.content.trim() !== '';
+    if (child.type === 'Text') return !isLayoutSpace(child.content);
     if (child.type !== 'Element' || !this.htmlElement(child.tag)) return false;
     if (child.tag === 'input') return (this.staticPropValue(child, 'type') ?? '').toLowerCase() !== 'hidden';
     return !TABLE_CONTENT.has(child.tag);
@@ -2676,6 +2713,17 @@ export class Parser {
     this.nextToken(); // consume #
 
     if (!this.curTokenIs(TokenType.IF) && !this.curTokenIs(TokenType.EACH)) {
+      // `#end`, `#else`, `#elseif` or `#empty` where no block of theirs is
+      // open: passed over, as always, but no longer without a word. Words
+      // such as `<h2>#End of year</h2>` lost their first one, unsaid.
+      const word = this.curToken.literal;
+      this.diagnostics.push({
+        message:
+          `"#${word}" belongs to no #if or #each open here, so it was passed over and is not drawn. ` +
+          `To show the words, write \\#${word}`,
+        severity: 'warning',
+        loc,
+      });
       return null;
     }
 
@@ -2748,8 +2796,13 @@ export class Parser {
       this.nextToken(); // consume 'if' or 'elseif'
 
       const bare = this.openHeader();
-      const condition = this.parseExpression();
-      this.closeHeader(bare, loc);
+      let condition: Expression;
+      try {
+        condition = this.parseExpression();
+        this.closeHeader(bare, loc);
+      } catch (error) {
+        condition = this.abandonHeader(error, bare, loc);
+      }
       this.reportPendingOperand();
 
       const consequent = this.parseBranch([TokenType.ELSE, TokenType.ELSEIF, TokenType.END]);
@@ -2831,6 +2884,31 @@ export class Parser {
   }
 
   /**
+   * A block's header that could not be read: said, and passed over to its
+   * `)` (or, written without parentheses, to the end of its line), so the
+   * block keeps its branches and its `#end`. Nothing stands for what could
+   * not be read, so what the header guards is not drawn. Thrown on, the
+   * mistake unwound the block, and the element around it read the branches
+   * as its own content, every one of them drawn.
+   */
+  private abandonHeader(error: unknown, bare: boolean, loc: SourceLocation): Expression {
+    this.addDiagnostic(error);
+    let depth = 0;
+    while (!this.curTokenIs(TokenType.EOF)) {
+      if (bare) {
+        if (this.curToken.line !== loc.line) break;
+      } else if (this.curTokenIs(TokenType.LPAREN)) {
+        depth++;
+      } else if (this.curTokenIs(TokenType.RPAREN) && depth-- === 0) {
+        this.nextToken();
+        break;
+      }
+      this.nextToken();
+    }
+    return createIdentifier('undefined', loc);
+  }
+
+  /**
    * The content of a branch of a block (`#if`, `#else`, `#each`, `#empty`):
    * elements, text, expressions and blocks inside it, up to a `#` whose word
    * is one of `stops` (left for the caller), the end tag of the element the
@@ -2845,21 +2923,32 @@ export class Parser {
       // Comments first, so the `#` of a stop after one is seen.
       this.skipComments();
       if (this.curTokenIs(TokenType.HASH) && stops.includes(this.peekToken.type)) break;
-      if (this.curTokenIs(TokenType.TAG_OPEN)) {
-        this.nextToken();
-        nodes.push(...this.parseChildElement());
-      } else if (this.curTokenIs(TokenType.HASH)) {
-        const block = this.parseControlFlow();
-        if (block) nodes.push(block);
-      } else if (this.curTokenIs(TokenType.EXPR_START)) {
-        nodes.push(this.parseExpressionNode());
-      } else if (this.curTokenIs(TokenType.TEXT)) {
-        nodes.push(createTextNode(this.curToken.literal, this.currentLoc()));
-        this.nextToken();
-      } else if (this.curTokenIs(TokenType.TAG_END_OPEN)) {
-        break;
-      } else {
-        this.nextToken();
+      if (this.curTokenIs(TokenType.TAG_END_OPEN)) break;
+      const passStart = this.curToken.start;
+      try {
+        if (this.curTokenIs(TokenType.TAG_OPEN)) {
+          this.nextToken();
+          nodes.push(...this.parseChildElement());
+        } else if (this.curTokenIs(TokenType.HASH)) {
+          const block = this.parseControlFlow();
+          if (block) nodes.push(block);
+        } else if (this.curTokenIs(TokenType.EXPR_START)) {
+          nodes.push(this.parseExpressionNode());
+        } else if (this.curTokenIs(TokenType.TEXT)) {
+          nodes.push(createTextNode(this.curToken.literal, this.currentLoc()));
+          this.nextToken();
+        } else {
+          this.nextToken();
+        }
+      } catch (error) {
+        // A mistake inside a branch is said and stays in it, as one inside an
+        // element does (parseChildren). Thrown on to the element around the
+        // block, it took the block with it: the element read on from the
+        // middle of the branch, and every branch was drawn, whatever the
+        // condition, the #else of an admin-only #if among them.
+        this.addDiagnostic(error);
+        this.skipToChildRecoveryPoint('');
+        if (this.curToken.start === passStart && !this.curTokenIs(TokenType.EOF)) this.nextToken();
       }
     }
     return nodes;
@@ -2904,7 +2993,11 @@ export class Parser {
     let itemName = '';
     let itemPattern: BindingPattern | undefined;
     let indexName: string | undefined;
+    let iterable: Expression;
+    let keyExpression: Expression | undefined;
 
+    // A header that cannot be read keeps its block (abandonHeader).
+    try {
     if (this.curTokenIs(TokenType.LBRACKET) || this.curTokenIs(TokenType.EXPR_START)) {
       // `#each ([key, value] in Object.entries(totals))`, `#each ({ id, title }
       // in tasks)`: the item taken apart as it is bound. Read as the list or
@@ -2956,7 +3049,7 @@ export class Parser {
     if (this.curTokenIs(TokenType.IDENTIFIER) && /^(?:in|of)$/i.test(this.curToken.literal)) this.nextToken();
     else this.expectToken(TokenType.IN);
 
-    const iterable = this.parseExpression();
+    iterable = this.parseExpression();
 
     // Optional `key={expr}` after the header.
     //
@@ -2966,7 +3059,6 @@ export class Parser {
     // Past the header the lexer is back in text mode, so `key=` arrives as a
     // TEXT token rather than an identifier and an equals; in a header with no
     // parentheses it is still the header's, a name and an equals.
-    let keyExpression: Expression | undefined;
     if (bare && this.curTokenIs(TokenType.IDENTIFIER) && this.curToken.literal.toLowerCase() === 'key' && this.peekToken.type === TokenType.EQUALS) {
       this.nextToken(); // key
       this.nextToken(); // =
@@ -2977,6 +3069,10 @@ export class Parser {
       }
     }
     this.closeHeader(bare, loc);
+    } catch (error) {
+      iterable = this.abandonHeader(error, bare, loc);
+      keyExpression = undefined;
+    }
     this.reportPendingOperand();
 
     if (
@@ -2986,9 +3082,16 @@ export class Parser {
       this.peekToken.type === TokenType.EXPR_START
     ) {
       this.nextToken(); // consume `key=`
-      this.expectToken(TokenType.EXPR_START);
-      keyExpression = this.parseExpression();
-      this.expectToken(TokenType.EXPR_END);
+      try {
+        this.expectToken(TokenType.EXPR_START);
+        keyExpression = this.parseExpression();
+        this.expectToken(TokenType.EXPR_END);
+      } catch (error) {
+        // A key that cannot be read is said, and the rows go by their index.
+        this.addDiagnostic(error);
+        this.skipRestOfExpression();
+        keyExpression = undefined;
+      }
     }
 
     const body = this.parseBranch([TokenType.EMPTY, TokenType.END]);
@@ -4223,13 +4326,30 @@ export class Parser {
       // begin with the line break before them (as words after an element
       // do) are placed by the lexer on the line the break leads to, and
       // counting on from there named the line after the one it is on.
-      const line = (this.source.slice(0, at).match(/\n/g)?.length ?? 0) + 1;
+      const line = this.lineAt(at);
       this.diagnostics.push({
         message: `"${match[0]}" is not a SoftN block, so it is shown as words: write #elseif (or #else if)`,
         severity: 'warning',
         loc: { line, column: at - lineStart + 1, start: at, end: at + match[0].length },
       });
     }
+  }
+
+  /** The last place lineAt counted to, and its line. */
+  private lineMark = { at: 0, line: 1 };
+
+  /**
+   * The line `offset` is on, counted from the top of the page, on from the
+   * last place counted where that is before it: the tokens come in order, so
+   * the page is counted once. Counted from the top for each, a page of
+   * `#elif` lines was counted again for every one.
+   */
+  private lineAt(offset: number): number {
+    const mark = offset >= this.lineMark.at ? this.lineMark : { at: 0, line: 1 };
+    let line = mark.line;
+    for (let at = this.source.indexOf('\n', mark.at); at !== -1 && at < offset; at = this.source.indexOf('\n', at + 1)) line++;
+    this.lineMark = { at: offset, line };
+    return line;
   }
 
   private curTokenIs(type: TokenType): boolean {
@@ -4284,8 +4404,10 @@ export class Parser {
    */
   private closeExpression(): void {
     if (this.curTokenIs(TokenType.EOF)) {
-      // A missing `}` is the unclosed tag's diagnostic, not this one's.
+      // A missing `}` is the unclosed tag's diagnostic, not this one's; and
+      // where no tag says it (see parse()), the brace's.
       this.pendingOperand = null;
+      this.reportedAtEnd ??= this.diagnostics.length;
       return;
     }
     this.reportPendingOperand();
@@ -4538,7 +4660,19 @@ export function parse(source: string): SoftNDocument {
 //    expression, an element or an opening tag: `Ticket {name} #{id}` is
 //    "Ticket Ada #12" where it was "Ticket Ada#12". Before a `#` that begins
 //    a block (`#if`, `#each`, `#else`, `#end`…) it is layout as before.
-export const PARSER_VERSION = 17;
+// 18: A mistake inside an `#if`, `#else`, `#each` or `#empty`, or in a
+//    block's header, stays in that block, which is kept (a header that
+//    cannot be read guards with nothing); it unwound the block, and every
+//    branch was drawn. `<style-box>`, `<data-grid>`, `<title-bar>` and any
+//    other custom element named after a block or an HTML element are
+//    elements. A no-break space (and every space HTML does not collapse) is
+//    kept in text. `&#128;`–`&#159;` are Windows-1252's characters. Names in
+//    any script the engine reads (kana, Arabic, Vietnamese…) are names in
+//    markup. Columns after `1em` are right, and a `{` left open at the end of
+//    a page that no unclosed tag explains is said, as is an `#end` or an
+//    `#else` that belongs to no block. `</style >` and `</logic` with its
+//    `>` on the next line end their blocks, as HTML ends them.
+export const PARSER_VERSION = 18;
 
 /** Whether `expr`, read from the token `first`, is an `||` or `&&` not written in parentheses. */
 function isBareLogical(expr: Expression, first: Token): boolean {

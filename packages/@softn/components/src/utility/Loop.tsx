@@ -93,6 +93,19 @@ const STALL_MS = 250;
  */
 const TICK_WAIT_MS = 2000;
 
+/**
+ * The longest delay a timer holds. Past it — and for NaN, which is what a
+ * missing `interval` (`null`) or `1000 / 0` (Infinity) reach a timer as — a
+ * browser reads the delay as 0 ms and Node as 1, so a timer meant to tick
+ * never, or once a second, ticked as fast as timers run.
+ */
+const MAX_TIMER_MS = 2 ** 31 - 1;
+
+/** `interval` as a timer can take it: not a number is the default second, too long is the longest. */
+function timerPeriod(interval: unknown): number {
+  return typeof interval === 'number' && !Number.isNaN(interval) ? Math.min(interval, MAX_TIMER_MS) : 1000;
+}
+
 const clock = (): number => (typeof performance !== 'undefined' ? performance.now() : Date.now());
 
 const stepBetween = (from: number, to: number): number => Math.min(MAX_DT, Math.max(MIN_DT, (to - from) / 1000));
@@ -332,7 +345,7 @@ export function Loop({ interval = 1000, running = false, frame = false, maxFps, 
     // the rate it was asked for, or sixty a second, on a timer.
     const ticker = onFrames
       ? frameTicker(maxFps, tick, leftBehind)
-      : timerTicker(frame ? 1000 / (typeof maxFps === 'number' && maxFps > 0 ? maxFps : 60) : interval, tick);
+      : timerTicker(timerPeriod(frame ? 1000 / (typeof maxFps === 'number' && maxFps > 0 ? maxFps : 60) : interval), tick);
 
     if (!stopsHidden || typeof document === 'undefined') return () => ticker.stop();
 

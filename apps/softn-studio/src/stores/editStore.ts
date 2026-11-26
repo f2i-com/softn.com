@@ -30,9 +30,26 @@ interface EditState {
 export const useEditStore = create<EditState>((set) => ({
   draft: null,
   open: (draft) => set({ draft }),
-  change: (text) => set((s) => (s.draft && s.draft.text !== text ? { draft: { ...s.draft, text } } : s)),
+  change: (typed) =>
+    set((s) => {
+      if (!s.draft) return s;
+      // A text box hands its text back with \n alone, whatever the file had: a save of one word
+      // in a file written with \r\n wrote every line of it again with the other ending. The
+      // draft is kept in the file's own, as the agent's edit_file keeps it (executeTool.ts).
+      const text = s.draft.baseText.includes('\r\n') ? typed.replace(/\r?\n/g, '\r\n') : typed;
+      return s.draft.text !== text ? { draft: { ...s.draft, text } } : s;
+    }),
   close: () => set((s) => (s.draft ? { draft: null } : s)),
 }));
+
+/**
+ * A draft's text as a text box holds it: with \n alone. Given the \r\n the draft keeps, React
+ * would find the box different on every redraw and write it again, which takes the browser's
+ * own Undo in it away.
+ */
+export function asTyped(text: string): string {
+  return text.includes('\r') ? text.replace(/\r\n?/g, '\n') : text;
+}
 
 /** Whether there is a draft with something in it that is not in the file. */
 export function hasUnsavedDraft(): boolean {

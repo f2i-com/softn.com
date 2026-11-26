@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { SHARED_ASSET, collectSharedAssets, sharedAssetsBase, sharedPrecacheUrl, sharedRenderBuiltUrl, woff2OnlyFontsPlugin } from './shared-assets.mjs';
+import { SHARED_ASSET, collectSharedAssets, sharedAssetsBase, sharedNameOf, sharedPrecacheUrl, sharedRenderBuiltUrl, woff2OnlyFontsPlugin } from './shared-assets.mjs';
 
 const BASE = '/shared/assets/';
 
@@ -182,4 +182,20 @@ test('woff2OnlyFontsPlugin strips legacy .woff fallbacks from @fontsource styles
   assert.ok(out);
   assert.equal(out.code, "@font-face {\n  src: url(./files/ibm-plex-sans-latin-400-normal.woff2) format('woff2');\n}\n");
   assert.equal(plugin.transform(fontCss, '/repo/apps/softn-site/src/index.css'), null);
+});
+
+test("sharedNameOf names a build's own chunk of a module, which a search of the shared names cannot tell from another app's", () => {
+  // Two apps' chunks of @softn/container/mount, side by side in /shared/assets/: the first
+  // by name is the runtime's facade, the play shell's is the other one.
+  const shared = ['mount-CjpS-nPu.js', 'mount-D9vHx0Q2.js'];
+  const play = {
+    'index.html': { file: 'assets/index-DRcQWQoC.js', isEntry: true },
+    '../../packages/@softn/container/dist/mount.js': { file: 'assets/mount-D9vHx0Q2.js', isDynamicEntry: true },
+  };
+  const mount = /(?:^|\/)container\/dist\/mount\.js$/;
+  assert.equal(shared.find((name) => /^mount-/.test(name)), 'mount-CjpS-nPu.js');
+  assert.equal(sharedNameOf(play, mount), 'mount-D9vHx0Q2.js');
+  assert.equal(sharedNameOf({ 'index.html': { file: 'assets/index-DRcQWQoC.js' } }, mount), null);
+  // Only a built file has a name in the shared folder.
+  assert.equal(sharedNameOf({ '../../packages/@softn/container/dist/mount.js': { file: 'softn-page.js' } }, mount), null);
 });

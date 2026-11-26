@@ -151,6 +151,11 @@ export function useModalLayer(
     if (root && !root.contains(document.activeElement) && mayTakeKeyboard(root)) root.focus();
 
     const handleKeyDown = (e: KeyboardEvent) => {
+      // The keys a layer answers, before anything is asked of the page:
+      // `isTop` reads the computed style of every element above each layer,
+      // and asked first, every letter typed into a dialog's field made the
+      // browser bring its styles up to date there and then.
+      if (e.key !== 'Escape' && e.key !== 'Tab') return;
       if (!isTop(layer) || e.defaultPrevented) return;
       const container = ref.current;
       if (!container) return;

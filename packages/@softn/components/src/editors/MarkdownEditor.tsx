@@ -64,6 +64,36 @@ function asText(given: unknown): string {
   return typeof given === 'string' ? given : given === null || given === undefined ? '' : String(given);
 }
 
+/**
+ * Make `next` of the field's `current` text with the browser's own editing:
+ * the one stretch that differs is selected and typed over, so the change is
+ * on the field's undo stack and raises `input` as typing does. False where
+ * the browser will not (a hidden field, no `execCommand`).
+ */
+function typeOver(field: HTMLTextAreaElement, current: string, next: string): boolean {
+  let from = 0;
+  while (from < current.length && from < next.length && current[from] === next[from]) from++;
+  let tail = 0;
+  while (
+    tail < current.length - from &&
+    tail < next.length - from &&
+    current[current.length - 1 - tail] === next[next.length - 1 - tail]
+  ) {
+    tail++;
+  }
+  field.focus();
+  field.setSelectionRange(from, current.length - tail);
+  try {
+    return (
+      typeof document.execCommand === 'function' &&
+      document.execCommand('insertText', false, next.slice(from, next.length - tail)) &&
+      field.value === next
+    );
+  } catch {
+    return false;
+  }
+}
+
 // Simple markdown to HTML converter
 function markdownToHtml(markdown: string): string {
   let html = markdown;
@@ -284,6 +314,15 @@ export function MarkdownEditor({
         textarea.selectionEnd
       );
 
+      // A value set from here is not on the browser's undo stack, and setting
+      // it emptied the stack besides: Ctrl+Z could not take back a toolbar
+      // edit, or anything typed before it. Typed over, the change is the
+      // browser's, and its `input` reaches `handleChange` like a keystroke.
+      if (textarea.value === content && typeOver(textarea, content, text)) {
+        textarea.setSelectionRange(selStart, selEnd);
+        return;
+      }
+
       setContent(text);
       onChange?.(text);
 
@@ -303,9 +342,11 @@ export function MarkdownEditor({
   // waits on the bundle's permission exactly as an `<img src>` prop does.
   const egress = useEgressConfig();
   const judge = useMemo(() => markupUrlJudge(egress), [egress]);
+  // Nothing for the preview edit mode hides: converting and sanitizing it was
+  // most of what a keystroke cost, and its images were fetched unseen.
   const htmlPreview = useMemo(
-    () => sanitizeRichText(markdownToHtml(content), judge),
-    [content, judge]
+    () => (viewMode === 'edit' ? '' : sanitizeRichText(markdownToHtml(content), judge)),
+    [content, judge, viewMode]
   );
 
   const containerStyle: React.CSSProperties = {

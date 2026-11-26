@@ -528,8 +528,13 @@ export function Controls({ keys, value, onChange, onPress, onRelease, gamepad = 
       // Kept from the browser, a held key's repeats included: each would
       // scroll the page a little further.
       event.preventDefault();
-      if (event.repeat) return;
       const place = placeOf(event);
+      // A repeat of a key held here is no news. One that is not held here
+      // went down before these controls were listening (turned back on, the
+      // window given back its focus) and is down still: it is held from now,
+      // as a gamepad's button held through the same is. Dropped, the player
+      // held the key and stood still until they let go and pressed again.
+      if (event.repeat && actions.every((action) => keyHeld.current.get(action)?.has(place))) return;
       for (const action of actions) {
         const by = keyHeld.current.get(action);
         if (by) by.add(place);

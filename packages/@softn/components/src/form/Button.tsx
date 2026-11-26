@@ -422,12 +422,21 @@ export function Button({
 
   return (
     <>
-      <style>{`
-        @keyframes softn-spin {
-          from { transform: rotate(0deg); }
-          to { transform: rotate(360deg); }
-        }
-      `}</style>
+      {/*
+        The spinner's keyframes, only while there is a spinner: written by
+        every Button, a table with one on each row put a copy of the same
+        stylesheet into the page for every row. The slot stays when it is
+        empty, so the button is the same element (and keeps its focus) as
+        it starts and stops loading.
+      */}
+      {loading && (
+        <style>{`
+          @keyframes softn-spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+          }
+        `}</style>
+      )}
       <button
         {...domAttributes(rest)}
         type={type}

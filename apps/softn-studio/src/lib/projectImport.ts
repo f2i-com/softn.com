@@ -46,6 +46,27 @@ export function namedAsText(path: string): boolean {
   return SOURCE_TEXT.test(path) || SOURCE_TEXT_BASENAME.test(path) || !classifyAsset(path).binary;
 }
 
+const utf8 = new TextDecoder('utf-8', { fatal: true });
+// A leading U+FEFF is kept in these: their compiled modules are made from the source as it is.
+const utf8KeepingBom = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+
+/**
+ * An entry from a bundle as the project holds it: the text of a file that is text, and the
+ * bytes of any other. A file whose name says text and whose bytes are not UTF-8 (a page or a
+ * note saved as Latin-1 or Windows-1252, as an older website's often are) is kept as its bytes.
+ * It was decoded all the same: every character that did not decode became U+FFFD, and the
+ * export wrote that in place of the file, which was then not what it had been, for good.
+ */
+export function importedContent(path: string, bytes: Uint8Array): string | Uint8Array {
+  const jsx = /\.(jsx|vue)$/i.test(path);
+  if (!jsx && !isTextEntry(path, bytes)) return bytes;
+  try {
+    return (jsx ? utf8KeepingBom : utf8).decode(bytes);
+  } catch {
+    return bytes;
+  }
+}
+
 /**
  * A website, zipped: a page and no manifest. It gets what a new project starts with: a manifest naming the page, which
  * export fills in from the files, and an empty permission.json, so the site declares nothing it did not ask for.
@@ -94,10 +115,11 @@ export function hasZipSignature(data: Uint8Array): boolean {
  * Read an archive through core's bounded, checksum-verifying ZIP reader.
  * Studio used to call fflate's `unzipSync` directly, which let a small archive
  * allocate its declared inflated size before Studio had a chance to inspect it.
+ * `notText` is told which files named as text were kept as bytes, not being
+ * UTF-8 (see importedContent).
  */
-export function readProjectArchive(data: Uint8Array, leftOut?: (names: string[]) => void): ProjectImportEntry[] {
+export function readProjectArchive(data: Uint8Array, leftOut?: (names: string[]) => void, notText?: (names: string[]) => void): ProjectImportEntry[] {
   const decoder = new TextDecoder();
-  const sourceDecoder = new TextDecoder('utf-8', { ignoreBOM: true });
   let archive: Map<string, Uint8Array>;
   let dropped: string[];
   try {
@@ -131,6 +153,7 @@ export function readProjectArchive(data: Uint8Array, leftOut?: (names: string[])
   // files collide inside a folder and out of it.
   const entries: ProjectImportEntry[] = [];
   const canonicalPaths = new Set<string>();
+  const undecoded: string[] = [];
   for (const { path, rawPath, content } of kept) {
     // Taken out of its folder a path is judged again: `Tasks/C:/notes.txt` is an odd name
     // inside the folder and a path with a drive letter once the folder's name is off it.
@@ -141,11 +164,11 @@ export function readProjectArchive(data: Uint8Array, leftOut?: (names: string[])
     }
     canonicalPaths.add(canonicalPath);
     if (path.startsWith('__softn_generated__/') && isGeneratedSourceModule(path, decoder.decode(content))) continue;
-    entries.push({
-      path,
-      content: /\.(jsx|vue)$/i.test(path) ? sourceDecoder.decode(content) : isTextEntry(path, content) ? decoder.decode(content) : content,
-    });
+    const held = importedContent(path, content);
+    if (typeof held !== 'string' && namedAsText(path)) undecoded.push(path);
+    entries.push({ path, content: held });
   }
+  if (undecoded.length > 0) notText?.(undecoded);
   return entries;
 }
 

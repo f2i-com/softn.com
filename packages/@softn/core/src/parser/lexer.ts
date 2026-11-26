@@ -4,7 +4,7 @@
  * Tokenizes .softn source code into a stream of tokens.
  */
 
-import { Token, TokenType, lookupKeyword, createToken } from './token';
+import { Token, TokenType, lookupKeyword, createToken, type SourceLocation } from './token';
 import { SoftNParseError } from './errors';
 
 /**
@@ -80,6 +80,28 @@ const BIT_AND_OPERATORS: Operators = [['&=', TokenType.BIT_AND_ASSIGN], ['&', To
 const BIT_OR_OPERATORS: Operators = [['|=', TokenType.BIT_OR_ASSIGN], ['|', TokenType.BIT_OR]];
 const BIT_XOR_OPERATORS: Operators = [['^=', TokenType.BIT_XOR_ASSIGN], ['^', TokenType.BIT_XOR]];
 const BIT_NOT_OPERATORS: Operators = [['~', TokenType.BIT_NOT]];
+
+/**
+ * The white space HTML collapses in text: space, tab, line feed, form feed
+ * and carriage return. Not `\s`, which takes in the no-break space and the
+ * other Unicode spaces too: a `10 km` typed with U+00A0 between its words
+ * read as `10 km`, a cell holding only one was empty, and Japanese text lost
+ * the ideographic space it is indented with.
+ */
+const HTML_SPACE = /[ \t\n\f\r]/;
+const HTML_SPACES = /[ \t\n\f\r]+/g;
+
+/**
+ * A name as the engine reads one, past ASCII: any letter starts one, as
+ * `let なまえ = ""` and `let tổng = 0` do in the logic. A fixed list of
+ * scripts (Latin-1, Greek, Cyrillic, CJK, Hangul) left kana, Vietnamese,
+ * Arabic, Hebrew and the Indic scripts unreadable in markup.
+ */
+const ID_START = /\p{ID_Start}/u;
+const ID_CONTINUE = /[\p{ID_Continue}\u{200c}\u{200d}]/u;
+
+/** Whether a tag's first word goes on with a hyphen, as a custom element's name does (`style-box`). */
+const NAME_GOES_ON = /^-[\w$]/;
 
 /** What a backslash and one letter stand for in a string; any other character stands for itself. */
 const SINGLE_ESCAPES: Readonly<Record<string, string>> = { n: '\n', t: '\t', r: '\r', b: '\b', f: '\f', v: '\v', '0': '\0' };
@@ -184,6 +206,9 @@ export class Lexer {
    * for the condition, and the page was gone.
    */
   private bareHeader = false;
+
+  /** Where the outermost `{` still open was written (see unclosedExpression). */
+  private expressionOpenedAt: SourceLocation | null = null;
 
   constructor(source: string) {
     this.source = source;
@@ -296,7 +321,7 @@ export class Lexer {
       return this.readTextContent();
     }
 
-    if ((this.afterContentExpression || this.afterContentElement) && /\s/.test(this.ch)) {
+    if ((this.afterContentExpression || this.afterContentElement) && HTML_SPACE.test(this.ch)) {
       const inline = this.inlineWhitespace();
       if (inline) return inline;
     }
@@ -535,14 +560,15 @@ export class Lexer {
 
       case '{':
         this.readChar();
-        this.inExpression++;
-        return createToken(
-          TokenType.EXPR_START,
-          '{',
-          startLine,
-          startColumn,
-          startPos,
-          this.position
+        return this.openBrace(
+          createToken(
+            TokenType.EXPR_START,
+            '{',
+            startLine,
+            startColumn,
+            startPos,
+            this.position
+          )
         );
 
       case '}':
@@ -957,14 +983,15 @@ export class Lexer {
         this.inTemplateLiteral = false;
         // Record the depth outside this `${` so its `}` can be recognised.
         this.templateExprStack.push(this.inExpression);
-        this.inExpression++;
-        return createToken(
-          TokenType.TEMPLATE_EXPR_START,
-          '${',
-          startLine,
-          startColumn,
-          startPos,
-          this.position
+        return this.openBrace(
+          createToken(
+            TokenType.TEMPLATE_EXPR_START,
+            '${',
+            startLine,
+            startColumn,
+            startPos,
+            this.position
+          )
         );
       }
 
@@ -1057,7 +1084,8 @@ export class Lexer {
     const startColumn = this.column;
     const startPos = this.position;
 
-    const ident = this.readWhile((ch) => this.isIdentifierPart(ch));
+    while (this.ch !== '' && this.isIdentifierPart(this.ch)) this.readChar();
+    const ident = this.source.slice(startPos, this.position);
     let type = lookupKeyword(ident);
     // SoftN's own words are read in any case where only they can stand: the
     // word after `#` (`#IF`, `#Else If`, `#END`) and a block's tag name
@@ -1256,8 +1284,10 @@ export class Lexer {
         num += exp;
       } else {
         // Invalid exponential, backtrack
-        // Put back the characters we read
+        // Put back the characters we read, and the columns they were counted
+        // as: every token after `1em` on the line was placed one column on.
         this.position -= exp.length;
+        this.column -= exp.length;
         this.readPosition = this.position + 1;
         this.ch = this.source[this.position] || '';
       }
@@ -1284,7 +1314,7 @@ export class Lexer {
   private inlineWhitespace(): Token | null {
     let i = this.position;
     let sawNewline = false;
-    while (i < this.source.length && /\s/.test(this.source[i])) {
+    while (i < this.source.length && HTML_SPACE.test(this.source[i])) {
       if (this.source[i] === '\n') sawNewline = true;
       i++;
     }
@@ -1345,15 +1375,19 @@ export class Lexer {
     const startColumn = this.column;
     const startPos = this.position;
 
+    // The text is taken from the source a run at a time, between escapes,
+    // rather than built a character at a time.
     let content = '';
+    let runStart = this.position;
     while (this.ch !== '' && !(this.ch === '<' && this.ltOpensMarkup(this.position)) && this.ch !== '{') {
       // Check for escape sequences
       if (this.ch === '\\') {
         const nextCh = this.peekChar();
         if (nextCh === '#' || nextCh === '{' || nextCh === '<' || nextCh === '\\') {
-          // Consume backslash and add the escaped character
+          // The text so far, then the escaped character without its backslash
+          content += this.source.slice(runStart, this.position);
           this.readChar();
-          content += this.ch;
+          runStart = this.position;
           this.readChar();
           continue;
         }
@@ -1362,16 +1396,11 @@ export class Lexer {
       // Stop at # only when it opens a control-flow block. A `#` in prose is
       // prose; breaking here unconditionally is the other half of the bug
       // described at the `#` branch in nextToken().
-      if (this.ch === '#') {
-        if (this.hashStartsControlFlow()) break;
-        content += this.ch;
-        this.readChar();
-        continue;
-      }
+      if (this.ch === '#' && this.hashStartsControlFlow()) break;
 
-      content += this.ch;
       this.readChar();
     }
+    content += this.source.slice(runStart, this.position);
 
     // Inside <pre> or <textarea> the text is what was written.
     if (this.preformatted > 0 && content !== '') {
@@ -1379,10 +1408,13 @@ export class Lexer {
     }
 
     // Normalize whitespace but preserve single leading/trailing spaces
-    // This ensures "{expr} text" keeps the space between expression and text
-    const hadLeadingSpace = /^\s/.test(content);
-    const hadTrailingSpace = /\s$/.test(content);
-    content = content.replace(/\s+/g, ' ').trim();
+    // This ensures "{expr} text" keeps the space between expression and text.
+    // Only the white space HTML collapses (HTML_SPACE).
+    const hadLeadingSpace = HTML_SPACE.test(content[0] ?? '');
+    const hadTrailingSpace = HTML_SPACE.test(content[content.length - 1] ?? '');
+    content = content.replace(HTML_SPACES, ' ');
+    if (content.startsWith(' ')) content = content.slice(1);
+    if (content.endsWith(' ')) content = content.slice(0, -1);
     if (hadLeadingSpace && content) content = ' ' + content;
     if (hadTrailingSpace && content) content = content + ' ';
 
@@ -1393,14 +1425,15 @@ export class Lexer {
         return this.readTagStart();
       }
       if (this.ch === '{') {
-        this.inExpression++;
-        const token = createToken(
-          TokenType.EXPR_START,
-          '{',
-          this.line,
-          this.column,
-          this.position,
-          this.position + 1
+        const token = this.openBrace(
+          createToken(
+            TokenType.EXPR_START,
+            '{',
+            this.line,
+            this.column,
+            this.position,
+            this.position + 1
+          )
         );
         this.readChar();
         return token;
@@ -1441,10 +1474,8 @@ export class Lexer {
 
     // Read until </script>
     let content = '';
-    const endTag = '</script>';
     while (this.ch !== '') {
-      // Check for end tag using character-by-character comparison (Unicode safe)
-      if (this.ch === '<' && this.matchAhead(endTag)) {
+      if (this.ch === '<' && this.blockEndAhead('script')) {
         break;
       }
       content += this.ch;
@@ -1473,9 +1504,8 @@ export class Lexer {
 
     // Read until </logic>
     let content = '';
-    const endTag = '</logic>';
     while (this.ch !== '') {
-      if (this.ch === '<' && this.matchAhead(endTag)) {
+      if (this.ch === '<' && this.blockEndAhead('logic')) {
         break;
       }
       content += this.ch;
@@ -1504,9 +1534,8 @@ export class Lexer {
 
     // Read until </style>
     let content = '';
-    const endTag = '</style>';
     while (this.ch !== '') {
-      if (this.ch === '<' && this.matchAhead(endTag)) {
+      if (this.ch === '<' && this.blockEndAhead('style')) {
         break;
       }
       content += this.ch;
@@ -1522,6 +1551,19 @@ export class Lexer {
       startPos,
       this.position
     );
+  }
+
+  /**
+   * Whether the `<` under the cursor begins the end tag of a block: `</name`
+   * in any case, then white space or `>`, as HTML ends a script or a style.
+   * Read as `</name>` exactly, `</style >` and the `</logic` a formatter puts
+   * its `>` on the next line after were no end, and the rest of the page was
+   * the block's.
+   */
+  private blockEndAhead(name: string): boolean {
+    if (!this.matchAhead(`</${name}`)) return false;
+    const after = this.source[this.position + name.length + 2] ?? '';
+    return after === '>' || HTML_SPACE.test(after);
   }
 
   /**
@@ -1557,6 +1599,24 @@ export class Lexer {
    */
   public inExpressionContext(): boolean {
     return this.inExpression > 0 || this.inControlFlow > 0;
+  }
+
+  /** A `{` (or a template's `${`) read: what it opens is open until its `}`. */
+  private openBrace(token: Token): Token {
+    if (this.inExpression === 0) {
+      this.expressionOpenedAt = { line: token.line, column: token.column, start: token.start, end: token.end };
+    }
+    this.inExpression++;
+    return token;
+  }
+
+  /**
+   * Where the outermost `{` still open was written, or null when every one
+   * was closed: asked once the end of the page is reached, it is a `{` the
+   * rest of the page was read inside.
+   */
+  public unclosedExpression(): SourceLocation | null {
+    return this.inExpression > 0 ? this.expressionOpenedAt : null;
   }
 
   /**
@@ -1771,6 +1831,10 @@ export class Lexer {
       word += this.source[pos];
       pos++;
     }
+    // `<style-box>` is a custom element and not a block: a word that goes on
+    // with a hyphen is no block's name. Read to its first hyphen, it was
+    // `style`, and the rest of the page was the stylesheet.
+    if (NAME_GOES_ON.test(this.source.slice(pos, pos + 2))) word += '-';
     return word.toLowerCase();
   }
 
@@ -1796,6 +1860,9 @@ export class Lexer {
       word += this.source[pos];
       pos++;
     }
+    // A custom element's (`title-bar`, `pre-view`) is none of HTML's: read to
+    // its hyphen, `<title-bar>` held the rest of the page as text.
+    if (NAME_GOES_ON.test(this.source.slice(pos, pos + 2))) return null;
     const lower = word.toLowerCase();
     return word === lower || word === word.toUpperCase() ? lower : null;
   }
@@ -1864,34 +1931,24 @@ export class Lexer {
   }
 
   /**
-   * Check if character can start an identifier
-   * Supports Unicode letters, _, and $
+   * Check if character can start an identifier: a letter (any the engine
+   * takes, see ID_START), `_` or `$`.
    */
   private isIdentifierStart(ch: string): boolean {
     if (ch === '_' || ch === '$') return true;
     if (ch >= 'a' && ch <= 'z') return true;
     if (ch >= 'A' && ch <= 'Z') return true;
-    // Support Unicode letters (basic check for extended Latin, Greek, Cyrillic, etc.)
-    const code = ch.charCodeAt(0);
-    // Unicode letter ranges (simplified)
-    if (code >= 0x00c0 && code <= 0x024f) return true; // Latin Extended
-    if (code >= 0x0370 && code <= 0x03ff) return true; // Greek
-    if (code >= 0x0400 && code <= 0x04ff) return true; // Cyrillic
-    if (code >= 0x4e00 && code <= 0x9fff) return true; // CJK
-    if (code >= 0xac00 && code <= 0xd7af) return true; // Korean Hangul
-    return false;
+    return ch > '\x7f' && ID_START.test(ch);
   }
 
   /**
-   * Check if character can continue an identifier
+   * Check if character can continue an identifier: also a digit, a
+   * combining mark, or a joiner (ID_CONTINUE).
    */
   private isIdentifierPart(ch: string): boolean {
     if (this.isIdentifierStart(ch)) return true;
     if (ch >= '0' && ch <= '9') return true;
-    // Unicode combining marks
-    const code = ch.charCodeAt(0);
-    if (code >= 0x0300 && code <= 0x036f) return true; // Combining Diacritical Marks
-    return false;
+    return ch > '\x7f' && ID_CONTINUE.test(ch);
   }
 
   private isDigit(ch: string): boolean {

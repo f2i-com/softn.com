@@ -353,6 +353,10 @@ export function removeCssFunction(css: string, name: string, note: string): stri
  * once the browser has read them.
  */
 export function cssResourceReferences(value: string): CssResourceScan {
+  // Every form below is a function, whose `(` is written or escaped: a value
+  // with neither, which is nearly every inline style value (`8px`, `#fff`,
+  // `flex`), loads nothing, and is asked about on every drawing.
+  if (!value.includes('(') && !value.includes('\\')) return { urls: [], opaque: false };
   const stripped = stripCssComments(value, '');
   const decoded = decodeCssEscapes(stripped);
   // An escape next to a function call could be hiding the function's name;

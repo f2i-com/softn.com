@@ -28,9 +28,14 @@ test('the named folders are removed from the build output, and nothing else', ()
   }
 });
 
-test('SoftN Web leaves out its demo catalogue, which it reads only under the dev server', () => {
+test('SoftN Web leaves out its demo catalogue, which it reads only under the dev server, and the local business bundles', () => {
   const config = fs.readFileSync(path.join(repoRoot, 'apps/softn-web/vite.config.ts'), 'utf8');
-  assert.match(config, /devOnlyPublicPlugin\(\['demos'\]\)/);
+  assert.match(config, /devOnlyPublicPlugin\(\['demos', 'business-demos'\]\)/);
+  // Nothing the runtime builds asks for public/business-demos/: only scripts that read the checkout do.
+  for (const file of ['src/App.tsx', 'src/main.tsx', 'src/components/Launcher.tsx']) {
+    const source = fs.readFileSync(path.join(repoRoot, 'apps/softn-web', file), 'utf8');
+    assert.equal(source.includes('business-demos'), false, `${file} names business-demos/`);
+  }
   const app = fs.readFileSync(path.join(repoRoot, 'apps/softn-web/src/App.tsx'), 'utf8');
   assert.match(app, /if \(!import\.meta\.env\.DEV\) return null;\s*try \{\s*const response = await fetch\(publicPath\('demos\/index\.json'/);
 });

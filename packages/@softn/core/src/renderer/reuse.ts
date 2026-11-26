@@ -65,10 +65,66 @@ export interface ReuseEntry {
 
 export type ReuseKind = 'text' | 'expression' | 'element' | 'branch' | 'row' | 'each' | 'empty' | 'slot';
 
-/** One document's drawings: the last finished one, and the one being made. */
+/** One place of the page: what the latest drawing that drew it kept there. */
+export interface ReuseSlot {
+  /** The drawing `kept` is from. */
+  keptIn: number;
+  /** What it kept; null when it drew two things there, which neither may reuse. */
+  kept: ReuseEntry | null;
+}
+
+/**
+ * Where a node of the document is drawn: the page, or one row of a loop in
+ * it, which is a scope of its own (a row of a loop in a row has its own in
+ * that). A place is a node in a scope, so it is found by the node, which
+ * costs nothing to look up.
+ *
+ * It was found by a key that spelled the whole way down to the node, the
+ * keys of the rows and elements around it and the node's place in the
+ * source: text made afresh at every drawing, read through to be looked up,
+ * and compared letter by letter with the last drawing's, for every node.
+ * On a page of two thousand rows that was a quarter of a keystroke.
+ */
+export interface ReuseScope {
+  /** What each node drew here, by the node. */
+  readonly slots: Map<object, ReuseSlot>;
+  /** The scopes of the rows drawn here: by the loop's node, then by the row's key. */
+  rows: Map<object, Map<string, ReuseScope>> | null;
+  /** The drawing that last drew in it. */
+  drawnIn: number;
+}
+
+/** One document's drawings: every place the last finished drawing kept something at, and the one being made. */
 export interface ReusePass {
-  prev: Map<string, ReuseEntry | null>;
-  next: Map<string, ReuseEntry | null>;
+  readonly root: ReuseScope;
+  /** The drawing being made, counted from 1. */
+  drawing: number;
+  /** The scope being drawn in now. */
+  scope: ReuseScope;
+  /** The place `recall` found last, for the `keep` that follows it. */
+  lastNode: object | undefined;
+  lastSlot: ReuseSlot | undefined;
+}
+
+function newScope(drawing: number): ReuseScope {
+  return { slots: new Map(), rows: null, drawnIn: drawing };
+}
+
+/** Let go of what `scope` holds that the drawing `last` did not draw. */
+function sweep(scope: ReuseScope, last: number): void {
+  const slots = scope.slots;
+  slots.forEach((slot, node) => {
+    if (slot.keptIn < last) slots.delete(node);
+  });
+  const byLoop = scope.rows;
+  if (!byLoop) return;
+  byLoop.forEach((rows, loop) => {
+    rows.forEach((row, key) => {
+      if (row.drawnIn < last) rows.delete(key);
+      else sweep(row, last);
+    });
+    if (rows.size === 0) byLoop.delete(loop);
+  });
 }
 
 /**
@@ -92,35 +148,89 @@ export function createRenderCache(): SoftNRenderCache {
 export function beginPass(cache: SoftNRenderCache, document: object): ReusePass {
   let pass = cache.passes.get(document);
   if (!pass) {
-    pass = { prev: new Map(), next: new Map() };
+    const root = newScope(1);
+    pass = { root, drawing: 1, scope: root, lastNode: undefined, lastSlot: undefined };
     cache.passes.set(document, pass);
-  } else {
-    pass.prev = pass.next;
-    pass.next = new Map();
+    return pass;
   }
+  // A place the last drawing did not draw is gone from the page.
+  sweep(pass.root, pass.drawing);
+  pass.drawing += 1;
+  pass.root.drawnIn = pass.drawing;
+  pass.scope = pass.root;
+  pass.lastNode = undefined;
+  pass.lastSlot = undefined;
   return pass;
 }
 
 /**
- * What was kept for `key` by the last drawing, when it was this node's.
- *
- * A key drawn twice in one pass is two rows with one id: which of them an
- * entry belongs to cannot be told, so neither is reused, now or next time
- * (the key is marked, and stays marked while it keeps being drawn twice).
+ * Draw one row of the loop `loop` in its own scope, the row `key` names:
+ * answers the scope it was drawn in, for `leaveRow`. Two rows with one key
+ * share one scope, and so every place in them is a place drawn twice.
  */
-export function recall(pass: ReusePass, key: string, node: object, kind: ReuseKind): ReuseEntry | undefined {
-  if (pass.next.has(key)) {
-    pass.next.set(key, null);
+export function enterRow(pass: ReusePass, loop: object, key: string): ReuseScope {
+  const outer = pass.scope;
+  const byLoop = (outer.rows ??= new Map());
+  let rows = byLoop.get(loop);
+  if (!rows) {
+    rows = new Map();
+    byLoop.set(loop, rows);
+  }
+  let row = rows.get(key);
+  if (!row) {
+    row = newScope(pass.drawing);
+    rows.set(key, row);
+  }
+  row.drawnIn = pass.drawing;
+  pass.scope = row;
+  pass.lastNode = undefined;
+  return outer;
+}
+
+/** Back to the scope a row was entered from. */
+export function leaveRow(pass: ReusePass, outer: ReuseScope): void {
+  pass.scope = outer;
+  pass.lastNode = undefined;
+}
+
+/**
+ * What `node` drew here in the last drawing, when it was this kind of thing.
+ *
+ * A place drawn twice in one pass is two rows with one key: which of them an
+ * entry belongs to cannot be told, so neither is reused, now or next time
+ * (the place is marked, and stays marked while it keeps being drawn twice).
+ */
+export function recall(pass: ReusePass, node: object, kind: ReuseKind): ReuseEntry | undefined {
+  const slot = pass.scope.slots.get(node);
+  pass.lastNode = node;
+  pass.lastSlot = slot;
+  if (!slot) return undefined;
+  if (slot.keptIn === pass.drawing) {
+    // Kept already in this drawing: a second thing in the same place.
+    slot.kept = null;
     return undefined;
   }
-  const entry = pass.prev.get(key);
+  const entry = slot.keptIn === pass.drawing - 1 ? slot.kept : null;
   return entry && entry.node === node && entry.kind === kind ? entry : undefined;
 }
 
-/** Keep `entry` for the next drawing, unless the key has turned out to be shared. */
-export function keep(pass: ReusePass, key: string, entry: ReuseEntry): void {
-  if (pass.next.get(key) === null) return;
-  pass.next.set(key, entry);
+/** Keep `entry` here for the next drawing, unless the place has turned out to be shared. */
+export function keep(pass: ReusePass, entry: ReuseEntry): void {
+  const node = entry.node;
+  const slot = pass.lastNode === node ? pass.lastSlot : pass.scope.slots.get(node);
+  if (!slot) {
+    const made: ReuseSlot = { keptIn: pass.drawing, kept: entry };
+    pass.scope.slots.set(node, made);
+    pass.lastNode = node;
+    pass.lastSlot = made;
+    return;
+  }
+  if (slot.keptIn === pass.drawing) {
+    if (slot.kept !== null) slot.kept = entry;
+    return;
+  }
+  slot.keptIn = pass.drawing;
+  slot.kept = entry;
 }
 
 /** A function that stays the same while what it calls is replaced. */

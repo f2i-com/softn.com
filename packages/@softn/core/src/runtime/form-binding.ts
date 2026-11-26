@@ -116,8 +116,14 @@ export function createFormState(
       initialValues && Object.prototype.hasOwnProperty.call(initialValues, field.name)
         ? initialValues[field.name]
         : undefined;
+    // A `defaultValue: null` is null, as a record's null is above: `??` took
+    // it for none given and put the type's own (0, "", false) in its place.
     values[field.name] =
-      initial !== undefined ? initial : (field.defaultValue ?? getDefaultForType(field.type));
+      initial !== undefined
+        ? initial
+        : field.defaultValue !== undefined
+          ? field.defaultValue
+          : getDefaultForType(field.type);
     errors[field.name] = null;
     touched[field.name] = false;
   }
@@ -292,11 +298,22 @@ export function handleFieldBlur(
 // ============================================================================
 
 /**
+ * A field's own entry in one of a form state's records, and nothing an
+ * object inherits: `touched.constructor` is `Object` and `errors.__proto__`
+ * Object's prototype, and a page asking for the error of a field it named
+ * `constructor` was handed the `Object` function.
+ */
+function ownEntry<T>(record: Record<string, T> | undefined, fieldName: string): T | undefined {
+  return record && typeof fieldName === 'string' && Object.prototype.hasOwnProperty.call(record, fieldName) ? record[fieldName] : undefined;
+}
+
+/**
  * Get error message for a field if touched and has error
  */
 export function getFieldError(state: FormState, fieldName: string): string | null {
-  if (state.touched[fieldName] && state.errors[fieldName]) {
-    return state.errors[fieldName];
+  const error = ownEntry(state.errors, fieldName);
+  if (ownEntry(state.touched, fieldName) && error) {
+    return error;
   }
   return null;
 }
@@ -305,7 +322,7 @@ export function getFieldError(state: FormState, fieldName: string): string | nul
  * Check if a field has an error (for styling)
  */
 export function hasFieldError(state: FormState, fieldName: string): boolean {
-  return !!(state.touched[fieldName] && state.errors[fieldName]);
+  return !!(ownEntry(state.touched, fieldName) && ownEntry(state.errors, fieldName));
 }
 
 /**
@@ -314,8 +331,8 @@ export function hasFieldError(state: FormState, fieldName: string): boolean {
 export function getFieldClass(state: FormState, fieldName: string, baseClass = ''): string {
   const classes = [baseClass];
 
-  if (state.touched[fieldName]) {
-    if (state.errors[fieldName]) {
+  if (ownEntry(state.touched, fieldName)) {
+    if (ownEntry(state.errors, fieldName)) {
       classes.push('field-error');
     } else {
       classes.push('field-valid');

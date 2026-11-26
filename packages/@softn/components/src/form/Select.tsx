@@ -933,9 +933,12 @@ export function Select({
             if (isOpen) closeList(false);
             else openList();
           }}
-          onFocus={() => {
+          onFocus={(e) => {
             setIsFocused(true);
-            onFocus?.();
+            // Focus coming back from the search box never left the Select,
+            // as `onBlur` already judges it: the page was told it had been
+            // focused again after every pick from a searchable list.
+            if (!containerRef.current?.contains(e.relatedTarget as Node | null)) onFocus?.();
           }}
           onBlur={() => setIsFocused(false)}
           role="combobox"

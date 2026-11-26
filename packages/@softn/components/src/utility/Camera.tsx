@@ -248,8 +248,11 @@ export function Camera({
 
     const vw = video.videoWidth;
     const vh = video.videoHeight;
-    canvas.width = vw;
-    canvas.height = vh;
+    // Only when the picture's size changes: setting either, even to what it
+    // already is, clears the canvas and resets its context, which the
+    // drawImage below covers at once — ten times a second in live mode.
+    if (canvas.width !== vw) canvas.width = vw;
+    if (canvas.height !== vh) canvas.height = vh;
 
     const ctx = canvas.getContext('2d');
     if (!ctx) return null;
@@ -277,7 +280,11 @@ export function Camera({
   const wantsFrames = !!onFrame;
   useEffect(() => {
     if (mode === 'live' && isStreaming && wantsFrames && !frameIntervalRef.current) {
-      const intervalMs = Math.max(16, Math.round(1000 / frameRate));
+      // A rate that is not a positive number (0, null, NaN) is the default
+      // one: 1000 over it is Infinity or NaN, which a timer reads as 0 ms,
+      // and frames were taken and encoded as fast as timers run.
+      const fps = typeof frameRate === 'number' && frameRate > 0 ? frameRate : 10;
+      const intervalMs = Math.max(16, Math.round(1000 / fps));
       frameIntervalRef.current = setInterval(() => {
         const frame = captureFrame();
         if (frame) {

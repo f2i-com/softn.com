@@ -8,9 +8,12 @@
 import * as React from 'react';
 import type { DataPoint } from './LineChart';
 import type { ChartPadding } from './series';
-import { chartPadding, describeChart, formatAxisValue, formatterOr, layoutX, normaliseSeries, numericPoints, chartSize } from './series';
+import { chartPadding, describeChart, extent, formatAxisValue, formatterOr, layoutX, normaliseSeries, numericPoints, chartSize } from './series';
 import { chartPalette } from '../theme/chart-palette';
 import { safeSvgPaint } from '../utils/svgPaint';
+
+/** An x label as it is, when the page gives no formatter: one function, so what is built from it is not built again. */
+const formatXValue = (value: number | string): string => String(value);
 
 export interface AreaChartSeries {
   name: string;
@@ -75,7 +78,7 @@ export function AreaChart({
   const width = chartSize(givenWidth, 600);
   const height = chartSize(givenHeight, 300);
   const padding = chartPadding(givenPadding, { top: 20, right: 20, bottom: 40, left: 50 });
-  const formatXLabel = formatterOr<NonNullable<AreaChartProps['formatXLabel']>>(givenFormatXLabel, (v) => String(v));
+  const formatXLabel = formatterOr<NonNullable<AreaChartProps['formatXLabel']>>(givenFormatXLabel, formatXValue);
   const formatYLabel = formatterOr<NonNullable<AreaChartProps['formatYLabel']>>(givenFormatYLabel, formatAxisValue);
   // Data that has not arrived yet is an empty chart, not a throw.
   // A point whose y is not a number is left out rather than drawn at NaN.
@@ -85,7 +88,8 @@ export function AreaChart({
   );
   const xLayout = React.useMemo(() => layoutX(series), [series]);
   const [hoveredIndex, setHoveredIndex] = React.useState<number | null>(null);
-  const [hoveredPointIndex, setHoveredPointIndex] = React.useState<number | null>(null);
+  // The x under the pointer, as a position on the axis: see LineChart.
+  const [hoveredX, setHoveredX] = React.useState<number | null>(null);
   const chartId = React.useId();
   const svgRef = React.useRef<SVGSVGElement>(null);
 
@@ -93,47 +97,49 @@ export function AreaChart({
   const chartHeight = height - padding.top - padding.bottom;
 
   // Compute stacked data
+  //
+  // Each series stands on the ones before it at the same x, over every x any
+  // of them has, in order along the axis; one with no point at an x adds
+  // nothing there. Stacked by a point's place in its list, a series that
+  // began a category late, or had a reading with no value (left out of its
+  // points), stood on another x's column and was drawn at that x.
   const stackedData = React.useMemo(() => {
     if (!stacked) return null;
 
-    const result: { x: number | string; y: number; y0: number }[][] = [];
-    // Use max length across all series to handle mismatched data lengths safely
-    const dataLength = Math.max(...series.map((s) => s.data.length), 0);
-
-    for (let si = 0; si < series.length; si++) {
-      const seriesResult: { x: number | string; y: number; y0: number }[] = [];
-      for (let di = 0; di < dataLength; di++) {
-        const point = series[si].data[di] ?? { x: di, y: 0 };
-        const baseline = si > 0 && result[si - 1]?.[di] ? result[si - 1][di].y : 0;
-        seriesResult.push({
-          x: point.x,
-          y: baseline + point.y,
-          y0: baseline,
-        });
-      }
-      result.push(seriesResult);
-    }
-
-    return result;
-  }, [series, stacked]);
+    const positions = [...new Set(series.flatMap((s, si) => s.data.map((_p, di) => xLayout.position(si, di))))].sort((a, b) => a - b);
+    const below = new Map<number, number>();
+    return series.map((s, si) => {
+      const own = new Map<number, number>();
+      s.data.forEach((point, di) => {
+        const at = xLayout.position(si, di);
+        if (!own.has(at)) own.set(at, point.y);
+      });
+      const top = new Map<number, number>();
+      const points = positions.map((at) => {
+        const y = (below.get(at) ?? 0) + (own.get(at) ?? 0);
+        below.set(at, y);
+        top.set(at, y);
+        return { at, y };
+      });
+      return { points, top };
+    });
+  }, [series, stacked, xLayout]);
 
   const allYValues = React.useMemo(() => {
     if (stacked && stackedData) {
-      return stackedData.flatMap((sd) => sd.map((p) => p.y));
+      return stackedData.flatMap((sd) => sd.points.map((p) => p.y));
     }
     return series.flatMap((s) => s.data.map((p) => p.y));
   }, [series, stacked, stackedData]);
 
-  const allPoints = series.flatMap((s) => s.data);
-
   // Same reasoning as LineChart: `Math.max()` of nothing is -Infinity, and
   // scaling a negative maximum by 1.1 moves it below the minimum, inverting
   // the domain so every point maps off the canvas.
-  const hasPoints = allPoints.length > 0;
+  const yExtent = React.useMemo(() => extent(allYValues), [allYValues]);
   const { min: xMin, max: xMax } = xLayout;
 
-  const dataMin = hasPoints ? Math.min(...allYValues) : 0;
-  const dataMax = hasPoints ? Math.max(...allYValues) : 0;
+  const dataMin = yExtent ? yExtent.min : 0;
+  const dataMax = yExtent ? yExtent.max : 0;
   const lo = Math.min(0, dataMin);
   const hi = Math.max(0, dataMax);
   const paddedMin = lo < 0 ? lo * 1.1 : lo;
@@ -143,17 +149,13 @@ export function AreaChart({
   const yRange = rawYMax - rawYMin || 1;
   const tickStep = Math.pow(10, Math.floor(Math.log10(yRange / 5))) * Math.ceil((yRange / 5) / Math.pow(10, Math.floor(Math.log10(yRange / 5)))) || 1;
   const yMin = propYMin ?? Math.floor(rawYMin / tickStep) * tickStep;
-  const yMax = propYMax ?? (Math.ceil(rawYMax / tickStep) * tickStep || 1);
+  // An axis of losses only ends at zero, not at 1: see LineChart.
+  const yMax = propYMax ?? Math.ceil(rawYMax / tickStep) * tickStep;
 
   const scaleX = (position: number): number => {
     return padding.left + ((position - xMin) / (xMax - xMin || 1)) * chartWidth;
   };
   const pointX = (seriesIndex: number, index: number): number => scaleX(xLayout.position(seriesIndex, index));
-  /** A stacked column's x: from the first series that has a point there. */
-  const stackX = (index: number): number => {
-    const owner = series.findIndex((s) => index < s.data.length);
-    return pointX(owner < 0 ? 0 : owner, index);
-  };
 
   const scaleY = (y: number): number => {
     return padding.top + chartHeight - ((y - yMin) / (yMax - yMin || 1)) * chartHeight;
@@ -207,25 +209,22 @@ export function AreaChart({
     return `${topPath} L ${lastX} ${baseline} L ${firstX} ${baseline} Z`;
   };
 
-  // Find closest data point index
-  const findClosestPointIndex = React.useCallback(
+  // The x nearest the pointer, of every x the series have between them.
+  const findClosestX = React.useCallback(
     (mouseX: number): number | null => {
-      if (series.length === 0 || series[0].data.length === 0) return null;
-      const refSeries = series[0];
-      let closestIdx = 0;
+      let closest: number | null = null;
       let closestDist = Infinity;
-      for (let i = 0; i < refSeries.data.length; i++) {
-        const px = pointX(0, i);
-        const dist = Math.abs(px - mouseX);
+      for (const { position } of xLayout.ticks) {
+        const dist = Math.abs(scaleX(position) - mouseX);
         if (dist < closestDist) {
           closestDist = dist;
-          closestIdx = i;
+          closest = position;
         }
       }
-      return closestIdx;
+      return closest;
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [series, xLayout, padding, chartWidth, xMin, xMax]
+    [xLayout, padding.left, chartWidth]
   );
 
   const handleMouseMove = React.useCallback(
@@ -236,17 +235,38 @@ export function AreaChart({
       const rect = svg.getBoundingClientRect();
       const scaleFactorX = width / rect.width;
       const mouseX = (e.clientX - rect.left) * scaleFactorX;
-      const idx = findClosestPointIndex(mouseX);
-      setHoveredPointIndex(idx);
+      setHoveredX(findClosestX(mouseX));
     },
-    [interactive, findClosestPointIndex, width]
+    [interactive, findClosestX, width]
   );
 
   const handleMouseLeave = React.useCallback(() => {
     if (!interactive) return;
-    setHoveredPointIndex(null);
+    setHoveredX(null);
     setHoveredIndex(null);
   }, [interactive]);
+
+  // Each series' point at each x, to find the ones under the pointer.
+  const indexAtX = React.useMemo(
+    () =>
+      series.map((s, seriesIndex) => {
+        const at = new Map<number, number>();
+        s.data.forEach((_point, idx) => {
+          const position = xLayout.position(seriesIndex, idx);
+          if (!at.has(position)) at.set(position, idx);
+        });
+        return at;
+      }),
+    [series, xLayout]
+  );
+  const hoveredTick = hoveredX === null ? undefined : xLayout.ticks.find((tick) => tick.position === hoveredX);
+  const hoveredPointOf = (seriesIndex: number): number | undefined =>
+    hoveredTick ? indexAtX[seriesIndex]?.get(hoveredTick.position) : undefined;
+  /** Where a series' point is drawn: on the stack, when stacked. */
+  const dotY = (seriesIndex: number, idx: number): number =>
+    stackedData
+      ? scaleY(stackedData[seriesIndex].top.get(xLayout.position(seriesIndex, idx)) ?? 0)
+      : scaleY(series[seriesIndex].data[idx].y);
 
   // Grid lines
   const gridLines: React.ReactNode[] = [];
@@ -329,72 +349,44 @@ export function AreaChart({
     : null;
 
   // Crosshair x position
-  const crosshairX = hoveredPointIndex !== null && series[0]?.data[hoveredPointIndex]
-    ? pointX(0, hoveredPointIndex)
-    : null;
+  const crosshairX = hoveredTick ? scaleX(hoveredTick.position) : null;
 
-  // Render series
-  const renderedSeries = series.map((s, seriesIndex) => {
-    const fallbackColor = defaultColors[seriesIndex % defaultColors.length];
-    const color = safeSvgPaint(s.color, fallbackColor);
-    const smooth = s.smooth ?? true;
-    const fillOpacity = s.fillOpacity ?? 0.3;
-    const isHovered = hoveredIndex === null || hoveredIndex === seriesIndex;
-    const seriesOpacity = interactive && hoveredIndex !== null && !isHovered ? 0.25 : 1;
+  // The areas, lines and dots, made again only when the data or the scale
+  // changes, not at each step of the pointer (see LineChart). The dot under
+  // the pointer is drawn larger over its own.
+  const plotted = React.useMemo(
+    () =>
+      series.map((s, seriesIndex) => {
+        const color = safeSvgPaint(s.color, defaultColors[seriesIndex % defaultColors.length]);
+        const smooth = s.smooth ?? true;
+        let topPoints: { x: number; y: number }[];
+        let bottomPoints: { x: number; y: number }[] | null = null;
 
-    let topPoints: { x: number; y: number }[];
-    let bottomPoints: { x: number; y: number }[] | null = null;
+        if (stackedData) {
+          topPoints = stackedData[seriesIndex].points.map((p) => ({ x: scaleX(p.at), y: scaleY(p.y) }));
+          if (seriesIndex > 0) {
+            bottomPoints = stackedData[seriesIndex - 1].points.map((p) => ({ x: scaleX(p.at), y: scaleY(p.y) }));
+          }
+        } else {
+          topPoints = s.data.map((point, idx) => ({
+            x: pointX(seriesIndex, idx),
+            y: scaleY(point.y),
+          }));
+        }
 
-    if (stacked && stackedData) {
-      topPoints = stackedData[seriesIndex].map((p, idx) => ({
-        x: stackX(idx),
-        y: scaleY(p.y),
-      }));
-      if (seriesIndex > 0) {
-        bottomPoints = stackedData[seriesIndex - 1].map((p, idx) => ({
-          x: stackX(idx),
-          y: scaleY(p.y),
-        }));
-      }
-    } else {
-      topPoints = s.data.map((point, idx) => ({
-        x: pointX(seriesIndex, idx),
-        y: scaleY(point.y),
-      }));
-    }
-
-    const linePath = generatePath(topPoints, smooth);
-    const fillPath = generateFillPath(topPoints, bottomPoints, smooth);
-    const fillColor = gradient ? `url(#area-grad-${chartId}-${seriesIndex})` : color;
-
-    return (
-      <g key={`${seriesIndex}-${s.name}`} opacity={seriesOpacity} style={{ transition: 'opacity 0.2s ease' }}>
-        <path
-          d={fillPath}
-          fill={fillColor}
-          fillOpacity={gradient ? 1 : fillOpacity}
-        />
-        <path
-          d={linePath}
-          fill="none"
-          stroke={color}
-          strokeWidth={s.strokeWidth ?? 2}
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-        {s.data.map((point, idx) => {
-          const cx = stacked && stackedData ? stackX(idx) : pointX(seriesIndex, idx);
-          const cy = stacked && stackedData ? scaleY(stackedData[seriesIndex][idx].y) : scaleY(point.y);
-          const isHoveredPoint = interactive && hoveredPointIndex === idx;
-          return (
+        return {
+          color,
+          line: generatePath(topPoints, smooth),
+          fill: generateFillPath(topPoints, bottomPoints, smooth),
+          dots: s.data.map((point, idx) => (
             <circle
               key={idx}
-              cx={cx}
-              cy={cy}
-              r={isHoveredPoint ? 5.5 : 3}
+              cx={pointX(seriesIndex, idx)}
+              cy={dotY(seriesIndex, idx)}
+              r={3}
               fill={color}
-              stroke={isHoveredPoint ? 'var(--color-bg, #18181b)' : 'none'}
-              strokeWidth={isHoveredPoint ? 2 : 0}
+              stroke="none"
+              strokeWidth={0}
               style={{
                 transition: 'r 0.15s ease, stroke-width 0.15s ease',
                 cursor: interactive ? 'pointer' : undefined,
@@ -404,11 +396,63 @@ export function AreaChart({
             >
               <title>{point.label ?? `${s.name} - ${point.x}: ${point.y}`}</title>
             </circle>
-          );
-        })}
+          )),
+        };
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [series, stackedData, xLayout, padding.left, padding.top, chartWidth, chartHeight, yMin, yMax, interactive]
+  );
+
+  // Render series
+  const renderedSeries = series.map((s, seriesIndex) => {
+    const { color, line, fill, dots } = plotted[seriesIndex];
+    const fillOpacity = s.fillOpacity ?? 0.3;
+    const isHovered = hoveredIndex === null || hoveredIndex === seriesIndex;
+    const seriesOpacity = interactive && hoveredIndex !== null && !isHovered ? 0.25 : 1;
+    const fillColor = gradient ? `url(#area-grad-${chartId}-${seriesIndex})` : color;
+    const hoveredIdx = interactive ? hoveredPointOf(seriesIndex) : undefined;
+
+    return (
+      <g key={`${seriesIndex}-${s.name}`} opacity={seriesOpacity} style={{ transition: 'opacity 0.2s ease' }}>
+        <path
+          d={fill}
+          fill={fillColor}
+          fillOpacity={gradient ? 1 : fillOpacity}
+        />
+        <path
+          d={line}
+          fill="none"
+          stroke={color}
+          strokeWidth={s.strokeWidth ?? 2}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+        {dots}
+        {hoveredIdx !== undefined && (
+          <circle
+            cx={pointX(seriesIndex, hoveredIdx)}
+            cy={dotY(seriesIndex, hoveredIdx)}
+            r={5.5}
+            fill={color}
+            stroke="var(--color-bg, #18181b)"
+            strokeWidth={2}
+            style={{ pointerEvents: 'none' }}
+          />
+        )}
       </g>
     );
   });
+
+  // Every point read out, so written again only when they or their formats change.
+  const label = React.useMemo(
+    () =>
+      ariaLabel ??
+      describeChart(
+        stacked ? 'Stacked area chart' : 'Area chart',
+        series.map((s) => ({ name: s.name, values: s.data.map((p) => `${formatXLabel(p.x)} ${formatYLabel(p.y)}`) }))
+      ),
+    [ariaLabel, stacked, series, formatXLabel, formatYLabel]
+  );
 
   return (
     <div className={`softn-area-chart ${className}`} style={{ position: 'relative', ...style }}>
@@ -420,13 +464,7 @@ export function AreaChart({
         onMouseMove={handleMouseMove}
         onMouseLeave={handleMouseLeave}
         role="img"
-        aria-label={
-          ariaLabel ??
-          describeChart(
-            stacked ? 'Stacked area chart' : 'Area chart',
-            series.map((s) => ({ name: s.name, values: s.data.map((p) => `${formatXLabel(p.x)} ${formatYLabel(p.y)}`) }))
-          )
-        }
+        aria-label={label}
       >
         {gradient && <defs>{gradientDefs}</defs>}
 
@@ -495,7 +533,7 @@ export function AreaChart({
       </svg>
 
       {/* Crosshair tooltip */}
-      {interactive && hoveredPointIndex !== null && crosshairX !== null && (
+      {interactive && hoveredTick && crosshairX !== null && (
         <div
           style={{
             position: 'absolute',
@@ -516,13 +554,12 @@ export function AreaChart({
           }}
         >
           <div style={{ fontWeight: 600, marginBottom: '2px', color: 'var(--color-text-muted, #a1a1aa)', fontSize: '11px' }}>
-            {series[0]?.data[hoveredPointIndex]
-              ? formatXLabel(series[0].data[hoveredPointIndex].x)
-              : ''}
+            {formatXLabel(hoveredTick.value)}
           </div>
           {series.map((s, seriesIndex) => {
             const color = s.color || defaultColors[seriesIndex % defaultColors.length];
-            const point = s.data[hoveredPointIndex];
+            const idx = hoveredPointOf(seriesIndex);
+            const point = idx === undefined ? undefined : s.data[idx];
             if (!point) return null;
             return (
               <div key={`${seriesIndex}-${s.name}`} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>

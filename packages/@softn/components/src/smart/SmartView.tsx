@@ -175,6 +175,9 @@ function formatValue(
     case 'date':
       try {
         const date = recordDate(value);
+        // Text that only starts like a date ("2024-01-05 call back") is shown
+        // as written: toLocaleDateString does not throw, it says "Invalid Date".
+        if (Number.isNaN(date.getTime())) return String(value);
         return (
           <span style={{ fontVariantNumeric: 'tabular-nums', color: 'var(--color-text, #1a1a2e)' }}>
             {date.toLocaleDateString(undefined, {

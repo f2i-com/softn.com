@@ -707,6 +707,13 @@ export function DatePicker({
           aria-labelledby={headingId}
           style={calendarStyle}
           onKeyDown={handleDialogKeyDown}
+          // A press on what is not a button (the month's name, the gap
+          // between days) would take focus off the day and give it to
+          // nothing, which the field reads as focus leaving it: the
+          // calendar shut under the pointer. Focus stays on its day.
+          onMouseDown={(e) => {
+            if (!(e.target as Element).closest('button')) e.preventDefault();
+          }}
         >
           <div style={headerStyle}>
             <div style={{ display: 'flex', gap: '0.25rem' }}>

@@ -66,7 +66,12 @@ export function PublishModal({
   onPublished,
 }: PublishModalProps): React.ReactElement | null {
   const titleId = useId();
-  const dialogRef = useModalFocus(isOpen, onClose);
+  // Escape is held while publishing, as Close and the backdrop are: closed
+  // then, the dialog showed the result — the edit key — to nobody, and
+  // opening it again cleared it.
+  const dialogRef = useModalFocus(isOpen, () => {
+    if (!submitting) onClose();
+  });
 
   const [bundle, setBundle] = useState<EditorBundleBuild | null>(null);
   const [inspection, setInspection] = useState<BundleInspection | null>(null);

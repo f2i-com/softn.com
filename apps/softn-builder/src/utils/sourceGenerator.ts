@@ -2,6 +2,7 @@
  * Source Generator - Converts canvas state to SoftN .ui source code
  */
 
+import { parse } from '@softn/core/authoring';
 import type { CanvasComment, CanvasElement, CollectionDef } from '../types/builder';
 import { TEXT_NODE_TYPE } from '../types/builder';
 import { getComponentMeta } from './componentRegistry';
@@ -332,11 +333,11 @@ function generateAttributes(
     // and a file that had one used to be refused for it. A field that is
     // emptied in the panel removes its property instead.
 
-    // Format attribute based on type
+    // Format attribute based on type. `open=false` is read as the boolean
+    // false and written so: written as nothing, the property was gone from
+    // the file, and a page that had one could not be written back at all.
     if (typeof value === 'boolean') {
-      if (value) {
-        attrs.push(key);
-      }
+      attrs.push(value ? key : `${key}=false`);
     } else if (typeof value === 'number') {
       attrs.push(`${key}={${value}}`);
     } else if (typeof value === 'string') {
@@ -344,7 +345,7 @@ function generateAttributes(
       if (expressionPropSet.has(key)) {
         attrs.push(`${key}={${value}}`);
       } else {
-        attrs.push(`${key}="${escapeAttr(value)}"`);
+        attrs.push(`${key}="${escapeAttr(value, element.componentType)}"`);
       }
     } else if (typeof value === 'object') {
       // JSON objects
@@ -391,33 +392,84 @@ function generateAttributes(
  * string in the model, expressions included, and `{items.length > 0}`
  * used to come back as `{items.length &gt; 0}`, which the expression lexer
  * does not decode: the comparison became an error.
+ *
+ * A brace typed into the words that opens no expression the parser reads to
+ * its end (`Press { to open`, a half-made `{a b}`) is a brace, written as
+ * `&#123;`. Written as it stood, it opened an expression the parser read on
+ * through the closing tag, and the rest of the page came back as one broken
+ * expression. Words are written as they stand whenever that reads back.
  */
 function escapeText(text: string): string {
+  const written = spellWords(text, () => true, true);
+  if (!text.includes('{') || readsAsWords(written)) return written;
+  const repaired = spellWords(text, (inner) => readsAsWords(`{${inner}}`), false);
+  return readsAsWords(repaired) ? repaired : spellWords(text, () => false, false);
+}
+
+/**
+ * A `#` that the lexer would take for the start of a block: one before a whole
+ * word that opens one, in any case (core lexer, `hashStartsControlFlow`). In
+ * words it is the character, written `&#35;`: written as it was, `#end` was
+ * read as the end of a block and was gone from the page, `a #else b` came back
+ * as `a b`, and `see #if (x)` was a block.
+ */
+const BLOCK_WORD = /#(?=(?:if|elseif|else|each|empty|end)(?![A-Za-z]))/gi;
+
+/**
+ * The words spelled for the parser: each `{…}` that `keep` takes written as
+ * the expression it is, and any other as words, its braces literal; a `{`
+ * that is never closed is written as it is when `openAsIs`, else as words.
+ * (A brace in a string of an expression is counted here as any other, so a
+ * whole that reads is written as it is, whatever the count says.)
+ */
+function spellWords(text: string, keep: (inner: string) => boolean, openAsIs: boolean): string {
   let out = '';
   let depth = 0;
   let plain = '';
-  const flush = () => {
+  let region = '';
+  const words = (part: string) =>
     // A no-break space is written as its entity: as a character the lexer
     // takes it for whitespace and collapses it with the spaces around it.
-    out += plain.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\u00A0/g, '&nbsp;');
-    plain = '';
-  };
+    part.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\u00A0/g, '&nbsp;').replace(/\{/g, '&#123;').replace(BLOCK_WORD, '&#35;');
   for (const ch of text) {
     if (ch === '{') {
-      if (depth === 0) flush();
+      if (depth === 0) {
+        out += words(plain);
+        plain = '';
+      }
       depth++;
-      out += ch;
+      region += ch;
     } else if (ch === '}' && depth > 0) {
       depth--;
-      out += ch;
+      region += ch;
+      if (depth === 0) {
+        out += keep(region.slice(1, -1)) ? region : words(region);
+        region = '';
+      }
     } else if (depth > 0) {
-      out += ch;
+      region += ch;
     } else {
       plain += ch;
     }
   }
-  flush();
-  return out;
+  // A `{` with no `}` after it opens nothing.
+  return out + words(plain) + (openAsIs ? region : words(region));
+}
+
+/** Words as written, by whether the parser reads them back without an error: every expression in them read to its end. */
+const readsBack = new Map<string, boolean>();
+function readsAsWords(written: string): boolean {
+  let reads = readsBack.get(written);
+  if (reads === undefined) {
+    try {
+      reads = !(parse(`<Text>${written}</Text>`).diagnostics ?? []).some((d) => d.severity === 'error');
+    } catch {
+      reads = false;
+    }
+    if (readsBack.size >= 10_000) readsBack.clear();
+    readsBack.set(written, reads);
+  }
+  return reads;
 }
 
 /**
@@ -426,13 +478,16 @@ function escapeText(text: string): string {
  * as the start of an escape, and a line break as the end of the string, so
  * each of those is written as what it reads them from.
  */
-function escapeAttr(value: string): string {
-  return value
-    .replace(/\\/g, '\\\\')
+function escapeAttr(value: string, tag: string): string {
+  const escaped = value
     .replace(/&/g, '&amp;')
     .replace(/"/g, '&quot;')
     .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/\n/g, '\\n')
-    .replace(/\r/g, '\\r');
+    .replace(/>/g, '&gt;');
+  // An HTML element's attribute (a tag in lower case: `div`, `my-card`) has
+  // no escapes, as in HTML, and a backslash in it is a backslash: one there
+  // came back doubled. A backslash and a line break are written as the
+  // characters they are, which reads the same for every tag.
+  if (/^[a-z]/.test(tag)) return escaped.replace(/\\/g, '&#92;').replace(/\n/g, '&#10;').replace(/\r/g, '&#13;');
+  return escaped.replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/\r/g, '\\r');
 }

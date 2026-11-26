@@ -101,6 +101,20 @@ class Scanner {
   pos = 0;
   /** JavaScript scanning adds TypeScript's keywords and types. */
   typescript = false;
+  /**
+   * The index in `tokens` of the last one that is not whitespace or a
+   * comment, kept as tokens are pushed. Found by reading back, it trimmed
+   * the token it reached, and words and spaces merge into one plain token:
+   * `a a a …` trimmed a longer one at every word, the square of its length.
+   */
+  private significant = -1;
+  /**
+   * Where a regular expression's scan went without closing, by whether it
+   * was inside a `[…]` there (bit 1 outside, bit 2 inside). A later `/`
+   * whose scan reaches one of them in the same state cannot close either,
+   * so a line of `(/[` is read once rather than once for every `/`.
+   */
+  deadRegex: Uint8Array | null = null;
   constructor(readonly src: string) {}
 
   get done(): boolean {
@@ -121,9 +135,10 @@ class Scanner {
     const last = this.tokens[this.tokens.length - 1];
     if (last && last.kind === kind && (kind === 'plain' || kind === 'string' || kind === 'comment')) {
       last.text += text;
-      return;
+    } else {
+      this.tokens.push({ kind, text });
     }
-    this.tokens.push({ kind, text });
+    if (kind !== 'comment' && (kind !== 'plain' || /\S/.test(text))) this.significant = this.tokens.length - 1;
   }
 
   take(kind: TokenKind, length: number): string {
@@ -135,13 +150,7 @@ class Scanner {
 
   /** The last token that is not whitespace or a comment. */
   lastSignificant(): Token | undefined {
-    for (let i = this.tokens.length - 1; i >= 0; i--) {
-      const token = this.tokens[i];
-      if (token.kind === 'comment') continue;
-      if (token.kind === 'plain' && !token.text.trim()) continue;
-      return token;
-    }
-    return undefined;
+    return this.significant >= 0 ? this.tokens[this.significant] : undefined;
   }
 
   /** Is `pos` at the start of its line, ignoring indentation? */
@@ -204,6 +213,27 @@ function lineEnd(src: string, from: number): number {
   return end < 0 ? src.length : end;
 }
 
+/**
+ * Where `pattern` (a global one) next matches at or after `from`, or the end
+ * of the source, for a scan that moves forward. A search that goes a long
+ * way (a `[` with no `]` after it) is made once, and its answer serves every
+ * later question it still answers: a run of `[` costs one search, not one
+ * to the end of the text from each.
+ */
+function forward(src: string, pattern: RegExp): (from: number) => number {
+  let asked = Infinity;
+  let found = src.length;
+  return (from) => {
+    if (from < asked || from > found) {
+      pattern.lastIndex = from;
+      const match = pattern.exec(src);
+      found = match ? match.index : src.length;
+      asked = from;
+    }
+    return found;
+  };
+}
+
 // --- JavaScript and TypeScript ---------------------------------------------------
 
 const JS_KEYWORDS = new Set([
@@ -251,16 +281,25 @@ function scanQuoted(s: Scanner, quote: string, kind: TokenKind = 'string'): void
 function scanRegex(s: Scanner): boolean {
   let end = s.pos + 1;
   let inClass = false;
+  let closed = false;
+  /** Where this scan has been, as `place * 2 + (inside a class ? 1 : 0)`. */
+  const path: number[] = [];
   while (end < s.src.length) {
+    if (s.deadRegex && (s.deadRegex[end] & (inClass ? 2 : 1)) !== 0) break;
+    path.push(end * 2 + (inClass ? 1 : 0));
     const ch = s.src[end];
-    if (ch === '\n') return false;
+    if (ch === '\n') break;
     if (ch === '\\') { end += 2; continue; }
     if (ch === '[') inClass = true;
     else if (ch === ']') inClass = false;
-    else if (ch === '/' && !inClass) break;
+    else if (ch === '/' && !inClass) { closed = true; break; }
     end++;
   }
-  if (end >= s.src.length) return false;
+  if (!closed) {
+    const dead = (s.deadRegex ??= new Uint8Array(s.src.length));
+    for (const at of path) dead[at >> 1] |= at & 1 ? 2 : 1;
+    return false;
+  }
   end++;
   while (end < s.src.length && /[a-z]/i.test(s.src[end])) end++;
   s.take('regex', end - s.pos);
@@ -473,6 +512,8 @@ function scanCss(s: Scanner): void {
   const delimRe = /[;{}]/g;
   let nextDelimPos = -1;
   let nextDelimChar = '';
+  const closeBracket = forward(s.src, /\]/g);
+  const nextLine = forward(s.src, /\n/g);
 
   while (!s.done) {
     const ch = s.peek();
@@ -551,8 +592,8 @@ function scanCss(s: Scanner): void {
     const selector = matchAt(s, /(?:::?|[.#])?-?[A-Za-z_][\w-]*|\*|&/y);
     if (selector) { s.take('tag', selector.length); continue; }
     if (ch === '[') {
-      const end = s.src.indexOf(']', s.pos);
-      const close = end < 0 || end > lineEnd(s.src, s.pos) ? s.pos + 1 : end + 1;
+      const end = closeBracket(s.pos);
+      const close = end < nextLine(s.pos) ? end + 1 : s.pos + 1;
       s.take('attr', close - s.pos);
       continue;
     }
@@ -741,6 +782,11 @@ function fenceLanguage(info: string): CodeLanguage | null {
  * textarea must keep the width of every character.
  */
 function scanMarkdown(s: Scanner): void {
+  const ahead: MarkdownAhead = {
+    closeBracket: forward(s.src, /\]/g),
+    closeParen: forward(s.src, /\)/g),
+    autolinkEnd: forward(s.src, /[>\s]/g),
+  };
   while (!s.done) {
     const end = lineEnd(s.src, s.pos);
     const line = s.src.slice(s.pos, end);
@@ -785,13 +831,21 @@ function scanMarkdown(s: Scanner): void {
       if (lead[2]) s.take('comment', lead[2].length);
       s.take('plain', lead[3].length);
       if (lead[4]) s.take('punct', lead[4].length);
-      scanMarkdownInline(s, end);
+      scanMarkdownInline(s, end, ahead);
     }
     if (!s.done) s.take('plain', 1); // the newline
   }
 }
 
-function scanMarkdownInline(s: Scanner, end: number): void {
+/** What a line's links are closed by, each found once for the whole text (see `forward`). */
+interface MarkdownAhead {
+  closeBracket: (from: number) => number;
+  closeParen: (from: number) => number;
+  /** The `>` that closes an autolink, or the space that means it is none. */
+  autolinkEnd: (from: number) => number;
+}
+
+function scanMarkdownInline(s: Scanner, end: number, ahead: MarkdownAhead): void {
   while (s.pos < end) {
     const ch = s.peek();
     if (ch === '\\' && s.pos + 1 < end) { s.take('plain', 2); continue; }
@@ -805,13 +859,23 @@ function scanMarkdownInline(s: Scanner, end: number): void {
       s.take('plain', ticks.length);
       continue;
     }
+    // `[text](target)` and `![alt](src)`, on one line: the first `]` after
+    // the `[`, a `(` straight after it, and the first `)` after that. As a
+    // pattern, each `[` with no `]` was read to the end of the line again.
     if (ch === '!' || ch === '[') {
-      const link = matchAt(s, /!?\[[^\]\n]*\]\([^)\n]*\)/y);
-      if (link) { s.take('function', link.length); continue; }
+      const open = ch === '!' ? s.pos + 1 : s.pos;
+      if (s.src[open] === '[') {
+        const close = ahead.closeBracket(open + 1);
+        if (close < end && s.src[close + 1] === '(') {
+          const paren = ahead.closeParen(close + 2);
+          if (paren < end) { s.take('function', paren + 1 - s.pos); continue; }
+        }
+      }
     }
     if (ch === '<') {
-      const auto = matchAt(s, /<(?:https?:\/\/|mailto:)[^>\s]+>/y);
-      if (auto) { s.take('function', auto.length); continue; }
+      const scheme = matchAt(s, /<(?:https?:\/\/|mailto:)/y);
+      const stop = scheme ? ahead.autolinkEnd(s.pos + scheme.length) : -1;
+      if (scheme && stop > s.pos + scheme.length && s.src[stop] === '>') { s.take('function', stop + 1 - s.pos); continue; }
     }
     if (ch === '*' || ch === '_' || ch === '~') {
       const previous = s.pos > 0 ? s.src[s.pos - 1] : ' ';
@@ -892,6 +956,7 @@ const RUST_TYPES = new Set([
 ]);
 
 function scanRust(s: Scanner): void {
+  const closeBracket = forward(s.src, /\]/g);
   while (!s.done) {
     const ch = s.peek();
     if (s.startsWith('//')) { s.take('comment', lineEnd(s.src, s.pos) - s.pos); continue; }
@@ -901,8 +966,8 @@ function scanRust(s: Scanner): void {
       continue;
     }
     if (ch === '#' && (s.peek(1) === '[' || (s.peek(1) === '!' && s.peek(2) === '['))) {
-      const close = s.src.indexOf(']', s.pos + 2);
-      s.take('decorator', close < 0 ? lineEnd(s.src, s.pos) - s.pos : close + 1 - s.pos);
+      const close = closeBracket(s.pos + 2);
+      s.take('decorator', close >= s.src.length ? lineEnd(s.src, s.pos) - s.pos : close + 1 - s.pos);
       continue;
     }
     if (ch === '"') { scanQuoted(s, '"'); continue; }
@@ -931,13 +996,15 @@ function scanRust(s: Scanner): void {
 }
 
 function scanShell(s: Scanner): void {
+  const closeBracket = forward(s.src, /\]/g);
+  const nextLine = forward(s.src, /\n/g);
   while (!s.done) {
     const ch = s.peek();
     if (ch === '#') { s.take('comment', lineEnd(s.src, s.pos) - s.pos); continue; }
     if (ch === '"' || ch === "'") { scanQuoted(s, ch); continue; }
     if (ch === '[' && s.atLineStart()) {
-      const close = s.src.indexOf(']', s.pos + 1);
-      if (close > s.pos && close < lineEnd(s.src, s.pos)) {
+      const close = closeBracket(s.pos + 1);
+      if (close < nextLine(s.pos)) {
         s.take('keyword', close + 1 - s.pos);
         continue;
       }

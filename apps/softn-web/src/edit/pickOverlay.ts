@@ -190,9 +190,13 @@ export class PickOverlay {
   private draw = (): void => {
     if (this.gone) return;
     this.frame = requestAnimationFrame(this.draw);
-    const box = this.options.box();
+    // Nothing being picked and nothing picked: nothing to draw, and the app's
+    // box is not looked for in the page and measured. It was, on every frame
+    // the editor was open, while the person typed.
+    const idle = !this.picking && this.selection.length === 0;
+    const box = idle ? null : this.options.box();
     const within = box?.getBoundingClientRect();
-    if (!box || !within || within.width === 0 || (!this.picking && this.selection.length === 0)) {
+    if (!box || !within || within.width === 0) {
       this.sheet.style.display = 'none';
       return;
     }

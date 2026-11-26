@@ -5,7 +5,7 @@
  */
 
 import type { SourceLocation } from './token';
-import { HTML_ENTITIES, LEGACY_ENTITIES } from './html-entities';
+import { HTML_ENTITIES, LEGACY_ENTITIES, WINDOWS_1252_REFERENCES } from './html-entities';
 
 // ============================================================================
 // Document Structure
@@ -692,11 +692,13 @@ export function createElementNode(
  * The character a numeric reference names. A number that names none (past
  * U+10FFFF, half of a surrogate pair, zero) is U+FFFD, as HTML reads it:
  * `String.fromCodePoint` throws for the first of those, and a throw here
- * is a throw out of the parser.
+ * is a throw out of the parser. One from 128 to 159 is the character
+ * Windows-1252 has there (WINDOWS_1252_REFERENCES), as a browser shows it:
+ * `&#146;` was an invisible control character where the page meant `\u2019`.
  */
 function referencedCharacter(code: number): string {
   if (!(code > 0 && code <= 0x10ffff) || (code >= 0xd800 && code <= 0xdfff)) return '\uFFFD';
-  return String.fromCodePoint(code);
+  return String.fromCodePoint(WINDOWS_1252_REFERENCES.get(code) ?? code);
 }
 
 /**
@@ -743,6 +745,12 @@ export function decodeHtmlEntities(text: string, inAttribute = false): string {
 
 let entityProbe: { innerHTML: string; value: string } | null | undefined;
 const browserEntities = new Map<string, string | null>();
+/**
+ * How many names the browser has been asked about are kept: HTML has 2,231,
+ * and a page can write any number that are none of them (`&x1;`, `&x2;`…),
+ * each of which was kept for as long as the page was open.
+ */
+const BROWSER_ENTITIES_KEPT = 4096;
 
 /**
  * A named reference HTML_ENTITIES does not hold (`&lbrace;`, `&check;`),
@@ -769,6 +777,7 @@ function namedEntityFromBrowser(name: string): string | null {
   } catch {
     entityProbe = null;
   }
+  if (browserEntities.size >= BROWSER_ENTITIES_KEPT) browserEntities.clear();
   browserEntities.set(name, value);
   return value;
 }

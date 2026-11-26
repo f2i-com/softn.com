@@ -25,13 +25,17 @@
 export function moduleSyntaxAsScript(code: string): string {
   if (!/\b(?:export|import)\b/.test(code)) return code;
   const blankLines = (written: string) => written.replace(/[^\n]/g, '');
+  // A line's end is `[ \t]*(?:;[ \t]*)?$`, and a generator's star
+  // `[ \t]*(?:\*[ \t]*)?`: written `[ \t]*;?[ \t]*`, the two runs of spaces
+  // could share a long one every way there is before a line end that never
+  // came, and `export {a}` with 20,000 spaces after it took 330 ms.
   return code
-    .replace(/^([ \t]*)export[ \t]+default[ \t]+(?=(?:async[ \t]+)?function[ \t]*\*?[ \t]*[A-Za-z_$]|class[ \t]+[A-Za-z_$])/gm, '$1')
+    .replace(/^([ \t]*)export[ \t]+default[ \t]+(?=(?:async[ \t]+)?function[ \t]*(?:\*[ \t]*)?[A-Za-z_$]|class[ \t]+[A-Za-z_$])/gm, '$1')
     .replace(/^([ \t]*)export[ \t]+(?=(?:async[ \t]+)?function\b|class\b|const\b|let\b|var\b)/gm, '$1')
-    .replace(/^([ \t]*)export[ \t]+default[ \t]+[A-Za-z_$][\w$]*[ \t]*;?[ \t]*$/gm, '$1')
-    .replace(/^([ \t]*)export[ \t]*\{[^}]*\}[ \t]*;?[ \t]*$/gm, (line, indent: string) => indent + blankLines(line))
+    .replace(/^([ \t]*)export[ \t]+default[ \t]+[A-Za-z_$][\w$]*[ \t]*(?:;[ \t]*)?$/gm, '$1')
+    .replace(/^([ \t]*)export[ \t]*\{[^}]*\}[ \t]*(?:;[ \t]*)?$/gm, (line, indent: string) => indent + blankLines(line))
     .replace(
-      /^([ \t]*)(?:import|export)[ \t]*\{([^}]*)\}[ \t]*from[ \t]*(["'])((?:\.{1,2})?\/[^"'\n]+)\3[ \t]*;?[ \t]*$/gm,
+      /^([ \t]*)(?:import|export)[ \t]*\{([^}]*)\}[ \t]*from[ \t]*(["'])((?:\.{1,2})?\/[^"'\n]+)\3[ \t]*(?:;[ \t]*)?$/gm,
       (line, indent: string, names: string, quote: string, path: string) =>
         /\bas\b/.test(names) ? line : `${indent}import ${quote}${path}${quote}${blankLines(line)}`
     );

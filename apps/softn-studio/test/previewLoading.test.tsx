@@ -68,6 +68,60 @@ describe('Studio preview initialization', () => {
     expect(container.querySelector('[role="alert"]')).toBeNull();
   });
 
+  // The container opens on the app's main page, and a page chosen after that was gone to, but
+  // only when it was not the main page: chosen again after another, the main page was named in
+  // the header over the other page, still showing.
+  it('goes to each web page as it is chosen, the main page again included', async () => {
+    const navigate = vi.fn(async () => {});
+    mountWeb.mockReset();
+    mountWeb.mockResolvedValue({ manifest: { main: 'index.html' }, dispose() {}, setGrantedCapabilities() {}, navigate });
+    useVFSStore.getState().openFiles([
+      { path: 'manifest.json', content: JSON.stringify({ engine: 2, main: 'index.html' }) },
+      { path: 'index.html', content: '<main>Home</main>' },
+      { path: 'pages/about.html', content: '<main>About</main>' },
+    ]);
+    useWorkspaceStore.getState().setActiveFilePath('index.html');
+    await act(async () => { root.render(<VisualCanvas />); await vi.dynamicImportSettled(); });
+    expect(mountWeb).toHaveBeenCalledTimes(1);
+    expect(navigate).not.toHaveBeenCalled();
+    await act(async () => { useWorkspaceStore.getState().setActiveFilePath('pages/about.html'); });
+    expect(navigate).toHaveBeenLastCalledWith('pages/about.html');
+    await act(async () => { useWorkspaceStore.getState().setActiveFilePath('index.html'); });
+    expect(navigate).toHaveBeenLastCalledWith('index.html');
+    expect(mountWeb).toHaveBeenCalledTimes(1);
+    mountWeb.mockReset();
+  });
+
+  // With nothing allowed, the preview was handed a new empty list on every redraw, and each one
+  // was passed on to the container, which empties its caches and tells its worker each time.
+  it('tells the web container what is allowed when that changes, not on every redraw', async () => {
+    const setGrantedCapabilities = vi.fn();
+    mountWeb.mockReset();
+    mountWeb.mockResolvedValue({ manifest: { main: 'index.html' }, dispose() {}, setGrantedCapabilities, navigate: async () => {} });
+    useVFSStore.getState().openFiles([
+      { path: 'manifest.json', content: JSON.stringify({ engine: 2, main: 'index.html' }) },
+      { path: 'index.html', content: '<main>Home</main>' },
+    ]);
+    await act(async () => { root.render(<VisualCanvas />); await vi.dynamicImportSettled(); });
+    const told = setGrantedCapabilities.mock.calls.length;
+    for (let i = 0; i < 5; i++) act(() => useWorkspaceStore.getState().addConsoleOutput(`line ${i}`));
+    act(() => root.render(<VisualCanvas />));
+    expect(setGrantedCapabilities).toHaveBeenCalledTimes(told);
+    mountWeb.mockReset();
+  });
+
+  // The canvas took the whole workspace store: every line of the log, which an app that prints
+  // or a run that works writes to all the time, drew the canvas and the running app again.
+  it('does not draw the app again for a line of the log or a check result', async () => {
+    act(() => root.render(<VisualCanvas />));
+    await act(async () => { await vi.dynamicImportSettled(); });
+    expect(container.querySelector('[data-testid="ready-preview"]')).toBeTruthy();
+    const drawn = rendered.length;
+    for (let i = 0; i < 10; i++) act(() => useWorkspaceStore.getState().addConsoleOutput(`[App] line ${i}`));
+    act(() => useWorkspaceStore.getState().setDirty(true));
+    expect(rendered.length).toBe(drawn);
+  });
+
   it('shows a concise live loading state instead of the source while the renderer starts', async () => {
     act(() => root.render(<VisualCanvas />));
     expect(container.querySelector('[role="status"]')?.textContent).toContain('Preparing preview…');

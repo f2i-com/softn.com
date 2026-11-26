@@ -72,6 +72,18 @@ export function sharedPrecacheUrl(file, base = sharedAssetsBase()) {
 }
 
 /**
+ * A build's own chunk for a module, by its name in the shared folder: the file
+ * of the entry of the build's Vite manifest (`.vite/manifest.json`) whose key,
+ * the module's path from the app, matches `key`. Null when the build has none.
+ * Another app's chunk of the same module has the same name before its hash, so
+ * a name alone does not say whose it is.
+ */
+export function sharedNameOf(manifest, key) {
+  const file = Object.entries(manifest).find(([name]) => key.test(name))?.[1]?.file;
+  return typeof file === 'string' && file.startsWith(BUILT) && file.length > BUILT.length ? file.slice(BUILT.length) : null;
+}
+
+/**
  * `@fontsource` stylesheets list both WOFF2 and legacy WOFF (`url(...woff2) format('woff2'),
  * url(...woff) format('woff')`). Every browser that runs WebAssembly and ES2022 supports WOFF2,
  * so Vite's asset pipeline otherwise emits 28 dead `.woff` files (~320 KB) alongside `.woff2`.

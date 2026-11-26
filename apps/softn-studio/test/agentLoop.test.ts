@@ -302,12 +302,31 @@ describe('reading a file', () => {
     expect(seen.get('data/big.xdb')?.complete).toBe(false);
     const write = await executeTool({ id: 'w', name: 'write_file', input: { path: 'data/big.xdb', content: '{}' } }, context);
     expect(write.isError).toBe(true);
-    expect(write.content).toContain('You have read only part of data/big.xdb');
+    // And the model is told the way there is: it cannot be read whole, so it is edited.
+    expect(write.content).toContain('data/big.xdb is too long to be read whole');
   });
 });
 
 describe('the changeset rules, as tool errors', () => {
   beforeEach(() => seedApp());
+
+  // read_file shows at most 400 lines, so a longer file is never read whole: write_file over it
+  // was refused with "read it whole first (read_file without a line range)", which could not be
+  // done, and a model that did as it was told read, was refused, and read again until its steps
+  // ran out. It is told the one way there is.
+  it('tells a model that cannot read a long file whole to change it with edit_file', async () => {
+    const long = Array.from({ length: 450 }, (_, i) => `const line${i} = ${i};`).join('\n');
+    useVFSStore.getState().createFile('lib/long.js', long);
+    const seen: SuppliedFiles = new Map();
+    const ctx = { seen, env: nodeEnvironment, blueprint: null, newTransactionId: () => crypto.randomUUID() };
+    await executeTool({ id: 'r1', name: 'read_file', input: { path: 'lib/long.js' } }, ctx);
+    await executeTool({ id: 'r2', name: 'read_file', input: { path: 'lib/long.js', start_line: 401 } }, ctx);
+    const write = await executeTool({ id: 'w', name: 'write_file', input: { path: 'lib/long.js', content: 'const short = 1;' } }, ctx);
+    expect(write.isError).toBe(true);
+    expect(write.content).not.toContain('read it whole first');
+    expect(write.content).toMatch(/too long to be read whole.*edit_file/);
+    expect(text('lib/long.js')).toBe(long);
+  });
 
   it('designs a local collection and a hosted table as separate undoable changes', async () => {
     const seen: SuppliedFiles = new Map();
@@ -333,6 +352,13 @@ describe('the changeset rules, as tool errors', () => {
     expect(useVFSStore.getState().revertTransaction(hosted.transactionId!).ok).toBe(true);
     expect(useVFSStore.getState().files.has(server.entry)).toBe(false);
     expect(text('manifest.json')).toBe(beforeHosted);
+    // What design_database wrote into the manifest was not shown to the model: the manifest
+    // it read before is not the whole of this one, and is read again before it is replaced.
+    await call('read_file', { path: 'manifest.json' });
+    expect((await call('design_database', { ...local, name: 'tags' })).changed).toBe(true);
+    const replaced = await call('write_file', { path: 'manifest.json', content: manifest });
+    expect(replaced.isError).toBe(true);
+    expect(replaced.content).toContain('You have read only part of manifest.json');
     expect(useVFSStore.getState().files.has('xdb/notes.xdb')).toBe(true);
   });
 
@@ -1110,6 +1136,33 @@ describe('undo and revert', () => {
     expect(revertAgentRun(message.id)).toEqual({ ok: true, paths: ['ui/two.ui'] });
     expect(useVFSStore.getState().files.has('ui/two.ui')).toBe(false);
   });
+
+  // The same, for a run waiting on a question: Revert run is offered there too, and answering
+  // carried the run on as though its files were still there, marked reverted over the steps it
+  // took after the answer, which then had no Undo and no Revert run.
+  it('after Revert run and an answer, tells the model its files were put back, and what it does next can be undone', async () => {
+    fakeProvider('anthropic', [
+      { calls: [{ name: 'write_file', input: { path: 'ui/one.ui', content: '<App><Text>1</Text></App>' } }, { name: 'ask_user', input: { question: 'Two pages or one?' } }] },
+      (body) => {
+        expect(resultsIn(body)).toContain('The person answered: Two');
+        expect(resultsIn(body)).toContain('reverted this run');
+        return { calls: [{ name: 'write_file', input: { path: 'ui/two.ui', content: '<App><Text>2</Text></App>' } }] };
+      },
+      { calls: [{ name: 'finish', input: { summary: 'Wrote it again.' } }] },
+    ]);
+    say('Go');
+    await startAgentRun();
+    let { run, message } = lastRun();
+    expect(run.status).toBe('waiting');
+    expect(revertAgentRun(message.id).ok).toBe(true);
+    expect(useVFSStore.getState().files.has('ui/one.ui')).toBe(false);
+    await answerAgentQuestion(run.id, 'Two');
+    ({ run, message } = lastRun());
+    expect(run.status).toBe('finished');
+    expect(run.reverted).toBeFalsy();
+    expect(runRevertState(run).available).toBe(true);
+    expect(revertAgentRun(message.id)).toEqual({ ok: true, paths: ['ui/two.ui'] });
+  });
 });
 
 describe('protocol fallback', () => {
@@ -1532,5 +1585,53 @@ describe('the text protocol parser', () => {
     const thinkOnly = parseTextToolCalls('<think>Just planning...</think>');
     expect(thinkOnly.text).toBe('');
     expect(thinkOnly.calls).toEqual([]);
+  });
+});
+
+describe('a server that gives every tool call the same id', () => {
+  // Each step's row, its result and its Undo are found by the call's id. Given "0" for every
+  // call, the second step's row was written over the first's, and Undo on the first row put
+  // back the second step's change, leaving the first with no Undo at all.
+  it.each([['openai', OPENAI], ['anthropic', undefined]] as const)('keeps each %s step its own, to show and to undo', async (shape, provider) => {
+    resetAgent(provider);
+    seedApp();
+    fakeProvider(shape, [
+      { calls: [{ name: 'write_file', input: { path: 'ui/one.ui', content: '<App><Text>1</Text></App>' } }], sameCallId: '0' },
+      (body) => {
+        // What answers each call is paired with that call, and only with it.
+        const sent = JSON.stringify(body.messages);
+        expect(sent).toContain('Created ui/one.ui');
+        return { calls: [{ name: 'write_file', input: { path: 'ui/two.ui', content: '<App><Text>2</Text></App>' } }], sameCallId: '0' };
+      },
+      { calls: [{ name: 'finish', input: { summary: 'Two pages.' } }], sameCallId: '0' },
+    ]);
+    say('Two pages');
+    await startAgentRun();
+    const { run, message } = lastRun();
+    expect(run.status).toBe('finished');
+    const writes = toolEntries().filter((e) => e.name === 'write_file');
+    expect(writes.map((e) => e.subject)).toEqual(['ui/one.ui', 'ui/two.ui']);
+    expect(new Set(writes.map((e) => e.id)).size).toBe(2);
+    expect(new Set(writes.map((e) => e.transactionId)).size).toBe(2);
+    expect(undoAgentStep(run.id, message.id, writes[0].id).ok).toBe(true);
+    expect(useVFSStore.getState().files.has('ui/one.ui')).toBe(false);
+    expect(useVFSStore.getState().files.has('ui/two.ui')).toBe(true);
+  });
+});
+
+describe('a run stopped while it waits on the person', () => {
+  // Stop answered the question's call as not run, and its row went on saying "Asking…" with a
+  // spinner on a stopped run, and was saved so.
+  it('does not leave the question’s row working', async () => {
+    resetAgent();
+    seedApp();
+    fakeProvider('anthropic', [{ calls: [{ name: 'ask_user', input: { question: 'Two pages or one?' } }] }]);
+    say('Go');
+    await startAgentRun();
+    expect(lastRun().run.status).toBe('waiting');
+    stopAgentRun();
+    expect(lastRun().run.status).toBe('stopped');
+    const row = toolEntries().find((e) => e.name === 'ask_user');
+    expect(row?.status).not.toBe('running');
   });
 });

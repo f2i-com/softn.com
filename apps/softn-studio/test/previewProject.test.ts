@@ -349,3 +349,25 @@ describe('a link in the preview', () => {
     }
   });
 });
+
+// What the composer makes of a page is kept for the files it was made from, so the logic check
+// does not compose the whole app again for every page the app imports. A file replaced is a new
+// set of files, in the same map too.
+describe('composing the pages of one set of files', () => {
+  it('gives each page the app around it, and composes afresh once a file is replaced', () => {
+    const files = project([
+      { path: 'manifest.json', content: JSON.stringify({ name: 'Shell', version: '1.0.0', main: 'ui/main.ui' }) },
+      { path: 'ui/main.ui', content: '<import Home from="./home.ui" />\n<import About from="./about.ui" />\n<logic>\nlet title = "One"\n</logic>\n<App><Home /><About /></App>' },
+      { path: 'ui/home.ui', content: '<Text>{title} home</Text>' },
+      { path: 'ui/about.ui', content: '<Text>{title} about</Text>' },
+    ]);
+    for (const page of ['ui/home.ui', 'ui/about.ui']) {
+      const composed = composePreviewProject(files, page);
+      expect(composed.ok && composed.composition.source).toContain('let title = "One"');
+    }
+    files.set('ui/main.ui', { ...files.get('ui/main.ui')!, content: files.get('ui/main.ui')!.content.toString().replace('"One"', '"Two"') });
+    const again = composePreviewProject(files, 'ui/about.ui');
+    expect(again.ok && again.composition.source).toContain('let title = "Two"');
+    expect(again.ok && again.composition.source).not.toContain('"One"');
+  });
+});

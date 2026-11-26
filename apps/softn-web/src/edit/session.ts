@@ -27,6 +27,7 @@
 
 import { classifyAsset, composePage, createLiveApp, isUnsafeEntryName, readManifest, type AppUpdateResult, type LiveApp } from '@softn/core';
 import { extractPermissions, processBundle, readZip, requestedCapabilities } from '@softn/runtime-shell/bundleProcessor';
+import { unwrapContainerZipEntries } from '@softn/runtime-shell/containerBundle';
 import { declarationKey, grantRecord } from '@softn/runtime-shell/consent';
 import { cacheApp, copyAppData, forgetSyncNotes, getCachedApps, recordPermissionGrant, renameCachedApp } from '../lib/appCache';
 import { planOpenAppUpdate, updateOpenApp, type OpenAppUpdate, type RevisedTabFields } from '../lib/liveUpdate';
@@ -418,7 +419,11 @@ export class EditSession {
     const tab = host.tab(tabId);
     if (!tab?.appId || !tab.bundleData || !tab.textFiles) return null;
     const session = new EditSession(host, tabId, options);
-    const zip = readZip(tab.bundleData);
+    // Named as the open named them (lib/openBundle.ts): a bundle zipped as its
+    // folder is opened as the folder's contents. Read with the folder's name
+    // on each, every file was a change before anything was typed.
+    const archive = readZip(tab.bundleData);
+    const zip = unwrapContainerZipEntries(archive.textFiles, archive.binaryFiles);
     // Each text file is read by name. One that is damaged where it lies in
     // the bundle fails the read that asks for it and no other: the app runs
     // without ever asking, and the editor lists it by name, unopened.
