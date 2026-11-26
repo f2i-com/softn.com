@@ -6,6 +6,16 @@ notes, above the downloads table; it refuses to package a tag that has no
 section here. Write the section before tagging. Headings are the tag
 (`## v1.2.3`); anything after the tag on the heading line is ignored.
 
+## v0.0.53
+
+- Upgrades the browser engines, FormLogic runtime package, vendored model stack, Android runtime, and Rust/WASI backend runners to **ZIPP v0.0.42** (`5ccb7a96`), ZIPP's audit release: applications run 2–22% faster than under v0.0.41.
+- Adds **frames and nested apps** to the web container: an app can show another SoftN app it carries, and frames of the sites the person allows, such as a YouTube video, with focus, sizing and FormLogic nesting handled.
+- Fixes several hundred bugs found in four audit rounds across `@softn/core` (parser, renderer, xdb, server and peer sync, the script runtime and its VM boundary), `@softn/components`, **SoftN Container v2** (backends, DOM patcher, ESM linker, built-in React runtime, Web APIs, canvas, WebGL and three.js), Studio, Builder, the web app, the site, softn-api, the Rust, PHP and FormLogic hosts, the desktop loader and `softn-xdb`, the runner and Android. Among them: deleted records coming back and newer edits lost in sync, desktop deletes that kept the data, container backends failing from their 33rd request, non-ASCII text corrupted on its way to PHP, and `.htaccess` rules read alike by all three readers.
+- Hardens the core and container sandboxes, the hosts (softn-api folder takeover, sync room bounds, late worker replies) and the release checks.
+- Makes editing and large data faster: a keystroke in a 300-row app goes from 13.6 to 3.7 ms, the Studio project check from 27.4 s to 0.74 s on 115 pages, Builder opens pages 2.1× faster, DataGrid redraws a sorted 10,000-row table in 6 ms instead of 63, and worst-case parser and highlighter inputs take milliseconds instead of minutes.
+- Shrinks the downloads: the FormLogic runtime archive stores a file that several of its trees carry byte for byte once (`softn-release.json` formatVersion 2 with `copies`, which FormLogic's installer reads from FormLogic commit `433779ed` on), about 27% smaller; each runner drops a wasmtime address map it never read (about 1 MB); the site's apps share one React, sync and QR scanner chunk.
+- Improves Studio's agent with XML and think-block tool calls and empty replies.
+
 ## v0.0.52
 
 - Upgrades the browser engines, FormLogic runtime package, vendored model stack, Android runtime, and Rust/WASI backend runners to **ZIPP v0.0.41** (`ed5be457`) and **XDB SQLite 3 WASM v0.1.2**.

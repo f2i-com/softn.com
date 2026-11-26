@@ -10,7 +10,7 @@
 
 SoftN packages an entire web application — **any frontend** (**HTML/JS**, **React**, **Vue**, or visual **`.ui`**), an optional **sandboxed backend** (**PHP 8**, **JavaScript/TypeScript**, **Rust**, or **Python**), a **SQLite 3** or local **XDB** database, and explicit permission rules — into one portable `.softn` file.
 
-Open it in the browser and the whole stack runs **completely locally inside WebAssembly Workers** powered by [ZIPP](https://github.com/f2i-com/zipp.org) (`v0.0.41`) and **XDB SQLite 3 WASM** (`v0.1.2`) — no server, no Docker, no install. When you are ready to share it with a team, deploy the **exact same `.softn` file** multi-user on **FormLogic**, `softn-server`, or PHP hosting inside ZIPP `safe-sandbox` with **zero app code changes**.
+Open it in the browser and the whole stack runs **completely locally inside WebAssembly Workers** powered by [ZIPP](https://github.com/f2i-com/zipp.org) (`v0.0.42`) and **XDB SQLite 3 WASM** (`v0.1.2`) — no server, no Docker, no install. When you are ready to share it with a team, deploy the **exact same `.softn` file** multi-user on **FormLogic**, `softn-server`, or PHP hosting inside ZIPP `safe-sandbox` with **zero app code changes**.
 
 ---
 
@@ -92,7 +92,7 @@ When sharing a ZIP of a progressive web app, use `manifest.webmanifest` for its 
 | **Full-Stack Web Containers (v2)** | Package standard HTML5, CSS, and ES modules (`.js` / `.ts` / `.py`) — or zip a Vite React/Vue `dist/` build — together with an optional sandboxed HTTP backend (**PHP 8 / Slim 4**, **JS/TS**, **Rust/Axum**, or **Python**) and **SQLite 3** database in one `.softn` file. |
 | **Any Frontend × Any Backend** | Pair **React**, **Vue**, **HTML/JS**, or classic **`.ui`** pages with **Local XDB collections**, **FormLogic hosted tables & API**, or a **sandboxed PHP/JS/TS/Rust/Python + SQLite** backend. |
 | **Sandboxed Local & Multi-User** | Every `fetch("/api/...")` runs locally in a ZIPP WebAssembly Worker with IndexedDB SQLite — or scales multi-user on **FormLogic**, `softn-server`, or `softn-host-php`, strictly inside **ZIPP `safe-sandbox`** (never native OS PHP/Python/shell). |
-| **Pay-as-you-go WASM Engines** | Boots on `zipp-javascript-lite.wasm` (~798 KB Brotli) by default and lazily loads `zipp-javascript`, `zipp-typescript`, `zipp-python-base`, `zipp-php`, `zipp-rust` (`ZIPP v0.0.41`), and `xdb-wasm` (`v0.1.2`) only when an app requires them. |
+| **Pay-as-you-go WASM Engines** | Boots on `zipp-javascript-lite.wasm` (~791 KB Brotli) by default and lazily loads `zipp-javascript`, `zipp-typescript`, `zipp-python-base`, `zipp-php`, `zipp-rust` (`ZIPP v0.0.42`), and `xdb-wasm` (`v0.1.2`) only when an app requires them. |
 | **Fast Native V8 Three.js & 3D** | Import `'three'` directly or bundle Three.js in your Vite build — SoftN automatically offloads Three.js and WebGL2 onto native host V8 + GPU (`THREE.loadGLTF` + `MeshoptDecoder`), plus zero-bundle `'preact'`, `'htm'`, `'marked'`, `<softn-chart>`, and `<softn-datagrid>`. |
 | **Studio & Builder + SQLite IDE** | Visual & code editing for both v2 full-stack containers and classic `.ui` apps, with a shared **mini-phpMyAdmin SQLite 3 Explorer** (tables, columns, indexes, CRUD, SQL console, `.sql`/`.db` export, bundle sync), PHP/backend script editing, and automatic session restore. |
 | **AI Studio with SQLite Tools** | Turn a brief into a full-stack app using OpenAI, Anthropic, Ollama, LM Studio, or custom models — verified headlessly inside the ZIPP sandbox, with direct AI tools to inspect and edit SQLite schemas and data. |
@@ -666,7 +666,7 @@ Source Code -> Lexer -> Parser -> Compiler -> Bytecode -> Register-based VM (Rus
 
 The compiled engine is not committed: `packages/@softn/core/wasm-zipp/` is installed from a ZIPP
 release, already built, so building SoftN needs no Rust toolchain. The browser engine is taken
-from the official `javascript-python-base` module. SoftN v0.0.52 uses ZIPP v0.0.41.
+from the official `javascript-python-base` module. SoftN v0.0.53 uses ZIPP v0.0.42.
 Web starters download the lite JavaScript engine (779 kB with Brotli). Apps that need
 the full JavaScript and experimental Python module download 6.58 MB (1.65 MB with Brotli).
 Since ZIPP 0.0.26 each engine module carries its own JavaScript bindings in a `zipp.glue` section, which the install

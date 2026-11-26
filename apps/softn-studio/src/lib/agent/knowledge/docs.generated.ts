@@ -540,7 +540,7 @@ export const DOC_PAGES: DocPage[] = [
    {
     "id": "version",
     "title": "The engine SoftN ships",
-    "text": "SoftN v0.0.52 ships ZIPP v0.0.41. Its full `javascript-python-base` engine contains JavaScript and Python in one WebAssembly module (6.58 MB, about 1.65 MB with Brotli) loaded on demand, while web starters run on ZIPP Lite (~798 kB with Brotli). ZIPP’s verified torch package is installed beside it and loaded only for apps that declare torch. Neither is committed to the repository. `npm run fetch:zipp`, and the build and test scripts when it is missing, install the release named by the `zipp-vm` tag in `apps/softn-host-rust/Cargo.toml`, check it against that release’s SHA256SUMS and record its provenance in SOURCE.json.\n\nRebuilding the engine is a separate maintenance task with its own Rust and WebAssembly tooling; ordinary SoftN development never needs it."
+    "text": "SoftN v0.0.53 ships ZIPP v0.0.42. Its full `javascript-python-base` engine contains JavaScript and Python in one WebAssembly module (7.74 MB, about 1.86 MB with Brotli) loaded on demand, while web starters run on ZIPP Lite (~791 kB with Brotli). ZIPP’s verified torch package is installed beside it and loaded only for apps that declare torch. Neither is committed to the repository. `npm run fetch:zipp`, and the build and test scripts when it is missing, install the release named by the `zipp-vm` tag in `apps/softn-host-rust/Cargo.toml`, check it against that release’s SHA256SUMS and record its provenance in SOURCE.json.\n\nRebuilding the engine is a separate maintenance task with its own Rust and WebAssembly tooling; ordinary SoftN development never needs it."
    },
    {
     "id": "server",

@@ -169,7 +169,7 @@ dependencies = [
 
 [[package]]
 name = "softn-runner-guest"
-version = "0.0.52"
+version = "0.0.53"
 dependencies = [
  "ryu",
  "serde",
@@ -196,8 +196,8 @@ checksum = "a2c754d6c33795a1c324727428e5a7dedb5b06195f9890bdbcba760d3e246563"
 
 [[package]]
 name = "zipp-numparse"
-version = "0.0.41"
-source = "git+https://github.com/f2i-com/zipp.org?tag=v0.0.41#ed5be457e1d1495b746e98515079aa3c96268825"
+version = "0.0.42"
+source = "git+https://github.com/f2i-com/zipp.org?tag=v0.0.42#5ccb7a968dc77f816af95db126031203cc6c7be1"
 dependencies = [
  "num-bigint",
  "num-traits",
@@ -206,7 +206,7 @@ dependencies = [
 [[package]]
 name = "zipp-regress"
 version = "0.11.1"
-source = "git+https://github.com/f2i-com/zipp.org?tag=v0.0.41#ed5be457e1d1495b746e98515079aa3c96268825"
+source = "git+https://github.com/f2i-com/zipp.org?tag=v0.0.42#5ccb7a968dc77f816af95db126031203cc6c7be1"
 dependencies = [
  "hashbrown",
  "memchr",
@@ -214,8 +214,8 @@ dependencies = [
 
 [[package]]
 name = "zipp-vm"
-version = "0.0.41"
-source = "git+https://github.com/f2i-com/zipp.org?tag=v0.0.41#ed5be457e1d1495b746e98515079aa3c96268825"
+version = "0.0.42"
+source = "git+https://github.com/f2i-com/zipp.org?tag=v0.0.42#5ccb7a968dc77f816af95db126031203cc6c7be1"
 dependencies = [
  "memchr",
  "num-bigint",
