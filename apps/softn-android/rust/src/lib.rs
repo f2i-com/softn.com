@@ -12,6 +12,10 @@ pub mod sql;
 pub mod jni_bridge;
 #[cfg(target_os = "android")]
 mod webgl;
+// What webgl.rs checks a draw by, built on every target so that the host's
+// tests run it (webgl.rs itself needs Android and a GL context).
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+mod webgl_draw;
 
 #[cfg(test)]
 mod tests {

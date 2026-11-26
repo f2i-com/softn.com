@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { carryAppSync, forgetAppSync } from '../src/runtime/sync-app-state';
 import { legacySharedFlagKey, roomCollectionsKey, sharedRoomFlagKey } from '../src/runtime/sync-room-security';
 import { getSyncRoomKey, persistenceNameFor } from '../src/runtime/xdb-sync-key';
+import { keptRoomCaches, noteRoomCache, roomCachesKey } from '../src/runtime/sync-room-caches';
 
 const APP = 'sha256-app-going';
 const OTHER = 'sha256-app-staying';
@@ -140,6 +141,22 @@ describe('forgetAppSync', () => {
     expect(idb.has(persistenceNameFor(OTHER, 'lobby'))).toBe(true);
   });
 
+  it("removes the app's list of room caches, and the cache of a room it stopped where databases cannot be listed", async () => {
+    seedKeys();
+    // A room the app left: stopSync forgot its keys, and its cache is on the list alone.
+    noteRoomCache(APP, 'stopped-long-ago');
+    noteRoomCache(OTHER, 'stopped-long-ago');
+    const idb = fakeIndexedDB([persistenceNameFor(APP, 'stopped-long-ago'), persistenceNameFor(OTHER, 'stopped-long-ago')], { listable: false });
+    vi.stubGlobal('indexedDB', idb);
+
+    await forgetAppSync(APP);
+
+    expect(idb.has(persistenceNameFor(APP, 'stopped-long-ago'))).toBe(false);
+    expect(localStorage.getItem(roomCachesKey(APP))).toBeNull();
+    expect(idb.has(persistenceNameFor(OTHER, 'stopped-long-ago'))).toBe(true);
+    expect(keptRoomCaches(OTHER)).toEqual(['stopped-long-ago']);
+  });
+
   it('does not wait on a cache whose connection is still open', async () => {
     localStorage.setItem(getSyncRoomKey(APP), 'lobby');
     const idb = fakeIndexedDB([persistenceNameFor(APP, 'lobby')], { blocked: [persistenceNameFor(APP, 'lobby')] });
@@ -158,5 +175,81 @@ describe('forgetAppSync', () => {
     expect(localStorage.getItem(getSyncRoomKey(APP))).toBeNull();
     expect(localStorage.getItem(sharedRoomFlagKey(APP, 'lobby'))).toBeNull();
     expect(localStorage.getItem(sharedRoomFlagKey(OTHER, 'lobby'))).toBe('true');
+  });
+});
+
+describe('forgetAppSync, for an app whose identity begins another’s', () => {
+  // A cache is `xdb-sync:<app>:<room>` and a mark `xdb-sync-shared:<app>:<room>`, and an identity
+  // can hold a colon: a page's in the single shell is `page:<path>:<id>`, and the web host keeps
+  // what it cached before identities were digests under the manifest's name. So what follows
+  // `Notes:` may be a room of Notes's (`team:red`) or the rest of another app's identity and its
+  // room (`Notes:Pro`, `club`), and removing Notes took Notes:Pro's caches and marks, found by
+  // what their names begin with.
+  const SHORT = 'Notes';
+  const LONG = 'Notes:Pro';
+
+  function seedBoth() {
+    // Notes:Pro is in its room `club`.
+    localStorage.setItem(getSyncRoomKey(LONG), 'club');
+    localStorage.setItem(sharedRoomFlagKey(LONG, 'club'), 'true');
+    localStorage.setItem(roomCollectionsKey(LONG, 'club'), '["scores"]');
+    noteRoomCache(LONG, 'club');
+    // Notes is in `lobby`, has been in a room whose own name has a colon, and kept, from a build
+    // before the list of caches, a cache and a mark of a room it stopped long ago, and of one named `Pro:archive`.
+    localStorage.setItem(getSyncRoomKey(SHORT), 'lobby');
+    localStorage.setItem(sharedRoomFlagKey(SHORT, 'lobby'), 'true');
+    noteRoomCache(SHORT, 'lobby');
+    noteRoomCache(SHORT, 'team:red');
+    localStorage.setItem(roomCollectionsKey(SHORT, 'team:red'), '["moves"]');
+    localStorage.setItem(sharedRoomFlagKey(SHORT, 'old'), 'true');
+    localStorage.setItem(sharedRoomFlagKey(SHORT, 'Pro:archive'), 'true');
+    return fakeIndexedDB([
+      persistenceNameFor(LONG, 'club'),
+      persistenceNameFor(SHORT, 'lobby'),
+      persistenceNameFor(SHORT, 'team:red'),
+      persistenceNameFor(SHORT, 'old'),
+      persistenceNameFor(SHORT, 'Pro:archive'),
+    ]);
+  }
+
+  it('removes what is the app’s and leaves what the other app kept', async () => {
+    const idb = seedBoth();
+    vi.stubGlobal('indexedDB', idb);
+
+    await forgetAppSync(SHORT);
+
+    // Its own: the rooms on its list, a colon in a name or not, and the old room no other identity could have.
+    expect(idb.deleted.sort()).toEqual([persistenceNameFor(SHORT, 'lobby'), persistenceNameFor(SHORT, 'old'), persistenceNameFor(SHORT, 'team:red')].sort());
+    expect(localStorage.getItem(getSyncRoomKey(SHORT))).toBeNull();
+    expect(localStorage.getItem(sharedRoomFlagKey(SHORT, 'lobby'))).toBeNull();
+    expect(localStorage.getItem(roomCollectionsKey(SHORT, 'team:red'))).toBeNull();
+    expect(localStorage.getItem(sharedRoomFlagKey(SHORT, 'old'))).toBeNull();
+    expect(keptRoomCaches(SHORT)).toEqual([]);
+    // Notes:Pro's, all of it.
+    expect(idb.has(persistenceNameFor(LONG, 'club'))).toBe(true);
+    expect(localStorage.getItem(getSyncRoomKey(LONG))).toBe('club');
+    expect(localStorage.getItem(sharedRoomFlagKey(LONG, 'club'))).toBe('true');
+    expect(localStorage.getItem(roomCollectionsKey(LONG, 'club'))).toBe('["scores"]');
+    expect(keptRoomCaches(LONG)).toEqual(['club']);
+    // An old room of its own named `Pro:archive` cannot be told from a room `archive` of Notes:Pro's, and is left.
+    expect(idb.has(persistenceNameFor(SHORT, 'Pro:archive'))).toBe(true);
+    expect(localStorage.getItem(sharedRoomFlagKey(SHORT, 'Pro:archive'))).toBe('true');
+  });
+
+  it('and removing the other app leaves the first one’s', async () => {
+    const idb = seedBoth();
+    vi.stubGlobal('indexedDB', idb);
+
+    await forgetAppSync(LONG);
+
+    expect(idb.deleted).toEqual([persistenceNameFor(LONG, 'club')]);
+    expect(localStorage.getItem(getSyncRoomKey(LONG))).toBeNull();
+    expect(localStorage.getItem(sharedRoomFlagKey(LONG, 'club'))).toBeNull();
+    expect(localStorage.getItem(roomCollectionsKey(LONG, 'club'))).toBeNull();
+    expect(keptRoomCaches(LONG)).toEqual([]);
+    // `Pro:archive` is Notes's here, though its name begins with Notes:Pro's.
+    for (const room of ['lobby', 'team:red', 'old', 'Pro:archive']) expect(idb.has(persistenceNameFor(SHORT, room)), room).toBe(true);
+    expect(localStorage.getItem(sharedRoomFlagKey(SHORT, 'Pro:archive'))).toBe('true');
+    expect(keptRoomCaches(SHORT)).toEqual(['lobby', 'team:red']);
   });
 });

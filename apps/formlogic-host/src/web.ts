@@ -4,14 +4,14 @@ import { containerRuntimeUrl } from '@softn/runtime-shell/containerHost';
 import type { Capability } from '@softn/bundle-format/capabilities';
 import { createBackendQueue, BACKEND_UNREADABLE } from './backendQueue';
 import {
+  buildContainerSource,
   createPortBackendTransport,
+  FRAME_EMBEDS,
+  frameBackendCall,
   grantedContainerCapabilities,
   isContainerBundle,
-  isSafeClientPath,
-  isSafeLocalContainerPath,
   type ContainerBackendTransport,
 } from './containerBridge';
-import { bytesOf } from './media';
 import { normalizeHost, outsideAddress } from './links';
 import { readPlace, writePlace } from './place';
 import { grantedPermissions } from './permissions';
@@ -101,19 +101,11 @@ window.addEventListener('message', async event => {
       ? manifestRunsInContainer(parsedManifest) || isContainerBundle(parsedManifest, clientEntries)
       : isContainerBundle(null, clientEntries);
     if (!runsInContainer) throw new Error('This project requires the classic SoftN renderer.');
-    const allowLocalBackend = data.containerBackend !== 'host';
-    const allowPath = allowLocalBackend
-      ? isSafeLocalContainerPath
-      : (path: string) => isSafeClientPath(path, parsedManifest);
-    const source: Record<string, string | Uint8Array> = Object.create(null);
-    for (const [path, content] of clientEntries.entries()) {
-      if (allowPath(path)) source[path] = content;
-    }
-    for (const [path, content] of Object.entries(data.assets ?? {})) {
-      if (!allowPath(path)) continue;
-      const bytes = bytesOf(content);
-      if (bytes) source[path] = bytes;
-    }
+    // Every file under its own path: the media and the archives the app's page nests among them.
+    const source = buildContainerSource(clientEntries, data.assets, {
+      allowLocalBackend: data.containerBackend !== 'host',
+      manifest: parsedManifest,
+    });
     const lane = data.storageLane === true ? saves : calls;
     store = installAppStorage(data.storage ?? {}, (input, lifecycle) => lane.call('nativeStorage', input, lifecycle),
       { acknowledged: data.storageProtocol === STORAGE_PROTOCOL, limits: storageLimits(data.storageLimits) });
@@ -174,11 +166,8 @@ window.addEventListener('message', async event => {
         : null;
     container = await mountSoftNContainer(target, {
       source, appId: data.appId, runtimeUrl, storage: store.storage,
-      // No frames of other sites here: this document's policy names no `frame-src`
-      // (framePolicy.ts), and it runs in the parent's sandbox with no origin of its own, which
-      // a frame in it would inherit (a video player keeps nothing there and does not play).
-      // An app of the app's own (`<softn-app>`) needs neither, and is nested as anywhere.
-      frames: 'deny',
+      // No frames of other sites here, and the app's own nested apps as anywhere (containerBridge.ts).
+      ...FRAME_EMBEDS,
       ...(hostBackend ? { backendTransport: hostBackend } : {}),
       initialPage: validPlaceFile ?? undefined,
       ...(initialPlace?.section && (initialPlace.file === null || validPlaceFile !== null)
@@ -204,49 +193,8 @@ window.addEventListener('message', async event => {
       hostThree: () => import('three'), permissionMode: 'deny', permissionsOverride: permissions,
       initialGrantedCapabilities: grantedCaps, downloads: allowFiles ? 'ask' : 'deny',
       theme: data.dark === true ? 'dark' : 'light',
-      backendCall: (action, input) => {
-        if (action === 'formlogicUpload') {
-          if (!input || typeof input !== 'object' || Array.isArray(input)) {
-            return Promise.resolve({ error: 'Invalid upload request.' });
-          }
-          const op = input.op === undefined ? 'upload' : input.op;
-          if (op !== 'upload' && op !== 'list' && op !== 'delete') {
-            return Promise.resolve({ error: 'Unsupported upload operation.' });
-          }
-          if (op === 'delete') {
-            if (typeof input.id !== 'string' || !/^[a-zA-Z0-9_-]{4,64}$/.test(input.id.trim())) {
-              return Promise.resolve({ error: 'Invalid upload id.' });
-            }
-          } else if (op === 'upload') {
-            if (
-              typeof input.contentBase64 !== 'string' ||
-              input.contentBase64.length === 0 ||
-              input.contentBase64.length > 34 * 1024 * 1024 ||
-              (input.filename !== undefined && typeof input.filename !== 'string') ||
-              (input.mimeType !== undefined && typeof input.mimeType !== 'string') ||
-              (input.folder !== undefined && typeof input.folder !== 'string')
-            ) {
-              return Promise.resolve({ error: 'Invalid upload payload.' });
-            }
-          } else if (input.folder !== undefined && typeof input.folder !== 'string') {
-            return Promise.resolve({ error: 'Invalid upload folder.' });
-          }
-          return calls.call('formlogicUpload', input);
-        }
-        const pathOnly = typeof input.url === 'string' ? input.url.split('?')[0] : '';
-        if (
-          action !== 'nativeRequest' ||
-          typeof input.url !== 'string' ||
-          input.url.length > 2048 ||
-          /[\r\n\0]/.test(input.url) ||
-          !/^\/api\/[A-Za-z0-9_.%~/-]+(?:\?[^#]*)?$/.test(input.url) ||
-          /(?:^|\/)\.\.(?:\/|$)/.test(pathOnly) ||
-          /%(?:2e|2f|5c|00|25)/i.test(pathOnly)
-        ) {
-          return Promise.resolve({ error: 'Use an app-relative API route under /api/.' });
-        }
-        return calls.call('nativeRequest', input);
-      },
+      // Uploads, the app's own routes and FormLogic's page calls (wallet, listening, offers).
+      backendCall: frameBackendCall((action, input) => calls.call(action, input)),
       onConsole: (level, text) => {
         const safeText = String(text).slice(0, 1200);
         try {

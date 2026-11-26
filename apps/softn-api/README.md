@@ -47,6 +47,7 @@ data/
   categories.json        category definitions & visitor suggestions
   ratelimits/            expiring visitor action windows, in 256 small files
   cache/bundles.json     disposable bundle inspection cache
+  page-cache/            disposable rendered pages of each app's current version; see Concurrency and cache
   catalog.lock           stable process lock; never delete it while serving
   storage.lock           held by requests working in an app's storage; see Concurrency
   config.json            private site configuration and keys
@@ -55,14 +56,18 @@ data/
 ### Drag-and-drop ingestion, dynamic updates & `category.json`
 
 - **Drag & drop a `.softn` file** straight into `data/apps/`, `data/apps/<category>/`, or `data/apps/<category>/<subcategory>/`. On the next API request (or immediately via the live dev watcher in `npm run dev` / `node scripts/demos/manage-data.mjs watch`):
-  - The bundle is validated and moved into `<slug>/v1.softn` (or bumped to `v2.softn`, `v3.softn`, … when dropping a newer version of an existing app, keeping full version history and deduplicating identical SHA-256 drops).
+  - The bundle is validated and moved into `<slug>/v1.softn` (or bumped to `v2.softn`, `v3.softn`, … when dropping a newer version of an existing app, keeping full version history and deduplicating identical SHA-256 drops). A newer version takes the next number that is free both in the app's record and in its folder, so it is never written over a file already there: a `v3.softn` the scan could not read (still being copied in, say) stays as it is, and so does any file whose name gives that number (`my-app-v3.softn`), and the drop becomes `v4.softn`.
   - Its icon is extracted automatically from `manifest.icon` (or standard fallbacks `icon.svg`, `icon.png`, `icon.webp`, `assets/icon.*`, `favicon.*`, subject to `Bundle::safeSvg` for SVG).
   - `app.json` is created automatically if missing.
+  - A new app's folder is always made new. A file whose name is not free where it is dropped is filed under the next free one, as an app published under that name is: `arcade.softn` dropped into `games/`, beside the subcategory folder `games/arcade/`, becomes `games/arcade-2/` (the PHP error log says so), and the subcategory and the apps in it are untouched. The same goes for a name kept for one of the category's subcategories that has no folder yet, for `backend-cache` and `backend-data`, and, in the flat layout, for a category folder's name. Drop its later versions under its own name, as `arcade-2.softn` (see the next point), or put them into the app's own folder as `v2.softn`, `v3.softn`, …: a second `arcade.softn` in `games/` would be another new app.
+  - A dropped file names an existing app by its whole name first, and only then is a number at the end of the name read as a version label, one label at a time from the end, and then the bundle's own name is tried: `duck-dash-v2.softn` and `duck-dash-2.softn` are new versions of `duck-dash` while there is no app called `duck-dash-v2` or `duck-dash-2`. So a new version of an app whose slug ends in a number (`arcade-2`, `kite-2`) is dropped as `arcade-2.softn`, or with a label after its whole name, `arcade-2-v3.softn`. Where both `kite` and `kite-2` are apps, `kite-2.softn` is a version of `kite-2`; drop one of `kite` as `kite.softn` or `kite-v3.softn`. The same reading tells an app folder made by hand (`games/lantern-2/lantern-2.softn`, nothing else in it) from a subcategory folder.
+  - A file dropped for an app whose folder was skipped (see Resilience) is left where it is, with a line in the error log on each request, and is taken in as that app's next version once the folder is repaired.
   - If no `thumb.*` image exists and `autoThumbnail: true` (or `SOFTN_AUTO_THUMB=1`, enabled automatically in `npm run dev`) is active, SoftN boots the app in headless Chromium/Edge via `scripts/demos/auto-thumb.mjs` and saves a `1280×800` `thumb.webp` beside the bundle.
 - **Categories & subcategories live on disk**:
   - Main categories (`games`, `business`, `simulations`, `tools`, `creative`, `productivity`, `education`, `ai`, `experiments`, `demos`, `other`, or any custom folder) can contain both direct app folders and subcategory subfolders (`games/3d`, `games/arcade`, `games/strategy`, `games/story`, `games/retro`, `business/hospitality`, etc.).
   - Every category and subcategory folder gets an automatic `category.json` that stores its full display `name` (independent of the folder slug, e.g. folder `3d` -> `"name": "3D & First-Person"`), `description`, `emoji`, `sort`, `status`, and a dynamically maintained `cache` (`appCount`, `directAppCount`, `subcategories`, `apps`). Custom edits to `name`, `emoji`, `description`, or `sort` in `category.json` are preserved while `cache` stays automatically up to date.
   - Moving an app folder to another category or subcategory folder on disk automatically updates its `app.json` (`category` / `subcategory`) and recalculates both `category.json` caches.
+  - The folder is what says an app's category, so `PATCH /api/apps/{slug}` with a new `category` or `subcategory` moves the folder first and writes `app.json` after. When the folder cannot go there (a folder of the app's name is already there, the name is kept for one of that category's subcategories, or the move itself fails) the answer is `409` with the reason, and nothing the request sent is changed. The demo sync files a seeded demo the same way: when the demo's folder cannot go where `demos/index.json` now files it, the demo stays filed where its folder is (the rest of its update is still made), the PHP error log says why, and the next sync tries again.
   - Selecting a main category (`GET /api/apps?category=games`) returns all apps in that category **and** all of its subcategories; selecting a subcategory (`GET /api/apps?category=games&subcategory=3d` or `?category=games/3d`) filters to that subcategory.
 - **Version history & `git push`**:
   - Prefer `v1.softn`, `v2.softn`, etc. (numeric suffixes like `my-app-v2.softn` are also recognized). Each version pushed over `git push` keeps its versioned `.softn` file and records its commit & tree history in `app.json` (private to the server, never exposed in public JSON responses).
@@ -161,9 +166,10 @@ Optional `app.json` fields inside `app`:
 }
 ```
 
-- `backend_url` (or `backendUrl`): optional override pointing to an external or custom same-origin SoftN backend endpoint instead of `/api/apps/<slug>/backend`.
-- `withhold_backend` (or `withholdBackend`): when `hosting` is `"server"`, strips `server/`, `backend/`, `.php`, `.rs`, `.sql`, `.sqlite`, and secrets from the client bundle served by `/bundle.softn` and `/source`.
+- `backend_url` (or `backendUrl`): optional override pointing the app's frontend at a backend of its own, on another origin, instead of `/api/apps/<slug>/backend`. One rule says whether the address is used, wherever the app is opened: an address elsewhere is used only where `siteOrigin` is set (see "The site's own address"), and an address on this site (a path, or a URL on `siteOrigin` or on the name the request came to) is never used, whoever set it and whether or not the app is `trusted`, except the app's own `/api/apps/<slug>/backend`. That one, as a path or in full on this site and with or without a trailing `/`, is the same as naming none: the app is hosted (and its `hosting.sandbox` is `zipp-safe-sandbox`) when it has an embedded backend and `allowServerHosting` is on, and the route answers it as it answers any hosted app. The API gives the address in use as `hosting.backendUrl`, `null` when the stored one is not used, and the stored one as `hosting.customBackendUrl`. `/web/app/<slug>` reaches a backend elsewhere; `/play/<slug>` does not, because its shell takes a backend on its own origin only, and opens the app without one.
+- `withhold_backend` (or `withholdBackend`): when `hosting` is `"server"`, strips `server/`, `backend/`, `.php`, `.rs`, `.sql`, `.sqlite`, and secrets from the client bundle served by `/bundle.softn` and `/source`. The stripped bundle of each version is kept in the app's `backend-cache/` as `client-v<N>-<digest>.softn` with its `.sha256`, because the app's page lists every version with that bundle's digest and size. One that no listed version names any more (a version dropped at `maxVersionsPerApp` or removed from the folder, a version whose bytes were replaced, every one once the app stops withholding its backend) is removed by the next read of the app's details (`GET /api/apps/<slug>`, or the answer to a `PATCH` or a new version) once it has gone unused for two minutes, the same grace an extracted backend of a replaced version has. A hosted backend's own `backend-cache/v<N>-<digest>/` folders are pruned when the next version is first extracted.
 - Manage `data/apps/` entries from the command line with `node scripts/demos/manage-data.mjs`.
+- A hosted backend's answers go out under the directory's own host name, so the headers a browser keeps for a whole origin are withheld from them, and so are `WWW-Authenticate` and `Proxy-Authenticate`: a `401` keeps its status and body, and does not raise the browser's sign-in dialog, which would name the directory and hand what was typed to the app. A hosted app signs its users in with a form of its own, a cookie (scoped to `/api/apps/<slug>/backend`) or an `Authorization` token its frontend sends. That header is passed on to the app's backend unless its scheme is `Basic` or `Digest` (in any case): those are the sign-in a browser keeps for the whole origin and sends with every request, so on a directory behind a password of its own (HTTP auth on the whole site) they are the site's password, and no hosted app is handed it. `Bearer` and any other scheme reach the app as sent. The directory's own routes are not affected: `git push` still signs in with Basic.
 
 Missing fields are filled on discovery. A generated file contains `app`
 (listing fields, counters and hashed edit key), `versions`, `comments`,
@@ -301,6 +307,21 @@ plays, comments, ratings or ownership. Search/filter/sort use PHP over the
 current metadata snapshot; search is case-insensitive word matching, with
 name matches ranked first, rather than SQLite FTS stemming.
 
+What the share page, the play page and the sitemap read out of a bundle is
+kept in `page-cache/`, a file for each page of an app (`page-meta-…`) and
+one for its bundle (`bundle-meta-…`), named `v<N>-o<app>-<digest>`: the
+renderer's version, a hash of the app's slug and the start of the bundle's
+SHA-256. Pages are made from an app's latest version only, so when a new
+version is first rendered the app's files of the one before are removed, and
+a removed app's go with it; the folder holds the current version of each app
+and does not grow with their versions. (Files named as they were before
+2026-11-26, `page-meta-v7-<digest>-…` with no app in the name, are removed
+by the same pass.) The whole-catalogue sitemap is one file,
+`cache/sitemap-apps-<fingerprint>.xml`, replaced when the catalogue changes.
+All of it can be deleted at any time. These writes are held to
+`minFreeBytes` like every other, but without the refusal: with no room to
+spare the page or the sitemap is served and simply not cached.
+
 ## Limits
 
 `display_errors` must be off wherever the API runs (`api/.user.ini` says so for FPM and
@@ -338,7 +359,7 @@ the rest of an oversized body is never read into memory. The limits are in
 | `maxThumbnailBytes` | 2 MB | An image, the same three ways |
 | `maxThumbnailSide` | 8192 | The longest side an image may declare, in pixels |
 | `maxThumbnailPixels` | 16,000,000 | The most pixels (width × height) an image may declare |
-| `minFreeBytes` | 256 MB | The free space a write must leave on the data directory's disk: a publish, a remix or a new version past it is refused with a `507`, and so is a storage write that adds. `0` turns the check off. The other limits are per visitor and per app, and nothing else bounds the whole; `GET /api/health` warns once free space is below twice it |
+| `minFreeBytes` | 256 MB | The free space a write must leave on the data directory's disk: a publish, a remix or a new version past it is refused with a `507`, and so is a storage write that adds; a rendered page or the sitemap is served and not cached. `0` turns the check off. The other limits are per visitor and per app, and nothing else bounds the whole; `GET /api/health` warns once free space is below twice it |
 
 From those, two envelopes: the JSON body of a route that takes a bundle
 (`POST /api/apps`, `/versions`, `/remix`) may be as large as the bundle and
@@ -451,7 +472,11 @@ address the site is reached at. Three things depend on it:
   origin is the site's is `siteOrigin`'s to say — the name a request was
   addressed to is the publisher's choice, the server's IP address or another
   of its names — so while it is unset a publisher's `backendUrl` is refused
-  with a `403`, and the admin key still sets one.
+  with a `403`, and the admin key still sets one. The same is asked again
+  when the address is used: while `siteOrigin` is unset no app's frontend is
+  pointed at an address of its own (`hosting.backendUrl` is `null`, the one
+  the owner set included), and with it set none is pointed at this site
+  other than at the app's own hosted backend.
 
 - The share page `/app/{slug}` and the play page carry the app's canonical
   address and `og:url`, which a link unfurler needs absolute. Without
@@ -937,7 +962,7 @@ push can be here.
 | `POST /api/apps/{slug}/versions` | A new version of the bundle (`X-Edit-Key`) |
 | `GET /api/git/{slug}.git/info/refs`, `POST /api/git/{slug}.git/git-receive-pack` | `git push`, with the edit key as the password. See "Publishing with git" |
 | `POST /api/git/{slug}.git/info/lfs/objects/batch` | Always 404 with a `message` that git-lfs shows: files kept in LFS are not taken. See "Publishing with git" |
-| `PATCH /api/apps/{slug}` | Change the listing's fields (`X-Edit-Key`). `hiddenRemixes`, a list of the app's remixes, takes those off its page and out of its remix count (in trending too) without changing `updated_at`; it is the whole list, and a name in it that is not a remix of the app is dropped. The page's detail names them as `hiddenRemixes`, so the owner can put them back |
+| `PATCH /api/apps/{slug}` | Change the listing's fields (`X-Edit-Key`). `hiddenRemixes`, a list of the app's remixes, takes those off its page and out of its remix count (in trending too) without changing `updated_at`; it is the whole list, and a name in it that is not a remix of the app is dropped. The page's detail names them as `hiddenRemixes`, so the owner can put them back. In the categorized layout a new `category` or `subcategory` moves the app's folder, and answers `409` with nothing changed when the folder cannot move there |
 | `POST /api/apps/{slug}/thumbnail` | Replace the picture (`X-Edit-Key`) |
 | `DELETE /api/apps/{slug}` | Unpublish (`X-Edit-Key`): the app is hidden and keeps its slug. With `?purge=1` and `X-Admin-Key`, its folder is removed, and its slug is listed in `retired-slugs.json` and never given to another app: visitors' browsers keep a `/play/` app's records and settings by its address, so the next app of that name would have had them. A demo the seed retired takes its own slug back when it is filed again |
 | `POST /api/apps/{slug}/key` | Replace the edit key (`X-Edit-Key`, or `X-Admin-Key` for a lost one). Answers with the new key; the old one is refused from then on. See "Ownership" |

@@ -1219,6 +1219,10 @@ fn container_response_header_withheld(lower: &str) -> bool {
             | "origin-agent-cluster"
             | "accept-ch"
             | "critical-ch"
+            // With a 401 or a 407 these raise the browser's own sign-in dialog, which names
+            // the host and not the app: what a visitor types into it goes to the app.
+            | "www-authenticate"
+            | "proxy-authenticate"
     ) || lower.starts_with("x-accel-")
         || lower.starts_with("x-litespeed-")
         || lower.starts_with("access-control-")

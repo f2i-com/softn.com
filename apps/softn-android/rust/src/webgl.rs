@@ -26,13 +26,14 @@
 //!
 //! What OpenGL ES always does and desktop OpenGL leaves to a switch is
 //! switched on: point sprites and shader-set point sizes, seamless cube maps,
-//! sRGB encoding when drawing into sRGB textures, and (WebGL 2) primitive
-//! restart at the largest index.
+//! and sRGB encoding when drawing into sRGB textures. WebGL 2's primitive
+//! restart at the largest index is a switch in OpenGL ES 3 as well, and is
+//! switched on for every WebGL 2 context that has it.
 //!
 //! Where desktop OpenGL is older than 3.3 (a Raspberry Pi 4's GPU has 3.1)
 //! the contexts are OpenGL ES 3 ones instead, which is what WebGL is made
-//! from: shaders go to them as the page wrote them, and none of the switches
-//! above is needed. `ZIPP_WEBGL_API=es` (or `gl`) chooses either way.
+//! from: shaders go to them as the page wrote them, and none of the other
+//! switches above is needed. `ZIPP_WEBGL_API=es` (or `gl`) chooses either way.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -48,11 +49,39 @@ use egl::{Platform, RawContext};
 use crate::bundle::{strip_virtual_origin, SoftnBundle};
 use crate::canvas::Frame;
 use crate::http_cache::BlobStore;
+use crate::webgl_draw::{self, IndexBuffers, ProgramReads};
+
+// webgl_draw.rs is built where `glow` is not, and spells OpenGL's names out:
+// they are the same ones, or this does not compile.
+const _: () = {
+    assert!(webgl_draw::BYTE == glow::BYTE && webgl_draw::UNSIGNED_BYTE == glow::UNSIGNED_BYTE);
+    assert!(webgl_draw::SHORT == glow::SHORT && webgl_draw::UNSIGNED_SHORT == glow::UNSIGNED_SHORT);
+    assert!(webgl_draw::INT == glow::INT && webgl_draw::UNSIGNED_INT == glow::UNSIGNED_INT);
+    assert!(webgl_draw::FLOAT == glow::FLOAT && webgl_draw::HALF_FLOAT == glow::HALF_FLOAT);
+    assert!(webgl_draw::INT_2_10_10_10_REV == glow::INT_2_10_10_10_REV);
+    assert!(webgl_draw::UNSIGNED_INT_2_10_10_10_REV == glow::UNSIGNED_INT_2_10_10_10_REV);
+    assert!(webgl_draw::ELEMENT_ARRAY_BUFFER == glow::ELEMENT_ARRAY_BUFFER);
+    assert!(webgl_draw::COPY_READ_BUFFER == glow::COPY_READ_BUFFER);
+    assert!(webgl_draw::COPY_WRITE_BUFFER == glow::COPY_WRITE_BUFFER);
+    assert!(webgl_draw::STREAM_DRAW == glow::STREAM_DRAW && webgl_draw::STREAM_READ == glow::STREAM_READ);
+    assert!(webgl_draw::STREAM_COPY == glow::STREAM_COPY && webgl_draw::STATIC_DRAW == glow::STATIC_DRAW);
+    assert!(webgl_draw::STATIC_READ == glow::STATIC_READ && webgl_draw::STATIC_COPY == glow::STATIC_COPY);
+    assert!(webgl_draw::DYNAMIC_DRAW == glow::DYNAMIC_DRAW && webgl_draw::DYNAMIC_READ == glow::DYNAMIC_READ);
+    assert!(webgl_draw::DYNAMIC_COPY == glow::DYNAMIC_COPY);
+    assert!(webgl_draw::FLOAT_MAT2 == glow::FLOAT_MAT2 && webgl_draw::FLOAT_MAT3 == glow::FLOAT_MAT3);
+    assert!(webgl_draw::FLOAT_MAT4 == glow::FLOAT_MAT4 && webgl_draw::FLOAT_MAT2X3 == glow::FLOAT_MAT2x3);
+    assert!(webgl_draw::FLOAT_MAT2X4 == glow::FLOAT_MAT2x4 && webgl_draw::FLOAT_MAT3X2 == glow::FLOAT_MAT3x2);
+    assert!(webgl_draw::FLOAT_MAT3X4 == glow::FLOAT_MAT3x4 && webgl_draw::FLOAT_MAT4X2 == glow::FLOAT_MAT4x2);
+    assert!(webgl_draw::FLOAT_MAT4X3 == glow::FLOAT_MAT4x3);
+};
 
 const MAX_WEBGL_CONTEXTS: usize = 16;
 const MAX_GL_OBJECTS: usize = 16_384;
 const MAX_WEBGL_DIM: i32 = 4096;
 const MAX_WEBGL_3D_TEXELS: u64 = 16_777_216;
+/// What one context's buffers, textures and renderbuffers may add up to. An
+/// element array buffer counts twice: the host keeps a copy of it to check
+/// indexed draws by (`webgl_draw::IndexBuffers`).
 const MAX_WEBGL_VRAM_BYTES: usize = 256 * 1024 * 1024;
 const MAX_DRAW_VERTICES: i32 = 16_000_000;
 const MAX_DRAW_INSTANCES: i32 = 1_000_000;
@@ -241,6 +270,11 @@ struct Context {
     /// Aggregate tracked GPU memory allocated via buffers, textures, and renderbuffers on this context.
     vram_bytes: usize,
     buffer_bytes: HashMap<glow::Buffer, usize>,
+    /// Which buffers hold indices, and what those hold: `drawElements` is
+    /// checked against it, since the driver checks nothing.
+    index: IndexBuffers<glow::Buffer>,
+    /// The attribute locations the program in use reads, as the driver has it.
+    attrib_reads: ProgramReads<glow::Program>,
     renderbuffer_bytes: HashMap<glow::Renderbuffer, usize>,
     texture_bytes: HashMap<(glow::Texture, u32, i32), usize>,
     /// The canvas: multisampled (`samples` > 0) when antialiased, and then
@@ -416,9 +450,17 @@ impl Host {
                     ] {
                         gl.enable(cap);
                     }
-                    if version >= 2 {
-                        gl.enable(glow::PRIMITIVE_RESTART_FIXED_INDEX);
-                    }
+                }
+                // WebGL 2 always restarts a primitive at its index type's largest value ("Primitive
+                // Restart is Always Enabled" in its specification). Desktop OpenGL and OpenGL ES 3 both
+                // start with that switched off, so it is switched on for both: switched on for desktop
+                // contexts only, an Android page's strips ran through a 0xFFFF as through any other
+                // index. An OpenGL ES 2 context (an Android device without ES 3, where `supports_pbo`
+                // is false) has no such switch, and enabling it there would leave INVALID_ENUM for the
+                // page's next getError; there every index is a vertex, and is checked as one.
+                let restart = version >= 2 && (!es || platform.supports_pbo());
+                if restart {
+                    gl.enable(glow::PRIMITIVE_RESTART_FIXED_INDEX);
                 }
                 let mut ctx = Context {
                     raw,
@@ -430,6 +472,8 @@ impl Host {
                     height: 0,
                     vram_bytes: 0,
                     buffer_bytes: HashMap::new(),
+                    index: IndexBuffers::new(restart),
+                    attrib_reads: ProgramReads::new(),
                     renderbuffer_bytes: HashMap::new(),
                     texture_bytes: HashMap::new(),
                     fbo,
@@ -857,6 +901,25 @@ impl Context {
         }
     }
 
+    /// The attribute locations a program that has just linked reads, for
+    /// `webgl_draw::ProgramReads`: a draw is not held to an enabled array the
+    /// program does not read. None, and every array is checked, unless each
+    /// of its attributes has a location to go by (a built-in has no array).
+    unsafe fn attrib_reads_of(&self, p: glow::Program) -> Option<std::collections::HashSet<u32>> {
+        let mut reads = std::collections::HashSet::new();
+        unsafe {
+            for i in 0..self.gl.get_active_attributes(p) {
+                let attribute = self.gl.get_active_attribute(p, i)?;
+                if attribute.name.starts_with("gl_") {
+                    continue;
+                }
+                let location = self.gl.get_attrib_location(p, &attribute.name)?;
+                reads.extend(webgl_draw::attrib_locations(location, attribute.atype, attribute.size));
+            }
+        }
+        Some(reads)
+    }
+
     /// An image's pixels from its URL, as RGBA8 with the unpack flags applied.
     fn decode_image(&self, url: &str) -> Result<(i32, i32, Vec<u8>), String> {
         let raw = if url.starts_with("blob:") {
@@ -988,6 +1051,17 @@ impl Context {
         Ok(())
     }
 
+    /// `b` is about to be given `len` bytes of storage: within the budget
+    /// (twice over for an element array buffer, for the host's copy), or
+    /// refused with nothing changed.
+    fn track_buffer_bytes(&mut self, b: glow::Buffer, len: usize) -> Result<(), String> {
+        let element = self.index.is_element(b);
+        let old = self.buffer_bytes.get(&b).copied().unwrap_or(0);
+        self.track_vram_delta(webgl_draw::tracked_bytes(old, element), webgl_draw::tracked_bytes(len, element))?;
+        self.buffer_bytes.insert(b, len);
+        Ok(())
+    }
+
     fn is_valid_buffer_target(&self, target: u32) -> bool {
         match target {
             glow::ARRAY_BUFFER | glow::ELEMENT_ARRAY_BUFFER => true,
@@ -1085,99 +1159,48 @@ impl Context {
         }
     }
 
-    fn attrib_element_bytes(size: i32, ty: u32) -> Option<usize> {
-        if !(1..=4).contains(&size) {
-            return None;
-        }
-        if ty == glow::INT_2_10_10_10_REV || ty == glow::UNSIGNED_INT_2_10_10_10_REV {
-            return if size == 4 { Some(4) } else { None };
-        }
-        let comp = match ty {
-            glow::BYTE | glow::UNSIGNED_BYTE => 1usize,
-            glow::SHORT | glow::UNSIGNED_SHORT | glow::HALF_FLOAT => 2usize,
-            glow::INT | glow::UNSIGNED_INT | glow::FLOAT => 4usize,
-            _ => return None,
-        };
-        Some((size as usize) * comp)
-    }
-
+    /// Whether the driver may run a draw, which it does on trust: an index
+    /// or a vertex past the end of a buffer is read from what lies after it.
+    /// `webgl_draw::validate_draw` decides, and is tested where this file
+    /// cannot run; this only hands it what the page set. An indexed draw
+    /// used to be checked as if its largest index were 0.
     fn validate_draw_attribs(
-        &self,
+        &mut self,
         first: i32,
         count: i32,
         instances: Option<i32>,
         indexed_elem: Option<(u32, i32)>,
     ) -> Result<(), String> {
-        if count == 0 || instances == Some(0) {
-            return Ok(());
-        }
-        if let Some((index_type, index_offset)) = indexed_elem {
-            let elem_buf = self
-                .state
-                .current_element_buffer()
-                .ok_or_else(|| "InvalidOperationError: drawElements requires a bound ELEMENT_ARRAY_BUFFER".to_string())?;
-            let index_bytes: u64 = match index_type {
-                glow::UNSIGNED_BYTE => 1,
-                glow::UNSIGNED_SHORT => 2,
-                glow::UNSIGNED_INT => 4,
-                _ => return Err(format!("InvalidEnumError: invalid drawElements index type {index_type:#x}")),
+        let call = webgl_draw::DrawCall { first, count, instances, indexed: indexed_elem };
+        let vao = self.state.current_vao;
+        let bindings = self.state.vao_attribs.get(&vao);
+        let buffer_bytes = &self.buffer_bytes;
+        let attribs = self.state.vao_enabled_attribs.get(&vao).into_iter().flatten().map(|&index| {
+            let source = match bindings.and_then(|attribs| attribs.get(&index)) {
+                None => webgl_draw::AttribSource::NoPointer,
+                Some(b) => match b.buffer {
+                    None => webgl_draw::AttribSource::NoBuffer,
+                    Some(buffer) => webgl_draw::AttribSource::Buffer {
+                        len: buffer_bytes.get(&buffer).copied(),
+                        layout: webgl_draw::AttribLayout {
+                            size: b.size,
+                            ty: b.ty,
+                            stride: b.stride,
+                            offset: b.offset,
+                            divisor: b.divisor,
+                        },
+                    },
+                },
             };
-            if (index_offset as u64) % index_bytes != 0 {
-                return Err("InvalidOperationError: drawElements offset must be aligned to index type size".into());
-            }
-            let elem_size = self.buffer_bytes.get(&elem_buf).copied().unwrap_or(0) as u64;
-            let needed = (index_offset as u64)
-                .checked_add((count as u64).saturating_mul(index_bytes))
-                .ok_or_else(|| "InvalidValueError: drawElements range overflow".to_string())?;
-            if needed > elem_size {
-                return Err("InvalidOperationError: drawElements index range exceeds ELEMENT_ARRAY_BUFFER size".into());
-            }
-        }
-        let Some(enabled) = self.state.vao_enabled_attribs.get(&self.state.current_vao) else {
-            return Ok(());
-        };
-        let bindings = self.state.vao_attribs.get(&self.state.current_vao);
-        for &idx in enabled {
-            let Some(b) = bindings.and_then(|m| m.get(&idx)) else {
-                return Err(format!(
-                    "InvalidOperationError: enabled vertex attribute {idx} has no ARRAY_BUFFER pointer"
-                ));
-            };
-            let Some(buf) = b.buffer else {
-                return Err(format!(
-                    "InvalidOperationError: enabled vertex attribute {idx} references a deleted or unbound ARRAY_BUFFER"
-                ));
-            };
-            let Some(&buf_len) = self.buffer_bytes.get(&buf) else {
-                return Err(format!(
-                    "InvalidOperationError: enabled vertex attribute {idx} has no allocated ARRAY_BUFFER storage"
-                ));
-            };
-            let elem_bytes = Self::attrib_element_bytes(b.size, b.ty)
-                .ok_or_else(|| format!("InvalidOperationError: invalid vertex attribute {idx} format"))?
-                as u64;
-            let stride = if b.stride == 0 { elem_bytes } else { b.stride as u64 };
-            let max_idx: u64 = if b.divisor > 0 {
-                match instances {
-                    Some(inst) if inst > 0 => ((inst - 1) as u64) / (b.divisor as u64),
-                    _ => 0,
-                }
-            } else if indexed_elem.is_some() {
-                0
-            } else {
-                (first as u64).saturating_add((count - 1) as u64)
-            };
-            let needed = (b.offset as u64)
-                .checked_add(max_idx.saturating_mul(stride))
-                .and_then(|v| v.checked_add(elem_bytes))
-                .ok_or_else(|| "InvalidOperationError: vertex attribute offset overflow".to_string())?;
-            if needed > buf_len as u64 {
-                return Err(format!(
-                    "InvalidOperationError: vertex attribute {idx} range ({needed} B) exceeds ARRAY_BUFFER size ({buf_len} B)"
-                ));
-            }
-        }
-        Ok(())
+            webgl_draw::EnabledAttrib { index, source }
+        });
+        webgl_draw::validate_draw(
+            &mut self.index,
+            self.state.current_element_buffer(),
+            &call,
+            attribs,
+            self.attrib_reads.in_use(),
+        )
     }
 
     unsafe fn detach_and_delete_texture(&mut self, t: glow::Texture) {
@@ -1219,8 +1242,10 @@ impl Context {
             }
         }
         if let Some(old_sz) = self.buffer_bytes.remove(&b) {
-            self.vram_bytes = self.vram_bytes.saturating_sub(old_sz);
+            let tracked = webgl_draw::tracked_bytes(old_sz, self.index.is_element(b));
+            self.vram_bytes = self.vram_bytes.saturating_sub(tracked);
         }
+        self.index.delete(b);
         unsafe { self.gl.delete_buffer(b) };
     }
 
@@ -1296,6 +1321,12 @@ impl Context {
                         return Err(format!("InvalidEnumError: unsupported buffer target {target:#x}"));
                     }
                     let b = self.buffers.get(&u(2)).copied();
+                    if let Some(buffer) = b {
+                        // Index data or not, from its first binding on (as in
+                        // WebGL): what the host knows of an index buffer is
+                        // then all that can have been written to it.
+                        self.index.bind(buffer, target)?;
+                    }
                     match target {
                         glow::ARRAY_BUFFER => self.state.array_buffer = b,
                         glow::ELEMENT_ARRAY_BUFFER => {
@@ -1315,9 +1346,34 @@ impl Context {
                     }
                     self.gl.bind_buffer(target, b);
                 }
-                "bindBufferBase" => self.gl.bind_buffer_base(u(1), u(2), self.buffers.get(&u(3)).copied()),
-                "bindBufferRange" => {
-                    self.gl.bind_buffer_range(u(1), u(2), self.buffers.get(&u(3)).copied(), int(4), int(5));
+                "bindBufferBase" | "bindBufferRange" => {
+                    let target = u(1);
+                    if !self.supports_pbo || !matches!(target, glow::UNIFORM_BUFFER | glow::TRANSFORM_FEEDBACK_BUFFER) {
+                        return Err(format!("InvalidEnumError: unsupported {op} target {target:#x}"));
+                    }
+                    let b = self.buffers.get(&u(3)).copied();
+                    if let Some(buffer) = b {
+                        self.index.bind(buffer, target)?;
+                    }
+                    // An indexed binding is the target's own binding as well,
+                    // the one `bufferData` writes through, so it is the
+                    // host's too. A driver that refuses the indexed one (an
+                    // index or a range it does not have) is given the other
+                    // anyway: what is bound is then what the host has down.
+                    match b {
+                        Some(buffer) => {
+                            self.state.other_buffers.insert(target, buffer);
+                        }
+                        None => {
+                            self.state.other_buffers.remove(&target);
+                        }
+                    }
+                    if op == "bindBufferBase" {
+                        self.gl.bind_buffer_base(target, u(2), b);
+                    } else {
+                        self.gl.bind_buffer_range(target, u(2), b, int(4), int(5));
+                    }
+                    self.gl.bind_buffer(target, b);
                 }
                 "bufferData" => {
                     let target = u(1);
@@ -1327,11 +1383,14 @@ impl Context {
                     let Some(b) = self.bound_buffer_for(target) else {
                         return Err("InvalidOperationError: bufferData requires a bound buffer".into());
                     };
+                    let usage = u(4);
+                    if !webgl_draw::buffer_usage_ok(usage, self.supports_pbo) {
+                        return Err(format!("InvalidEnumError: bufferData usage {usage:#x}"));
+                    }
                     let slice = bytes(u(2) as usize, u(3) as usize)?;
-                    let old_sz = self.buffer_bytes.get(&b).copied().unwrap_or(0);
-                    self.track_vram_delta(old_sz, slice.len())?;
-                    self.buffer_bytes.insert(b, slice.len());
-                    self.gl.buffer_data_u8_slice(target, slice, u(4));
+                    self.track_buffer_bytes(b, slice.len())?;
+                    self.index.set_data(b, slice);
+                    self.gl.buffer_data_u8_slice(target, slice, usage);
                 }
                 "bufferSize" => {
                     let target = u(1);
@@ -1345,13 +1404,53 @@ impl Context {
                     if sz < 0 || (sz as usize) > MAX_READ_BYTES {
                         return Err("InvalidValueError: bufferSize out of bounds".into());
                     }
-                    let old_sz = self.buffer_bytes.get(&b).copied().unwrap_or(0);
-                    self.track_vram_delta(old_sz, sz as usize)?;
-                    self.buffer_bytes.insert(b, sz as usize);
-                    self.gl.buffer_data_size(target, sz, u(3));
+                    let usage = u(3);
+                    if !webgl_draw::buffer_usage_ok(usage, self.supports_pbo) {
+                        return Err(format!("InvalidEnumError: bufferData usage {usage:#x}"));
+                    }
+                    self.track_buffer_bytes(b, sz as usize)?;
+                    // WebGL's new buffer is zeros. The driver's, made without
+                    // data, is whatever was there: not what the host's copy
+                    // of an index buffer says, and not the page's to read.
+                    let zeros = vec![0u8; sz as usize];
+                    self.index.set_data(b, &zeros);
+                    self.gl.buffer_data_u8_slice(target, &zeros, usage);
                 }
-                "bufferSubData" => self.gl.buffer_sub_data_u8_slice(u(1), int(2), bytes(u(3) as usize, u(4) as usize)?),
-                "copyBufferSubData" => self.gl.copy_buffer_sub_data(u(1), u(2), int(3), int(4), int(5)),
+                "bufferSubData" => {
+                    let target = u(1);
+                    if !self.is_valid_buffer_target(target) {
+                        return Err(format!("InvalidEnumError: unsupported bufferSubData target {target:#x}"));
+                    }
+                    let Some(b) = self.bound_buffer_for(target) else {
+                        return Err("InvalidOperationError: bufferSubData requires a bound buffer".into());
+                    };
+                    let (offset, slice) = (int(2), bytes(u(3) as usize, u(4) as usize)?);
+                    // Refused here if the driver would refuse it, so that the
+                    // host's copy of an index buffer and the driver's change
+                    // together or not at all.
+                    let held = self.buffer_bytes.get(&b).copied().unwrap_or(0);
+                    let start = webgl_draw::sub_data_start(held, offset, slice.len())?;
+                    self.index.write(b, start, slice)?;
+                    self.gl.buffer_sub_data_u8_slice(target, offset, slice);
+                }
+                "copyBufferSubData" => {
+                    let (read_target, write_target) = (u(1), u(2));
+                    if !self.supports_pbo
+                        || !self.is_valid_buffer_target(read_target)
+                        || !self.is_valid_buffer_target(write_target)
+                    {
+                        return Err("InvalidEnumError: unsupported copyBufferSubData target".into());
+                    }
+                    let (Some(read), Some(write)) = (self.bound_buffer_for(read_target), self.bound_buffer_for(write_target))
+                    else {
+                        return Err("InvalidOperationError: copyBufferSubData requires two bound buffers".into());
+                    };
+                    let held = |b: glow::Buffer| self.buffer_bytes.get(&b).copied().unwrap_or(0);
+                    let (from, to, len) =
+                        webgl_draw::copy_ranges(held(read), held(write), int(3), int(4), int(5), read == write)?;
+                    self.index.copy(read, write, from, to, len)?;
+                    self.gl.copy_buffer_sub_data(read_target, write_target, int(3), int(4), int(5));
+                }
                 "getBufferSubData" => {
                     let target = u(1);
                     let offset = int(2);
@@ -1426,6 +1525,7 @@ impl Context {
                     }
                     let p = self.gl.create_program()?;
                     if let Some(old) = self.programs.insert(id, p) {
+                        self.attrib_reads.deleted(old);
                         self.gl.delete_program(old);
                     }
                     self.uniforms.remove(&id);
@@ -1434,6 +1534,7 @@ impl Context {
                     let id = u(1);
                     self.uniforms.remove(&id);
                     if let Some(p) = self.programs.remove(&id) {
+                        self.attrib_reads.deleted(p);
                         self.gl.delete_program(p);
                     }
                 }
@@ -1447,6 +1548,13 @@ impl Context {
                     if let Some(&p) = self.programs.get(&program) {
                         self.gl.link_program(p);
                         self.uniforms.remove(&program);
+                        // What it reads now, for the draws it runs (SR-R9).
+                        if self.gl.get_program_link_status(p) {
+                            let reads = self.attrib_reads_of(p);
+                            self.attrib_reads.linked(p, reads);
+                        } else {
+                            self.attrib_reads.link_failed(p);
+                        }
                     }
                 }
                 "validateProgram" => {}
@@ -1473,7 +1581,13 @@ impl Context {
                     };
                     out = Json::String(log).to_string();
                 }
-                "useProgram" => self.gl.use_program(self.programs.get(&u(1)).copied()),
+                "useProgram" => {
+                    self.gl.use_program(self.programs.get(&u(1)).copied());
+                    // The driver refuses a program that has not linked and
+                    // keeps the one it had, so it is asked which it runs.
+                    let current = self.gl.get_parameter_program(glow::CURRENT_PROGRAM);
+                    self.attrib_reads.used(current);
+                }
                 "getAttribLocation" => {
                     let at = self.programs.get(&u(1)).and_then(|&p| self.gl.get_attrib_location(p, &text(2)));
                     out = at.map(|a| a as i64).unwrap_or(-1).to_string();
@@ -1575,7 +1689,9 @@ impl Context {
                         return Err("InvalidOperationError: vertexAttribPointer requires a bound ARRAY_BUFFER".into());
                     };
                     let (idx, size, ty, stride, offset) = (u(1), int(2), u(3), int(5), int(6));
-                    if idx >= 64 || Self::attrib_element_bytes(size, ty).is_none() || stride < 0 || offset < 0 {
+                    // Only a pointer the driver takes is remembered: draws
+                    // are checked against the one remembered here.
+                    if idx >= 64 || !webgl_draw::attrib_pointer_ok(size, ty, stride, offset, false, self.supports_pbo) {
                         return Err("InvalidValueError: invalid vertexAttribPointer arguments".into());
                     }
                     let attribs = self.state.vao_attribs.entry(self.state.current_vao).or_default();
@@ -1588,7 +1704,7 @@ impl Context {
                         return Err("InvalidOperationError: vertexAttribIPointer requires a bound ARRAY_BUFFER".into());
                     };
                     let (idx, size, ty, stride, offset) = (u(1), int(2), u(3), int(4), int(5));
-                    if idx >= 64 || Self::attrib_element_bytes(size, ty).is_none() || stride < 0 || offset < 0 {
+                    if idx >= 64 || !webgl_draw::attrib_pointer_ok(size, ty, stride, offset, true, self.supports_pbo) {
                         return Err("InvalidValueError: invalid vertexAttribIPointer arguments".into());
                     }
                     let attribs = self.state.vao_attribs.entry(self.state.current_vao).or_default();

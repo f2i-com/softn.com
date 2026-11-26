@@ -235,41 +235,66 @@ final class Catalog
         }
         return "$root/" . self::$paths[$slug];
     }
-    /** Move an app folder when its category or subcategory changes under categorized layout. */
-    public static function moveAppFolder(string $slug, string $newCategory, ?string $newSubcategory = null): void {
+    /**
+     * Move an app folder when its category or subcategory changes under
+     * categorized layout. Null when the app is filed where it was asked to
+     * be: moved there, there already, or in the flat layout, where no folder
+     * says what an app's category is and app.json does. Otherwise why its
+     * folder could not go there, and nothing has changed.
+     *
+     * Where the folder is says what the category is (discover), so a caller
+     * with a category to write asks this first and writes it on null. It was
+     * written first, and a move that could not be made was passed over in
+     * silence: app.json named a category the folder was not in, the PATCH
+     * that asked answered with it, and the next scan took it back.
+     */
+    public static function moveAppFolder(string $slug, string $newCategory, ?string $newSubcategory = null): ?string {
         self::boot();
-        if (!isset(self::$paths[$slug])) return;
+        if (!isset(self::$paths[$slug])) return null;
         $currentRel = self::$paths[$slug];
         $alreadyNested = str_contains($currentRel, '/');
-        if (!$alreadyNested && !self::usesCategorizedLayout($newCategory, $newSubcategory)) return;
-        if (!self::validSlug($newCategory)) return;
-        $sub = (is_string($newSubcategory) && $newSubcategory !== '' && self::validSlug($newSubcategory)) ? $newSubcategory : null;
+        if (!$alreadyNested && !self::usesCategorizedLayout($newCategory, $newSubcategory)) return null;
+        $sub = is_string($newSubcategory) && $newSubcategory !== '' ? $newSubcategory : null;
+        // A folder is named for each, so each is a name a folder can have. One
+        // that is not was passed over, the subcategory by filing the app in the
+        // category itself, which is no more where app.json then said it was.
+        if (!self::validSlug($newCategory) || ($sub !== null && !self::validSlug($sub))) return 'there is no folder of that name to file it in';
         $targetRel = $sub !== null ? "$newCategory/$sub/$slug" : "$newCategory/$slug";
-        if ($targetRel === $currentRel) return;
+        if ($targetRel === $currentRel) return null;
         // A move has no more room than a publish: an app called "Puzzle",
         // refiled under games, is not put where that subcategory's folder goes.
-        if (!self::roomAt($targetRel, $slug, $newCategory, class_exists('Categories', false) ? Categories::subcategorySlugs($newCategory) : [])) return;
+        if (!self::roomAt($targetRel, $slug, $newCategory, class_exists('Categories', false) ? Categories::subcategorySlugs($newCategory) : [])) {
+            return "the name $slug is taken there, by a folder or for one of the category's subcategories";
+        }
 
         $root = Config::dataDir() . '/apps';
         $from = "$root/$currentRel";
         $to = "$root/$targetRel";
-        if (!is_dir($from) || is_link($from) || file_exists($to)) return;
+        if (!is_dir($from) || is_link($from)) return 'its own folder is not one that can be moved';
 
         $catDir = "$root/$newCategory";
-        if (!is_dir($catDir) && !@mkdir($catDir, 0775, true) && !is_dir($catDir)) return;
+        if (!is_dir($catDir) && !@mkdir($catDir, 0775, true) && !is_dir($catDir)) return 'the folder for that category could not be made';
         self::ensureCategoryMeta($newCategory, null, $catDir);
         if ($sub !== null) {
             $subDir = "$catDir/$sub";
-            if (!is_dir($subDir) && !@mkdir($subDir, 0775, true) && !is_dir($subDir)) return;
+            if (!is_dir($subDir) && !@mkdir($subDir, 0775, true) && !is_dir($subDir)) return 'the folder for that subcategory could not be made';
             self::ensureCategoryMeta($newCategory, $sub, $subDir);
         }
 
         $quiet = @fopen(Config::dataDir() . '/storage.lock', 'c');
         if ($quiet !== false) flock($quiet, LOCK_EX);
         try {
-            if (!@rename($from, $to)) return;
+            if (!@rename($from, $to)) return 'its folder could not be moved; a file in it may be in use';
             self::$paths[$slug] = $targetRel;
             self::$hasCategorizedTree = true;
+            // The folder says so from here, and so does the catalogue for the rest
+            // of this request, as the next scan would read it: the counts below are
+            // made from it, whether the caller has written the category yet or not.
+            if (isset(self::$docs[$slug])) {
+                self::$docs[$slug]['app']['category'] = $newCategory;
+                self::$docs[$slug]['app']['subcategory'] = $sub;
+                self::$rows = null;
+            }
             // Re-key bundle cache entries so warm inspection does not re-read bundles.
             $oldPrefix = "$currentRel/";
             $newPrefix = "$targetRel/";
@@ -289,6 +314,7 @@ final class Catalog
             if ($quiet !== false) { flock($quiet, LOCK_UN); fclose($quiet); }
         }
         self::syncCategoryCaches();
+        return null;
     }
     /** A stable lock inode, outside app directories, protects read-modify-write.
      * Held until response generation ends; never delete or replace this file. */
@@ -460,8 +486,9 @@ final class Catalog
             $base = basename($b);
             if (preg_match('/^v[1-9][0-9]*\.softn$/D', $base)) return false;
             if (strtolower($base) === 'bundle.softn') return false;
-            $stem = self::stripVersionSuffix(preg_replace('/\.softn$/i', '', $base) ?? $base);
-            if (self::slugifyFilename($stem) === $name) return false;
+            // A bundle named for the folder, read as a dropped file is (slugsFromFilename):
+            // lantern-2/lantern-2.softn is that app's folder, not a subcategory with a file in it.
+            if (in_array($name, self::slugsFromFilename(preg_replace('/\.softn$/i', '', $base) ?? $base), true)) return false;
         }
         return true;
     }
@@ -486,8 +513,27 @@ final class Catalog
         }
     }
 
-    private static function stripVersionSuffix(string $raw): string {
-        return preg_replace('/(?:[-_ ]+v?[0-9]+(?:\.[0-9]+)*)+$/i', '', trim($raw)) ?? trim($raw);
+    /**
+     * The slugs a loose file's name (without `.softn`) can mean, the most exact
+     * first: the whole name, then the name with one more of the version labels
+     * at its end (`-2`, `_v3`, ` v1.2`) taken off each time, down to the name
+     * with none. A file names an app by the first of these that is one. Every
+     * label was taken off at once before, so no file named an app whose own
+     * slug ends in a number (`arcade-2`, which a drop beside a subcategory of
+     * that name is filed under), and `arcade-2.softn` was read as `arcade`.
+     *
+     * @return list<string>
+     */
+    private static function slugsFromFilename(string $base): array {
+        $out = [];
+        $name = trim($base);
+        while (true) {
+            $slug = self::slugifyFilename($name);
+            if (!in_array($slug, $out, true)) $out[] = $slug;
+            $shorter = trim(preg_replace('/[-_ ]+v?[0-9]+(?:\.[0-9]+)*$/i', '', $name) ?? $name);
+            if ($shorter === '' || $shorter === $name) return $out;
+            $name = $shorter;
+        }
     }
 
     private static function slugifyFilename(string $raw): string {
@@ -650,14 +696,19 @@ final class Catalog
         if (!is_file($bundlePath) || is_link($bundlePath)) return;
         $info = Bundle::inspect($bundlePath);
         $base = preg_replace('/\.softn$/i', '', basename($bundlePath)) ?? basename($bundlePath);
-        $stem = self::stripVersionSuffix($base);
-        $slugFromFile = self::slugifyFilename($stem);
+        // The app the file names: by its whole name first, then by the name
+        // with the version labels at its end taken off one at a time, so a
+        // number there is a version only where the name with it is no app's
+        // (`arcade-2.softn` is a version of arcade-2 if there is one, and of
+        // arcade if not); then by the bundle's own name. A new app is named
+        // for the bundle, or, if it has none, for the file without its labels.
+        $known = static fn(string $s): bool => isset(self::$docs[$s]) || isset(self::$paths[$s]);
+        $fromFile = self::slugsFromFilename($base);
+        $slugFromFile = $fromFile[count($fromFile) - 1];
         $slugFromName = self::slugifyFilename((string) ($info['name'] ?? ''));
-        $slug = (isset(self::$docs[$slugFromFile]) || isset(self::$paths[$slugFromFile]))
-            ? $slugFromFile
-            : ((isset(self::$docs[$slugFromName]) || isset(self::$paths[$slugFromName]))
-                ? $slugFromName
-                : ($slugFromName !== 'app' ? $slugFromName : $slugFromFile));
+        $slug = null;
+        foreach ($fromFile as $candidate) if ($slug === null && $known($candidate)) $slug = $candidate;
+        $slug ??= $known($slugFromName) ? $slugFromName : ($slugFromName !== 'app' ? $slugFromName : $slugFromFile);
 
         // Existing app: add as next version suffix (v2.softn, v3.softn...) unless identical bytes already exist.
         if (isset(self::$docs[$slug])) {
@@ -672,6 +723,21 @@ final class Catalog
             foreach ($doc['versions'] as $v) $maxV = max($maxV, (int) ($v['version'] ?? 0));
             $nextV = max($maxV, (int) ($doc['app']['latest_version'] ?? 0)) + 1;
             $appDir = self::path($slug);
+            // The next number free in the folder as well as in the record. The
+            // record lists what the scan could read, and the folder can hold more:
+            // a bundle it could not read, one still being copied in, a link. The
+            // file was renamed over whatever had the name, and a number another
+            // file's name gives (discover reads `app-v5.softn` as version 5) was
+            // that file's to lose once it could be read.
+            $named = [];
+            foreach ($doc['versions'] as $v) $named[basename((string) $v['file'])] = true;
+            $numbered = [];
+            foreach (@scandir($appDir) ?: [] as $file) {
+                $n = self::parseVersionNumber((string) $file, true);
+                if ($n !== null) $numbered[$n] = true;
+            }
+            $taken = static fn(int $n): bool => isset($numbered[$n]) || isset($named["v$n.softn"]) || file_exists("$appDir/v$n.softn") || is_link("$appDir/v$n.softn");
+            while ($taken($nextV)) $nextV++;
             $dest = "$appDir/v$nextV.softn";
             if (!@rename($bundlePath, $dest)) {
                 if (!@copy($bundlePath, $dest)) throw new ApiError(503, 'Could not move dropped bundle into app folder.');
@@ -684,6 +750,12 @@ final class Catalog
             self::load($slug, $fCat, $fSub);
             return;
         }
+
+        // A folder the scan skipped still holds its name, and its files are left
+        // exactly as they are (registerAppDir). A file dropped for it was taken
+        // as a new app's first version and moved over the bundle in that folder.
+        // It waits where it was put: mended, the folder takes it as its next version.
+        if (isset(self::$skipped[$slug])) throw new ApiError(409, "it names $slug, whose folder was skipped; it is taken in once that folder is mended");
 
         // New app: determine category/subcategory from drop folder (or manifest when dropped at root).
         $targetCat = $folderCat;
@@ -709,14 +781,39 @@ final class Catalog
                 $subDir = "$catDir/$targetSub";
                 if (!is_dir($subDir) && !@mkdir($subDir, 0775, true) && !is_dir($subDir)) return;
                 self::ensureCategoryMeta($targetCat, $targetSub, $subDir);
-                $rel = "$targetCat/$targetSub/$slug";
+                $parent = "$targetCat/$targetSub/";
             } else {
-                $rel = "$targetCat/$slug";
+                $parent = "$targetCat/";
                 $targetSub = null;
             }
         } else {
-            $rel = $slug;
+            $parent = '';
         }
+        // A new app's folder is made new, as a published one's is (allocateDir),
+        // and a name has no more room here than it has there (roomFor): dropped
+        // into games/, arcade.softn was moved into games/arcade/ itself, the
+        // subcategory's folder, and the next scan read that folder as the app
+        // and none of the apps filed in it. So was a file named for a category
+        // folder, in the flat layout. Such a file is filed under the next name
+        // that is free, as an app published under the name is (Apps::uniqueSlug).
+        // One folder is not new: the slug's own, known to the scan with nothing
+        // in it to list, which takes the file as its first bundle as it always did.
+        $subcategories = $parent !== '' && class_exists('Categories', false) ? Categories::subcategorySlugs($targetCat) : [];
+        $free = static fn(string $s): bool => !isset(self::$paths[$s]) && !isset(self::$docs[$s])
+            && ($parent === '' ? !file_exists("$root/$s") : self::roomAt($parent . $s, $s, $targetCat, $subcategories));
+        if ((self::$paths[$slug] ?? null) !== $parent . $slug && !$free($slug)) {
+            $wanted = $slug;
+            $slug = null;
+            // Not a name an app had, either: Catalog::retiredSlugs says why.
+            $retired = self::retiredSlugs();
+            for ($n = 2; $n < 1000 && $slug === null; $n++) {
+                $next = substr($wanted, 0, 44) . '-' . $n;
+                if ($free($next) && !isset($retired[$next])) $slug = $next;
+            }
+            if ($slug === null) throw new ApiError(409, "no name is free for it where it was dropped; $wanted is taken there");
+            error_log('softn-api: dropped bundle ' . basename($bundlePath) . " is filed as $slug: $wanted is not free where it was dropped (a folder has the name, or it is kept for a subcategory)");
+        }
+        $rel = $parent . $slug;
 
         $appDir = "$root/$rel";
         if (!is_dir($appDir) && !@mkdir($appDir, 0775, true) && !is_dir($appDir)) return;

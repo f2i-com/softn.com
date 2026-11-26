@@ -205,14 +205,32 @@ final class Config
      */
     public static function requireRoom(int $bytes = 0, ?string $dir = null): void
     {
+        $short = self::shortOfRoom($bytes, $dir);
+        if ($short === null) return;
+        error_log(sprintf('softn-api: refused a write of %d bytes: %d bytes free, below minFreeBytes (%d)', $bytes, $short[0], $short[1]));
+        throw new ApiError(507, 'The directory has no room for this right now. Try again later.');
+    }
+
+    /**
+     * requireRoom's question without its refusal, for a write the request
+     * can go without: a cache's. Those went past the floor (a page rendered
+     * for a visitor, the sitemap), so on a disk already below it every page
+     * asked for took a little more of what was left. Nothing is logged: the
+     * page is served either way, and one line a page view is no use to anyone.
+     */
+    public static function hasRoom(int $bytes = 0, ?string $dir = null): bool
+    {
+        return self::shortOfRoom($bytes, $dir) === null;
+    }
+
+    /** Null when a write of `$bytes` leaves the floor free; otherwise what is free and the floor. @return array{0: int, 1: int}|null */
+    private static function shortOfRoom(int $bytes, ?string $dir): ?array
+    {
         $floor = (int) self::get('minFreeBytes', 256 * 1024 * 1024);
-        if ($floor <= 0) return;
+        if ($floor <= 0) return null;
         $free = @disk_free_space($dir ?? self::dataDir());
-        if ($free === false) return;
-        if ($free - max(0, $bytes) < $floor) {
-            error_log(sprintf('softn-api: refused a write of %d bytes: %d bytes free, below minFreeBytes (%d)', $bytes, (int) $free, $floor));
-            throw new ApiError(507, 'The directory has no room for this right now. Try again later.');
-        }
+        if ($free === false) return null;
+        return $free - max(0, $bytes) < $floor ? [(int) $free, $floor] : null;
     }
 
     public static function isAdmin(?string $presented): bool

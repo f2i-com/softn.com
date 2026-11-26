@@ -182,8 +182,19 @@ final class Apps
         $hasBackend = $backendRuntime !== null;
         $customUrl = is_string($row['backend_url'] ?? null) && $row['backend_url'] !== '' ? $row['backend_url'] : null;
         $serverEnabled = Config::get('allowServerHosting', true) === true;
-        $serverHosted = $playUrl === null && ($mode === 'server' || $mode === 'hybrid') && ($customUrl !== null || ($hasBackend && $serverEnabled));
-        $backendUrl = $serverHosted ? ($customUrl ?? "/api/apps/$slug/backend") : null;
+        // `backendUrl` is the address the app's frontend is pointed at, which is
+        // not every address an app may have been given: see honouredBackendUrl.
+        // `customBackendUrl` is what was given, for the owner's form to show.
+        // One that names the app's own hosted backend, however it is written, is
+        // that backend and no other: hosted when an app that names none would be,
+        // and served by HostedBackend::dispatch. That refused every stored address
+        // as a custom one, so this one was handed to the app's frontend and
+        // answered 400 there.
+        $ownBackend = "/api/apps/$slug/backend";
+        $named = $customUrl === null ? null : self::honouredBackendUrl($slug, $customUrl);
+        $elsewhere = $customUrl !== null && $named !== $ownBackend;
+        $serverHosted = $playUrl === null && ($mode === 'server' || $mode === 'hybrid') && ($elsewhere || ($hasBackend && $serverEnabled));
+        $backendUrl = !$serverHosted ? null : ($elsewhere ? $named : $ownBackend);
         // Fail closed: withhold_backend on a server-hosted app stays enforced even if
         // allowServerHosting is later turned off, so withheld backend source never leaks.
         $withholdBackend = $playUrl === null && $mode === 'server' && (bool) ($row['withhold_backend'] ?? false);
@@ -195,8 +206,64 @@ final class Apps
             'backendUrl' => $backendUrl,
             'customBackendUrl' => $customUrl,
             'withholdBackend' => $withholdBackend,
-            'sandbox' => $serverHosted && $customUrl === null ? 'zipp-safe-sandbox' : ($hasBackend ? 'browser-wasm-sandbox' : null),
+            'sandbox' => $serverHosted && !$elsewhere ? 'zipp-safe-sandbox' : ($hasBackend ? 'browser-wasm-sandbox' : null),
         ];
+    }
+
+    /**
+     * The backend an app's frontend is pointed at when the app names one of
+     * its own (`backend_url`), or null when the one it names is not used.
+     * This is the one rule, for the play page and for the API the web app
+     * reads, both of which take it from hostingInfo:
+     *
+     * - The app's own hosted backend, `/api/apps/<slug>/backend`, written as
+     *   that path or in full on this site: used, and given out as the path.
+     * - Anything else on this site, a path or an address on `siteOrigin` or on
+     *   the name this request came to: never. The frontend's requests to it
+     *   go as the visitor, with what the browser holds for this origin, and
+     *   the app chooses the paths under it: pointed at
+     *   `/api/apps/<another>/backend`, or at the site itself, it spoke to
+     *   that as the visitor. The one who trusts an app does not thereby lend
+     *   it the others' backends, so the owner's `trusted` is no exception.
+     * - An address elsewhere: used where `siteOrigin` says what this site's
+     *   own address is, and not where it does not, for there an address
+     *   elsewhere cannot be told from one of the site's other names. That is
+     *   what parseBackendUrl holds a publisher to when the address is set;
+     *   this holds every app to it when the address is used, the ones stored
+     *   before that was asked and the ones the request's own name let through.
+     *
+     * The two had a rule each. The play page gave out no address elsewhere,
+     * and one on this site for a trusted app unless its path began with a
+     * short list; the API gave the web app whatever was stored, and the web
+     * app used it.
+     */
+    public static function honouredBackendUrl(string $slug, string $url): ?string
+    {
+        $own = "/api/apps/$slug/backend";
+        if (str_starts_with($url, '/')) return rtrim($url, '/') === $own ? $own : null;
+        $parsed = parse_url($url);
+        if (!is_array($parsed) || !isset($parsed['scheme'], $parsed['host'])) return null;
+        // As Pages::origin reads it; asked of the configuration here, since a
+        // listing is made where no page is (a command-line script).
+        $siteOrigin = Config::get('siteOrigin');
+        if (!is_string($siteOrigin) || $siteOrigin === '') $siteOrigin = null;
+        // A name is this site's by either scheme, as a proxy that ends TLS in
+        // front of it reaches it by the other one: the two default ports are one.
+        $hostOf = static function (array $p): string {
+            $port = isset($p['port']) && !in_array((int) $p['port'], [80, 443], true) ? ':' . (int) $p['port'] : '';
+            return strtolower(rtrim((string) $p['host'], '.')) . $port;
+        };
+        $ours = false;
+        $requestHost = $_SERVER['HTTP_HOST'] ?? '';
+        foreach ([$siteOrigin, is_string($requestHost) && trim($requestHost) !== '' ? 'http://' . trim($requestHost) : null] as $candidate) {
+            $self = is_string($candidate) ? parse_url($candidate) : null;
+            if (is_array($self) && isset($self['host']) && $hostOf($self) === $hostOf($parsed)) $ours = true;
+        }
+        if ($ours) {
+            $plain = !isset($parsed['user']) && !isset($parsed['pass']) && !isset($parsed['query']) && !isset($parsed['fragment']);
+            return $plain && rtrim((string) ($parsed['path'] ?? ''), '/') === $own ? $own : null;
+        }
+        return $siteOrigin === null ? null : $url;
     }
 
     private static function parseHosting(mixed $value, bool $hasBackend, ?string $customUrl, bool $byAdmin = false): string
@@ -404,6 +471,8 @@ final class Apps
         $withhold = (bool) $hosting['withholdBackend'];
         $appDir = $withhold ? Catalog::path($slug) : '';
         $versions = [];
+        // The client bundles the versions name, which are in use; the rest are superseded.
+        $liveClients = [];
         usort($doc['versions'],fn($a,$b)=>$b['version']<=>$a['version']);
         foreach ($doc['versions'] as $r) {
             $verNum = (int) $r['version'];
@@ -413,6 +482,7 @@ final class Apps
             if ($withhold) {
                 $srcPath = $appDir . '/' . (string) $r['file'];
                 $cachePath = $appDir . '/backend-cache/client-v' . $verNum . '-' . substr($verSha, 0, 12) . '.softn';
+                $liveClients[basename($cachePath)] = true;
                 try {
                     if (is_file($srcPath)) {
                         $clientPath = Bundle::clientBundlePath($srcPath, $cachePath);
@@ -437,6 +507,11 @@ final class Apps
                 'bundle' => $verUrl,
             ];
         }
+        // Here, where what the versions name is known: a client bundle none of
+        // them names any more goes once it has not been used for a while (see
+        // Bundle::pruneClientBundles). A cache's trouble is not the page's.
+        try { Bundle::pruneClientBundles(Catalog::path($slug) . '/backend-cache', $liveClients); }
+        catch (Throwable $e) { error_log("softn-api: superseded client bundles of $slug were not pruned: " . $e->getMessage()); }
         $breakdown = Catalog::ratingStars($slug);
         // Read as text too: one saved as a number before hiddenRemixes kept them as text is still in its app.json.
         $hiddenRemixes=array_map('strval',array_filter(json_decode((string)($row['hidden_remixes']??'[]'),true)?:[],'is_scalar'));
@@ -879,28 +954,41 @@ final class Apps
         $tags = Text::tags($meta['tags'] ?? null);
         $primary = self::color($meta['primary'] ?? null) ?? self::color($info['manifest']['config']['theme']['primary'] ?? null);
 
+        $doc=Catalog::doc($slug);
+        // The demo is filed where its index says unless the operator has
+        // filed it elsewhere since the seed last did: that filing is theirs.
+        $refiled=isset($doc['app']['seed_category'])&&$doc['app']['seed_category']!==$doc['app']['category'];
+        $nextCat=$refiled?$doc['app']['category']:$category;
+        $nextSub=$refiled?($doc['app']['subcategory']??null):$subcategory;
+        $filing=['category'=>$nextCat,'subcategory'=>$nextSub,'seed_category'=>$refiled?$doc['app']['seed_category']:$category,'seed_subcategory'=>$refiled?($doc['app']['seed_subcategory']??null):$subcategory];
+        // The folder first, as Apps::patch moves it: in the categorized layout
+        // where the folder is says what the category is (Catalog::moveAppFolder).
+        // The category was written first and a move that could not be made passed
+        // over. Refused, the demo stays filed where its folder is, with the rest
+        // of the update made, and the next sync tries again.
+        if (!$refiled && ($why = Catalog::moveAppFolder($slug, $nextCat, $nextSub)) !== null) {
+            $curSub = $doc['app']['subcategory'] ?? null;
+            error_log("softn-api: demo $slug stays filed under {$doc['app']['category']}" . ($curSub !== null ? "/$curSub" : '') . ", not $nextCat" . ($nextSub !== null ? "/$nextSub" : '') . " as its index says: $why");
+            $filing = [];
+        }
+
         $dir = self::dir($slug);
         $file = 'v1.softn';
         self::copyBundle($bundlePath, "$dir/$file");
         $icon = self::storeIcon($dir, $info['icon']);
         $now = time();
 
+        // As the move left it: the folder's category is the app's from there.
         $doc=Catalog::doc($slug);
         // The seed owns version 1. Once a later version has been published
         // (the site owner's, with the admin key), the app's own fields
         // describe that one: writing version 1's capabilities and storage
         // policies over them made the play page set the app up without the
         // storage its current version declares.
-        // The demo is filed where its index says unless the operator has
-        // filed it elsewhere since the seed last did: that filing is theirs.
-        $refiled=isset($doc['app']['seed_category'])&&$doc['app']['seed_category']!==$doc['app']['category'];
-        $nextCat=$refiled?$doc['app']['category']:$category;
-        $nextSub=$refiled?($doc['app']['subcategory']??null):$subcategory;
         if((int)($doc['app']['latest_version']??1)===1)
-        $doc['app']=array_replace($doc['app'],['name'=>$name,'description'=>$description,'category'=>$nextCat,'subcategory'=>$nextSub,'seed_category'=>$refiled?$doc['app']['seed_category']:$category,'seed_subcategory'=>$refiled?($doc['app']['seed_subcategory']??null):$subcategory,'tags'=>json_encode($tags),'capabilities'=>json_encode($info['capabilities']),'execution'=>$info['execution'],'engine'=>(int)($info['engine']??1),'backend_runtime'=>$info['backendRuntime']??null,'storage_policies'=>json_encode((object)$info['storagePolicies']),'icon'=>$icon??$doc['app']['icon'],'primary_color'=>$primary,'size'=>$info['size'],'updated_at'=>$now]);
+        $doc['app']=array_replace($doc['app'],$filing+['name'=>$name,'description'=>$description,'tags'=>json_encode($tags),'capabilities'=>json_encode($info['capabilities']),'execution'=>$info['execution'],'engine'=>(int)($info['engine']??1),'backend_runtime'=>$info['backendRuntime']??null,'storage_policies'=>json_encode((object)$info['storagePolicies']),'icon'=>$icon??$doc['app']['icon'],'primary_color'=>$primary,'size'=>$info['size'],'updated_at'=>$now]);
         foreach($doc['versions'] as &$v)if((int)$v['version']===1)$v=array_replace($v,['file'=>$file,'size'=>$info['size'],'sha256'=>$info['sha256'],'manifest_version'=>$info['version'],'created_at'=>$now]);
         unset($v);Catalog::put($slug,$doc);
-        if (!$refiled) Catalog::moveAppFolder($slug, $nextCat, $nextSub);
     }
 
     /** @param array<string, mixed> $fields @return array<string, mixed> */
@@ -993,16 +1081,28 @@ final class Apps
             $sets[] = 'withhold_backend = :withhold_backend';
             $params[':withhold_backend'] = $nextHosting === 'server' ? self::parseBoolFlag($rawWithhold) : 0;
         }
+        $hiddenRemixes = array_key_exists('hiddenRemixes', $fields) ? self::hiddenRemixes($slug, $fields['hiddenRemixes']) : null;
+        // The folder before anything is written, and the folder decides: in the
+        // categorized layout an app's category is where its folder is, which is
+        // where the next request reads it from. A folder that cannot go where
+        // the category says (another is there, or the name is a subcategory's)
+        // is a change that was not made, and the answer says so. The category
+        // went into app.json first and the move was tried after, in silence:
+        // the answer named the new category, and the next request the old one.
+        // Should the write below fail, the folder has moved and the app is
+        // filed where it was asked to be; the next scan writes that down.
+        if ($moveCategory && ($why = Catalog::moveAppFolder($slug, $nextCat, $nextSub)) !== null) {
+            throw new ApiError(409, 'This app cannot be filed under ' . $nextCat . ($nextSub !== null ? "/$nextSub" : '') . ": $why. Nothing was changed.");
+        }
         // Not a change to the app itself, so its updated_at stays as it was.
-        if (array_key_exists('hiddenRemixes', $fields)) {
-            Catalog::patch($slug, ['hidden_remixes' => json_encode(self::hiddenRemixes($slug, $fields['hiddenRemixes']))]);
+        if ($hiddenRemixes !== null) {
+            Catalog::patch($slug, ['hidden_remixes' => json_encode($hiddenRemixes)]);
             $row = self::row($slug, true);
         }
         if (!$sets) return self::detail($row);
         $sets[] = 'updated_at = :now';
         $params[':now'] = time();
         unset($params[':slug']);$changes=[];foreach($params as $k=>$v){$field=substr($k,1);$field=match($field){'primary'=>'primary_color','now'=>'updated_at',default=>$field};$changes[$field]=$v;}Catalog::patch($slug,$changes);
-        if ($moveCategory) Catalog::moveAppFolder($slug, $nextCat, $nextSub);
         return self::detail(self::row($slug, true));
     }
 
@@ -1083,6 +1183,9 @@ final class Apps
     }
 
     public static function remove(string $slug): void { Catalog::remove($slug);
+        // What its pages were rendered to goes with it. Where there are no pages (a
+        // command-line script that loads the catalogue alone) there is no cache of them.
+        if (class_exists('Pages', false) && class_exists('Prerender', false)) Pages::forget($slug);
     }
 
     /**

@@ -38,6 +38,11 @@ export interface BackendQueueOptions {
   /** Deadline for an answer, counted from the moment the call is sent, and for a slot while it waits. */
   timeoutMs?: number;
   /**
+   * Deadline for the answer to a call FormLogic answers only when the person is done
+   * ({@link PERSON_ACTIONS}), counted from the moment it is sent ({@link PERSON_TIMEOUT_MS} unless given).
+   */
+  personTimeoutMs?: number;
+  /**
    * The id the first call is sent with (1 unless given). Two queues on one port start far
    * apart, so a reply's id names one call in one of them and no other.
    */
@@ -77,6 +82,19 @@ export const BACKEND_TIMEOUT = 'The backend request timed out.';
 export const BACKEND_UNREADABLE = 'The backend reply could not be read.';
 export const BACKEND_INVALID = 'Invalid backend request.';
 
+/**
+ * Calls FormLogic answers when the person is done with what it shows them, not when it has
+ * worked something out: the wallet (`{op: "open"}` after a declined charge answers
+ * `{closed: true, balanceCents}` when the person closes it). Held to the ordinary deadline, a
+ * person who spent longer in the wallet than that saw the app told "The backend request timed
+ * out." while the wallet stayed open, and the answer sent when they closed it was dropped.
+ * Listening and an app offer are not among them: those answer at once and are followed with
+ * `status`.
+ */
+export const PERSON_ACTIONS: ReadonlySet<string> = new Set(['formlogicWallet']);
+/** How long such a call is waited for: long enough for a person, and still an end should FormLogic never answer. */
+export const PERSON_TIMEOUT_MS = 30 * 60_000;
+
 /** An action's name as the parent takes it (HostedAppFrame), and as the script runtime checks it before it calls. */
 const ACTION = /^[a-z][a-zA-Z0-9_-]{0,63}$/;
 
@@ -88,6 +106,7 @@ export function createBackendQueue(options: BackendQueueOptions): BackendQueue {
   const maxInFlight = options.maxInFlight ?? 4;
   const maxQueued = options.maxQueued ?? 32;
   const timeoutMs = options.timeoutMs ?? 20000;
+  const personTimeoutMs = options.personTimeoutMs ?? PERSON_TIMEOUT_MS;
   let sequence = (options.firstId ?? 1) - 1;
   const sent = new Map<number, Sent>();
   const waiting: Waiting[] = [];
@@ -114,7 +133,9 @@ export function createBackendQueue(options: BackendQueueOptions): BackendQueue {
         // The caller is answered; the slot stays the parent's until it answers.
         item.resolve(refused(BACKEND_TIMEOUT, item.lifecycle, true));
         item.resolve = undefined;
-      }, next.lifecycle ? Math.max(0, next.lifecycle.deadlineAt - Date.now()) : timeoutMs);
+      }, next.lifecycle
+        ? Math.max(0, next.lifecycle.deadlineAt - Date.now())
+        : PERSON_ACTIONS.has(next.action) ? personTimeoutMs : timeoutMs);
       // Move cancellation from the waiting entry to this sent slot. A sent
       // cancellation answers unknown, but cannot release the parent's slot.
       next.detach?.();

@@ -20,6 +20,12 @@ $rawPath = explode('?', (string)($_SERVER['REQUEST_URI'] ?? ''), 2)[0];
 if (str_contains($path, '..') || str_contains($path, '\\') || preg_match('/%(?:2e|2f|5c)/i', $rawPath)) {
     reply(400, ['error'=>'Invalid path.','code'=>'invalid_request']);
 }
+// What the routes, the app's .htaccess and its backend all read from here on: the path decoded
+// once, as the Rust host reads it at ingress (softn_decode_path). Handed on as it came, an
+// encoded letter (`/api/%61dmin`) passed a rule written for `/api/admin` that the app's own
+// router, which decodes, then served.
+$path = softn_decode_path($path);
+if ($path === null || ($path !== '/api' && !str_starts_with($path, '/api/'))) reply(400, ['error'=>'Invalid path.','code'=>'invalid_request']);
 $manifest=json_decode(@file_get_contents($backend.'/app/manifest.json')?:'null',true);
 if(!is_array($manifest))reply(503,['error'=>'Application bundle is unavailable.']);
 $isContainer=softn_is_container_manifest($manifest);
@@ -250,33 +256,12 @@ if(isset($result['bodyRaw'])) {
     if(isset($result['headers'])&&is_array($result['headers'])) {
         $replacedCt=false;
         $replacedCc=false;
-        $blockedResponseHeaders=[
-            'status'=>true,'transfer-encoding'=>true,'connection'=>true,'content-length'=>true,
-            'x-sendfile'=>true,'x-sendfile2'=>true,'x-lighttpd-send-file'=>true,
-            'x-accel-redirect'=>true,'x-accel-buffering'=>true,
-            'x-accel-charset'=>true,'x-accel-expires'=>true,'x-accel-limit-rate'=>true,
-            'x-litespeed-location'=>true,'x-litespeed-purge'=>true,'x-litespeed-tag'=>true,
-            'service-worker-allowed'=>true,'access-control-allow-origin'=>true,
-            'access-control-allow-credentials'=>true,'access-control-allow-headers'=>true,
-            'access-control-allow-methods'=>true,'access-control-expose-headers'=>true,
-            'access-control-max-age'=>true,'content-security-policy'=>true,
-            'content-security-policy-report-only'=>true,'x-content-type-options'=>true,
-            'x-frame-options'=>true,'referrer-policy'=>true,
-            'strict-transport-security'=>true,'clear-site-data'=>true,
-            'cross-origin-opener-policy'=>true,'cross-origin-embedder-policy'=>true,
-            'cross-origin-resource-policy'=>true,'refresh'=>true,
-            // Kept by the browser for the whole origin, past this response: where reports of
-            // every request to it are sent, another server to reach it at, the hints sent
-            // with every request to it, how its documents are grouped. As on the Rust host
-            // (http.rs container_response_header_withheld).
-            'nel'=>true,'report-to'=>true,'reporting-endpoints'=>true,'alt-svc'=>true,
-            'origin-agent-cluster'=>true,'accept-ch'=>true,'critical-ch'=>true,
-        ];
         foreach($result['headers'] as $pair) {
             if(!is_array($pair)||count($pair)<2)continue;
             $k=trim((string)$pair[0]);$v=str_replace(["\r","\n","\0"],'',(string)$pair[1]);
             $lk=strtolower($k);
-            if($k===''||isset($blockedResponseHeaders[$lk])||str_starts_with($lk,'x-accel-')||str_starts_with($lk,'x-litespeed-')||str_starts_with($lk,'x-sendfile')||str_starts_with($lk,'x-lighttpd-'))continue;
+            // What a backend may not set, as on the Rust host (request.php).
+            if($k===''||softn_container_header_withheld($lk))continue;
             if(!preg_match('/^[A-Za-z0-9!#$%&\'*+.^_`|~-]+$/',$k))continue;
             if($lk==='set-cookie') {
                 // Prevent cross-subdomain cookie tossing (`Domain=...`), oversized/malformed cookies,

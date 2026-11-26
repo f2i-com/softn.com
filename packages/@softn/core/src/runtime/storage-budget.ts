@@ -12,28 +12,85 @@
  * person is told. The app's code can catch the failure and not the reason:
  * the engine gives a script its own words for a host call that threw.
  *
- * What is stored is counted once, on the first write, and kept up to date
- * from then on, so a write does not read the whole store back.
+ * What is stored is counted on the first write and kept up to date from
+ * then on, so a write does not read the whole store back. It is counted
+ * again when someone else has written under the prefix since (see
+ * `changes`): each engine keeps a budget of its own, and two of one app, in
+ * two views or two tabs, each held their own writes to the whole budget and
+ * never saw the other's.
  */
 
 type CountedStorage = Pick<Storage, 'length' | 'key' | 'getItem'>;
 
+/**
+ * How many times what a store holds under a prefix has been changed, as far
+ * as this page has heard: by a budget of that prefix here (`wrote`,
+ * `removed`), or in another tab (the browser's `storage` event, which says
+ * so in every tab but the one that wrote). A budget whose count was made
+ * before the last change by anyone else counts again at its next use, so
+ * an app open twice is held to one budget, at the cost of a count where
+ * the two take turns and of none where there is one.
+ *
+ * Two tabs that write in the same instant still each see only their own
+ * (a tab hears of the other's write when its own script has finished), by
+ * no more than each wrote in that moment; the next write of either counts
+ * both.
+ */
+const changes = new WeakMap<object, Map<string, number>>();
+
+function changesUnder(storage: object): Map<string, number> {
+  let prefixes = changes.get(storage);
+  if (!prefixes) changes.set(storage, (prefixes = new Map()));
+  return prefixes;
+}
+
+/** Another tab wrote to the store: every prefix its key is under has changed (a `null` key is the store cleared). */
+function heardFromAnotherTab(event: StorageEvent): void {
+  const prefixes = event.storageArea ? changes.get(event.storageArea) : undefined;
+  if (!prefixes) return;
+  for (const [prefix, count] of prefixes) {
+    if (event.key === null || event.key.startsWith(prefix)) prefixes.set(prefix, count + 1);
+  }
+}
+
+let hearing = false;
+
+/** Listen, once, for other tabs' writes to the page's own store; a store of another kind has no other tab. */
+function hearOtherTabs(storage: CountedStorage): void {
+  if (hearing) return;
+  try {
+    if (typeof localStorage === 'undefined' || storage !== localStorage || typeof addEventListener !== 'function') return;
+    addEventListener('storage', heardFromAnotherTab);
+    hearing = true;
+  } catch {
+    // A frame with no store of its own (reading `localStorage` throws) shares none with another tab.
+  }
+}
+
 export class StorageBudget {
   private sizes: Map<string, number> | null = null;
   private total = 0;
+  /** The change of the prefix (`changes`) the count was last brought up to. */
+  private countedAt = 0;
 
   constructor(
     private readonly storage: CountedStorage,
     private readonly prefix: string,
     /** In characters of key and value, which is how the browser counts its own limit. */
     readonly limit: number
-  ) {}
+  ) {
+    const prefixes = changesUnder(storage);
+    if (!prefixes.has(prefix)) prefixes.set(prefix, 0);
+    hearOtherTabs(storage);
+  }
 
   private counted(): Map<string, number> {
-    if (this.sizes) return this.sizes;
+    const change = changesUnder(this.storage).get(this.prefix) ?? 0;
+    if (this.sizes && this.countedAt === change) return this.sizes;
     const sizes = new Map<string, number>();
     try {
-      for (let i = 0; i < this.storage.length; i++) {
+      const length = this.storage.length;
+      for (let i = 0; i < length; i++) {
         const key = this.storage.key(i);
         if (key?.startsWith(this.prefix)) sizes.set(key, key.length + (this.storage.getItem(key)?.length ?? 0));
       }
@@ -42,7 +99,15 @@ export class StorageBudget {
     }
     this.sizes = sizes;
     this.total = [...sizes.values()].reduce((sum, size) => sum + size, 0);
+    this.countedAt = change;
     return sizes;
+  }
+
+  /** This budget changed what is stored: the others of its prefix count again, and this one is up to date. */
+  private changed(): void {
+    const prefixes = changesUnder(this.storage);
+    this.countedAt = (prefixes.get(this.prefix) ?? 0) + 1;
+    prefixes.set(this.prefix, this.countedAt);
   }
 
   /**
@@ -60,8 +125,15 @@ export class StorageBudget {
    * Refuse, before it is made, a write of `value` under the full key `key`
    * that would pass the budget, or the budget less `reserve` (what peers send
    * may not take the room an app's own writes need).
+   *
+   * Not before what is stored has been counted again: the host removes an
+   * app's keys without a word to its budget (clearing its data, in this
+   * page, where no `storage` event says so), and the app was then refused
+   * writes that fitted until the page was loaded again.
    */
   admit(key: string, value: string, reserve = 0): void {
+    if (value.length <= this.room(key, reserve)) return;
+    this.sizes = null;
     if (value.length <= this.room(key, reserve)) return;
     throw new DOMException(
       reserve > 0
@@ -76,6 +148,7 @@ export class StorageBudget {
     const sizes = this.counted();
     this.total += key.length + value.length - (sizes.get(key) ?? 0);
     sizes.set(key, key.length + value.length);
+    this.changed();
   }
 
   /** `key` was removed. */
@@ -83,6 +156,7 @@ export class StorageBudget {
     const sizes = this.counted();
     this.total -= sizes.get(key) ?? 0;
     sizes.delete(key);
+    this.changed();
   }
 }
 

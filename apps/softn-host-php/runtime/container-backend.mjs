@@ -1622,94 +1622,611 @@ function isPrivatePhpDir(rel, backend) {
   return false;
 }
 
+// A `<Files name>` wildcard (`*` any run, `?` any one character), by any case, as a matcher with
+// the `test(name)` a RegExp has. It was a RegExp of `.*` runs, which JavaScript's engine runs by
+// backtracking: `<Files "*a*a*a*a*b">` took over a minute against one 400-character segment of a
+// request's path, a path anybody may send. This matches in time bounded by the pattern's length
+// times the name's (each `*` is tried again only from the last one met), as the Rust host's
+// engine runs it without backtracking.
 function htaccessGlobToRegExp(glob) {
-  const escaped = String(glob).replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.');
-  return new RegExp(`^${escaped}$`, 'i');
+  const pattern = Array.from(String(glob).toLowerCase());
+  return {
+    test(text) {
+      const name = Array.from(String(text).toLowerCase());
+      let p = 0;
+      let n = 0;
+      let star = -1;
+      let resume = 0;
+      while (n < name.length) {
+        if (p < pattern.length && (pattern[p] === '?' || pattern[p] === name[n])) {
+          p++;
+          n++;
+        } else if (p < pattern.length && pattern[p] === '*') {
+          star = p++;
+          resume = n;
+        } else if (star >= 0) {
+          p = star + 1;
+          n = ++resume;
+        } else {
+          return false;
+        }
+      }
+      while (p < pattern.length && pattern[p] === '*') p++;
+      return p === pattern.length;
+    },
+  };
 }
 
 // Sections whose condition the host does not evaluate.
-const UNEVALUATED_HTACCESS_SECTIONS = new Set(['limit', 'limitexcept', 'if', 'elseif', 'else']);
+const UNEVALUATED_HTACCESS_SECTIONS = new Set(['if', 'elseif', 'else']);
+// The largest .htaccess that is read, and the most denies kept from one (the directory's own
+// and its blocks' together). Past either, nobody has anything under the directory: see
+// HTACCESS_CLOSED. The Rust host has the same two limits (MAX_HTACCESS_BYTES, MAX_HTACCESS_DENY).
+const MAX_HTACCESS_BYTES = 64 * 1024;
+const MAX_HTACCESS_DENY = 64;
+// The most RewriteRule and RedirectMatch lines read from one .htaccess and the most RewriteCond
+// lines read before one RewriteRule (past either, the directory is closed too), and how many
+// times the rewrite rules are run over one request: the Rust host's MAX_HTACCESS_RULES,
+// MAX_HTACCESS_CONDS and MAX_HTACCESS_PASSES.
+const MAX_HTACCESS_RULES = 256;
+const MAX_HTACCESS_CONDS = 64;
+const MAX_HTACCESS_PASSES = 4;
+// The longest <Files>, <Files ~> or <FilesMatch> pattern read, in bytes, as the Rust host
+// (MAX_HTACCESS_FILES_PATTERN_BYTES) and the browser's reader count it. A longer one closes the
+// directory too.
+const MAX_HTACCESS_FILES_PATTERN_BYTES = 512;
 
-// A `<Name args>` or `</Name>` section line of an .htaccess: whether it closes the section,
-// the lower-cased name, and what sits between the name and the closing `>`.
-function parseHtaccessSectionTag(line) {
-  const m = /^<(\/?)([A-Za-z]+)([\s\S]*)$/.exec(line);
-  if (!m) return null;
-  return {closing: m[1] === '/', name: m[2].toLowerCase(), args: m[3].trim().replace(/>$/, '').trim()};
+// What Rust's `char::is_whitespace` is true of, which is where the Rust host cuts a line
+// into words: JavaScript's `\s` without the byte-order mark and with U+0085.
+const isApacheSpace = ch => ch.codePointAt(0) !== 0xfeff && /[\s\u0085]/.test(ch);
+// Lower and upper case as Apache (and Rust's `to_ascii_lowercase`) takes them: of A to Z only.
+const asciiLower = text => text.replace(/[A-Z]/g, c => c.toLowerCase());
+const asciiUpper = text => text.replace(/[a-z]/g, c => c.toUpperCase());
+
+// A line's words as Apache takes them: apart at spaces, with quotes holding one together
+// and, inside double quotes, a backslash taking the next character as it is. The Rust
+// host's `tokenize_apache_line`.
+function tokenizeApacheLine(line) {
+  const tokens = [];
+  let cur = '';
+  let quote = null;
+  let hasToken = false;
+  const chars = Array.from(String(line));
+  for (let i = 0; i < chars.length; i++) {
+    const ch = chars[i];
+    if (quote) {
+      if (ch === '\\' && quote === '"') {
+        if (i + 1 < chars.length) cur += chars[++i];
+      } else if (ch === quote) {
+        quote = null;
+      } else {
+        cur += ch;
+      }
+      hasToken = true;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+      hasToken = true;
+    } else if (isApacheSpace(ch)) {
+      if (hasToken) {
+        tokens.push(cur);
+        cur = '';
+        hasToken = false;
+      }
+    } else {
+      cur += ch;
+      hasToken = true;
+    }
+  }
+  if (hasToken) tokens.push(cur);
+  return tokens;
 }
 
-// The matcher for a <Files>/<FilesMatch> header: `<Files name>` takes a wildcard name,
-// `<FilesMatch regex>` and `<Files ~ regex>` a regular expression. Null when it does not
-// compile.
-function compileFilesBlockMatcher(name, args) {
+// Whether a line is `Deny from all` or `Require all denied`: by its words, in any case and
+// with any run of spaces and tabs between them, as Apache reads a directive. (It was matched
+// with `\b` after the last word, which took `Deny from all.example.com` for a deny.)
+function isApacheDenyAll(line) {
+  const words = line.split(/[ \t]+/).filter(Boolean).slice(0, 3).map(asciiLower);
+  const said = words.join(' ');
+  return words.length === 3 && (said === 'deny from all' || said === 'require all denied');
+}
+
+// The methods a deny is for: every one (`null`), or the ones the <Limit> or <LimitExcept> it
+// sits in says. Names are kept as Apache knows them: as written (it matches them by case),
+// and HEAD as GET (to Apache they are one method). A <Limit> that names no method is one
+// Apache refuses to load; it is read as naming them all.
+const apacheMethod = name => (name === 'HEAD' ? 'GET' : name);
+function denyMethodsOfSection(except, args) {
+  const methods = tokenizeApacheLine(args).map(apacheMethod);
+  if (!except && methods.length === 0) return null;
+  return {except, methods};
+}
+const denyMethodsKey = scope => (scope ? JSON.stringify([scope.except, scope.methods]) : 'all');
+
+// Whether a deny is for a request made with `method`, taken in upper case, which is how the
+// host goes on to serve it. A caller that does not say how the request was made is refused
+// what any method is refused.
+function denyApplies(scope, method) {
+  if (!scope || typeof method !== 'string') return true;
+  const listed = scope.methods.includes(apacheMethod(asciiUpper(method)));
+  return scope.except ? !listed : listed;
+}
+
+// A rules file that cannot be read in full, holds more denies, rewrite rules, RedirectMatch
+// lines or conditions than are kept, or a <Files> pattern longer than is read, or whose sections
+// do not match up or have a tag Apache does not read, says who may not have what and cannot be
+// asked: nobody has anything under it. It used to be passed over, or read
+// as far as it went, which let through what the rest refused. The Rust host reads such a file
+// the same way (`ParsedHtaccess::closed`).
+const HTACCESS_CLOSED = Object.freeze({
+  dirPrefix: '',
+  rewriteEngine: false,
+  rewriteBase: null,
+  denyAll: Object.freeze([null]),
+  denyFiles: Object.freeze([]),
+  redirectMatches: Object.freeze([]),
+  rules: Object.freeze([]),
+});
+
+// The section tag a line of an .htaccess is, if it starts as one does (with `<` and a letter, or
+// with `</`): `{closing, name, args}` for `<Name args>`, `<Name>` or `</Name>`, with the
+// lower-cased name and what sits between it and the `>`. 'malformed' for a line that starts as
+// a tag does and is not one Apache reads, which it answers with 500 for everything under the
+// directory: an opening tag whose name runs into its arguments or that does not end with its
+// `>` (`<Files "secret.txt"`), or a closing tag that is not `</Name>` alone (`</Files >`,
+// `</Files`). Apache passes over words after a tag's `>` after some tags and not others; here a
+// tag is its whole line, and they are malformed too. The Rust host's `parse_apache_section_tag`.
+function parseHtaccessSectionTag(line) {
+  if (line.startsWith('</')) {
+    const close = /^<\/([A-Za-z]+)>$/.exec(line);
+    return close ? {closing: true, name: close[1].toLowerCase(), args: ''} : 'malformed';
+  }
+  const open = /^<([A-Za-z]+)([\s\S]*)$/.exec(line);
+  if (!open) return null;
+  // The name, then its `>`, or a space and the arguments and then the `>` that ends the line.
+  const afterName = open[2];
+  if (afterName !== '>' && !(isApacheSpace(afterName[0] ?? '') && afterName.endsWith('>'))) return 'malformed';
+  return {closing: false, name: open[1].toLowerCase(), args: afterName.slice(0, -1).trim()};
+}
+
+// The pattern of a <Files>/<FilesMatch> header, unquoted, and whether it is a regular expression:
+// `<FilesMatch regex>` and `<Files ~ regex>` hold one, `<Files name>` a wildcard name. The Rust
+// host's `files_block_pattern`.
+function filesBlockPattern(name, args) {
   const unquote = s => s.trim().replace(/^["']+|["']+$/g, '');
   const tilde = name === 'files' && /^~\s/.test(args);
-  const pat = unquote(tilde ? args.slice(1) : args);
-  if (pat.length > 256) return null;
-  if (name === 'files' && !tilde) return htaccessGlobToRegExp(pat);
-  if (/\((?:[^()\\]*[*+?{][^()\\]*)\)[*+?{]/.test(pat)) return null;
+  return {pattern: unquote(tilde ? args.slice(1) : args), isRegex: name === 'filesmatch' || tilde};
+}
+
+// The matcher for a <Files>/<FilesMatch> pattern, by any case. Null when it does not compile.
+function compileFilesBlockMatcher({pattern, isRegex}) {
+  if (!isRegex) return htaccessGlobToRegExp(pattern);
+  if (BACKTRACKING_SHAPE.test(pattern)) return null;
   try {
-    return new RegExp(pat, 'i');
+    return new RegExp(pattern, 'i');
   } catch {
     return null;
   }
 }
 
-function isDeniedByHtaccess(vfs, targetPath) {
-  const rel = normalizeVfsKey(targetPath);
-  if (!rel) return false;
-  const segs = rel.split('/');
-  const base = segs[segs.length - 1] || '';
-  const dirs = [''];
-  for (let i = 0; i < segs.length - 1; i++) {
-    dirs.push(segs.slice(0, i + 1).join('/'));
+// The shape of a pattern that can backtrack without end in JavaScript's engine, which the Rust
+// host's does not do: a quantified group that holds a quantifier, as `(a+)+`. Not compiled.
+const BACKTRACKING_SHAPE = /\((?:[^()\\]*[*+?{][^()\\]*)\)[*+?{]/;
+
+// A RewriteRule, RewriteCond or RedirectMatch pattern as the Rust host's `compile_apache_regex`
+// takes one: up to 1024 bytes, matched by case unless `nocase`. Null for one that does not
+// compile here or has the shape above; its line is then not read, as one the Rust host cannot
+// compile is not. (The two engines differ at the edges: a look-around compiles only here.)
+function compileApacheRegex(pattern, nocase) {
+  if (Buffer.byteLength(pattern) > 1024 || BACKTRACKING_SHAPE.test(pattern)) return null;
+  try {
+    return new RegExp(pattern, nocase ? 'i' : '');
+  } catch {
+    return null;
   }
-  for (const dir of dirs) {
-    const key = dir ? `${dir}/.htaccess` : '.htaccess';
-    const rawBuf = vfs.get(key);
-    if (!rawBuf) continue;
-    const text = rawBuf.toString('utf8');
-    if (text.length > 64 * 1024) continue;
-    const lines = text.split(/\r?\n/);
-    // The <Files>/<FilesMatch> block being read: its matcher and whether it denies. Being
-    // inside the block is kept apart from having a matcher, because a pattern that does not
-    // compile here (too long, or shaped like one that backtracks without end) still opens a
-    // block. Its lines must not be read as the directory's own: `Require all denied` under
-    // Drupal's stock <FilesMatch> would then refuse every request, the entry script
-    // included. Such a block denies nothing instead. What it would have named cannot be
-    // worked out, and the paths the host keeps private do not depend on .htaccess.
-    let block = null;
-    // How deep the line sits in sections whose condition is not evaluated here. Their lines
-    // are skipped for the same reason: a deny for some methods is not a deny for all.
-    let unevaluatedDepth = 0;
-    for (const rawLine of lines) {
-      const line = rawLine.trim();
-      if (!line || line.startsWith('#')) continue;
-      const tag = parseHtaccessSectionTag(line);
-      if (tag) {
-        if (UNEVALUATED_HTACCESS_SECTIONS.has(tag.name)) {
-          unevaluatedDepth = tag.closing ? Math.max(0, unevaluatedDepth - 1) : unevaluatedDepth + 1;
-        } else if (unevaluatedDepth > 0) {
-          // Skipped with the rest of the section.
-        } else if (tag.name === 'files' || tag.name === 'filesmatch') {
-          if (!tag.closing) {
-            block = {matcher: compileFilesBlockMatcher(tag.name, tag.args), denied: false};
-          } else {
-            if (block && block.denied && block.matcher && block.matcher.test(base)) return true;
-            block = null;
+}
+
+// What a RedirectMatch's first word says, as the Rust host reads it: the status it gives, and
+// where its pattern is. A keyword, or a status from 300 to 599, comes before the pattern; any
+// other word is the pattern itself, with 302.
+const REDIRECT_KEYWORDS = new Map([['permanent', 301], ['temp', 302], ['seeother', 303], ['gone', 410]]);
+function redirectMatchStatus(word) {
+  const keyword = REDIRECT_KEYWORDS.get(asciiLower(word));
+  if (keyword) return {status: keyword, patternAt: 2};
+  const code = /^\+?[0-9]+$/.test(word) ? Number(word) : NaN;
+  return code >= 300 && code <= 599 ? {status: code, patternAt: 2} : {status: 302, patternAt: 1};
+}
+
+// The status of a RewriteRule's `[R=…]` (given in upper case): PERMANENT, TEMP, or one from
+// 300 to 399; 302 for anything else.
+function redirectFlagStatus(value) {
+  if (value === 'PERMANENT') return 301;
+  if (value === 'TEMP') return 302;
+  const code = /^\+?[0-9]+$/.test(value) ? Number(value) : NaN;
+  return code >= 300 && code < 400 ? code : 302;
+}
+
+// The flags of a RewriteRule or RewriteCond (`[L,QSA]`), each as written.
+const htaccessFlags = token => (token ?? '').replace(/^\[+/, '').replace(/\]+$/, '').split(',').map(flag => flag.trim());
+
+// One .htaccess, the one in `dirPrefix`: the directory's own denies (`denyAll`, each the
+// methods it is for), its <Files>/<FilesMatch> blocks' (`denyFiles`, each a matcher and its
+// methods), its RedirectMatch lines and its rewrite rules. The Rust host's
+// `parse_htaccess_file` reads the same file to the same rules, and
+// tests/container-backend.test.mjs holds the two to the same cases.
+function parseHtaccessFile(rawBuf, dirPrefix = '') {
+  // By the file's own size: read as text, bytes that are not UTF-8 are longer than they were.
+  if (rawBuf.length > MAX_HTACCESS_BYTES) return HTACCESS_CLOSED;
+  const out = {
+    dirPrefix: normalizeVfsKey(dirPrefix),
+    rewriteEngine: false,
+    rewriteBase: null,
+    denyAll: [],
+    denyFiles: [],
+    redirectMatches: [],
+    rules: [],
+  };
+  // The RewriteCond lines read since the last RewriteRule, which are that rule's conditions.
+  let pendingConds = [];
+  // The <Files>/<FilesMatch> block being read: its matcher and the methods its denies are
+  // for. Being inside the block is kept apart from having a matcher, because a pattern that
+  // does not compile here (shaped like one that backtracks without end, or not a pattern)
+  // still opens a block. Its lines must not be read as the directory's own: `Require all denied`
+  // under Drupal's stock <FilesMatch> would then refuse every request, the entry script
+  // included. Such a block denies nothing instead. What it would have named cannot be
+  // worked out, and the paths the host keeps private do not depend on .htaccess.
+  let block = null;
+  // How deep the line sits in <If>, <ElseIf> and <Else>, whose condition is not evaluated
+  // here. Their lines are skipped: a deny for some requests is not a deny for all.
+  let unevaluatedDepth = 0;
+  // The <Limit>/<LimitExcept> sections the line sits in. A deny inside one is for the methods
+  // it names (it used to be dropped, and then it was for nobody). Apache does not let them
+  // nest; where they do, the deny is read as one for every method.
+  const limits = [];
+  const tooMany = pending => out.denyAll.length + out.denyFiles.length + pending > MAX_HTACCESS_DENY;
+  // So do more RewriteRule or RedirectMatch lines than are kept, or more RewriteCond lines
+  // before one rule: any of them could refuse a request (`[F]`, `RedirectMatch 403`) or keep one
+  // from a rule that would. They are counted as they are read, compiled or not, so that the
+  // Rust host, whose pattern engine compiles some patterns this one does not and the other way
+  // round, closes the directory at the same line.
+  let rewriteRulesRead = 0;
+  let redirectMatchesRead = 0;
+  // The sections the line sits in, by name, the innermost last. Apache will not load a file
+  // whose sections do not match up (one closed that is not the innermost open, or one left open
+  // at the end) and answers 500 for everything under the directory. Read as far as it went, a
+  // block left open denied nothing, and what followed a stray closing tag was read as though it
+  // were outside its section: such a file refuses everything here instead. So does one with a
+  // tag Apache does not read (`</Files >`, `<Files "secret.txt"`), which was taken for the tag it
+  // looks like.
+  const sections = [];
+  for (const rawLine of rawBuf.toString('utf8').split(/\r?\n/)) {
+    // What Rust's `trim` takes off is taken off here too (U+0085, with the byte-order mark
+    // that only JavaScript's does), so that a line is the same line to both hosts.
+    const line = rawLine.replace(/^[\s\u0085]+|[\s\u0085]+$/g, '');
+    if (!line || line.startsWith('#')) continue;
+    const tag = parseHtaccessSectionTag(line);
+    if (tag === 'malformed') return HTACCESS_CLOSED;
+    if (tag) {
+      if (!tag.closing) sections.push(tag.name);
+      else if (sections.pop() !== tag.name) return HTACCESS_CLOSED;
+      if (UNEVALUATED_HTACCESS_SECTIONS.has(tag.name)) {
+        unevaluatedDepth = tag.closing ? Math.max(0, unevaluatedDepth - 1) : unevaluatedDepth + 1;
+      } else if (unevaluatedDepth > 0) {
+        // Skipped with the rest of the section.
+      } else if (tag.name === 'limit' || tag.name === 'limitexcept') {
+        if (tag.closing) limits.pop();
+        else limits.push(denyMethodsOfSection(tag.name === 'limitexcept', tag.args));
+      } else if (tag.name === 'files' || tag.name === 'filesmatch') {
+        if (!tag.closing) {
+          // A pattern over the limit is not read, and what it would have named cannot be worked
+          // out: nobody has anything under the directory. It used to be read as one that does
+          // not compile, which denies nothing.
+          const files = filesBlockPattern(tag.name, tag.args);
+          if (Buffer.byteLength(files.pattern) > MAX_HTACCESS_FILES_PATTERN_BYTES) return HTACCESS_CLOSED;
+          block = {matcher: compileFilesBlockMatcher(files), methods: []};
+        } else {
+          if (block && block.matcher) {
+            for (const methods of block.methods) out.denyFiles.push({matcher: block.matcher, methods});
+            if (tooMany(0)) return HTACCESS_CLOSED;
           }
+          block = null;
         }
-        // <IfModule> and the like: the body applies as written.
-        continue;
       }
-      if (unevaluatedDepth > 0) continue;
-      if (/^(?:Require\s+all\s+denied|Deny\s+from\s+all)\b/i.test(line)) {
-        if (!block) return true;
-        block.denied = true;
+      // <IfModule> and the like: the body applies as written.
+      continue;
+    }
+    if (unevaluatedDepth > 0) continue;
+    if (isApacheDenyAll(line)) {
+      const methods = limits.length === 1 ? limits[0] : null;
+      // Said twice (`Require all denied` and, for an older Apache, `Deny from all`) is said once.
+      const kept = block ? block.methods : out.denyAll;
+      if (!kept.some(other => denyMethodsKey(other) === denyMethodsKey(methods))) kept.push(methods);
+      if (tooMany(block ? block.methods.length : 0)) return HTACCESS_CLOSED;
+      continue;
+    }
+    // Nothing else is read inside a block or a method section.
+    if (block || limits.length > 0) continue;
+
+    const tokens = tokenizeApacheLine(line);
+    if (tokens.length === 0) continue;
+    const directive = asciiLower(tokens[0]);
+    if (directive === 'rewriteengine' && tokens.length >= 2) {
+      out.rewriteEngine = asciiLower(tokens[1]) === 'on';
+    } else if (directive === 'rewritebase' && tokens.length >= 2) {
+      out.rewriteBase = tokens[1];
+    } else if (directive === 'redirectmatch' && tokens.length >= 2) {
+      if (++redirectMatchesRead > MAX_HTACCESS_RULES) return HTACCESS_CLOSED;
+      const {status, patternAt} = redirectMatchStatus(tokens[1]);
+      const regex = patternAt < tokens.length ? compileApacheRegex(tokens[patternAt], false) : null;
+      if (regex) out.redirectMatches.push({status, regex, target: tokens[patternAt + 1] ?? null});
+    } else if (directive === 'rewritecond' && tokens.length >= 3) {
+      if (pendingConds.length >= MAX_HTACCESS_CONDS) return HTACCESS_CLOSED;
+      const negated = tokens[2].startsWith('!');
+      const pattern = negated ? tokens[2].slice(1) : tokens[2];
+      const flags = htaccessFlags(tokens[3]).map(asciiLower);
+      const nocase = flags.includes('nc') || flags.includes('nocase');
+      const orNext = flags.includes('or') || flags.includes('ornext');
+      // A file test (`-f`, `-d` …) or a comparison (`=text`) is not a pattern.
+      const test = ['-f', '-F', '-s', '-d', '-l', '-L'].includes(pattern) || pattern.startsWith('=');
+      pendingConds.push({testString: tokens[1], pattern, regex: test ? null : compileApacheRegex(pattern, nocase), negated, nocase, orNext});
+    } else if (directive === 'rewriterule' && tokens.length >= 3) {
+      if (++rewriteRulesRead > MAX_HTACCESS_RULES) return HTACCESS_CLOSED;
+      // A leading `!` negates the pattern (it is not a part of it): the rule is for a path the
+      // pattern does not match, and its `$1`…`$9` are empty, as Apache reads it.
+      const negated = tokens[1].startsWith('!');
+      const rule = {regex: null, negated, substitution: tokens[2], conds: pendingConds, last: false, qsa: false, forbidden: false, gone: false, redirectStatus: null};
+      let nocase = false;
+      for (const flag of htaccessFlags(tokens[3]).map(asciiUpper)) {
+        if (flag === 'L' || flag === 'LAST' || flag === 'END') rule.last = true;
+        else if (flag === 'QSA' || flag === 'QSAPPEND') rule.qsa = true;
+        else if (flag === 'NC' || flag === 'NOCASE') nocase = true;
+        else if (flag === 'F' || flag === 'FORBIDDEN') rule.forbidden = rule.last = true;
+        else if (flag === 'G' || flag === 'GONE') rule.gone = rule.last = true;
+        else if (flag === 'R') rule.redirectStatus = 302;
+        else if (flag.startsWith('R=')) rule.redirectStatus = redirectFlagStatus(flag.slice(2));
       }
+      // A rule whose pattern does not compile is not read, and its conditions go with it.
+      pendingConds = [];
+      rule.regex = compileApacheRegex(negated ? tokens[1].slice(1) : tokens[1], nocase);
+      if (rule.regex) out.rules.push(rule);
     }
   }
-  return false;
+  if (sections.length > 0) return HTACCESS_CLOSED;
+  return out;
+}
+
+// A condition's test string or a rule's substitution with the server variables in it put in,
+// as the Rust host's `expand_apache_vars` puts them: the path, relative (REQUEST_FILENAME) and
+// as asked (REQUEST_URI), the query, method, host and scheme, and a header (`%{HTTP:Name}`),
+// but never the Cookie or an authorization. Any other variable is empty.
+const UNREAD_HEADERS = new Set(['cookie', 'authorization', 'proxy-authorization']);
+function expandApacheVars(text, {relPath, fullPath, query, method, host, https, headers}) {
+  return text.replace(/%\{([^}]*)\}/g, (_, name) => {
+    const upper = asciiUpper(name);
+    if (upper === 'REQUEST_FILENAME') return relPath;
+    if (upper === 'REQUEST_URI') return fullPath;
+    if (upper === 'QUERY_STRING') return query;
+    if (upper === 'REQUEST_METHOD') return method;
+    if (upper === 'HTTP_HOST') return host;
+    if (upper === 'HTTPS') return https ? 'on' : 'off';
+    if (!upper.startsWith('HTTP:')) return '';
+    const header = asciiLower(name.slice(5));
+    return !UNREAD_HEADERS.has(header) && Object.hasOwn(headers, header) ? String(headers[header]) : '';
+  });
+}
+
+// `$1`…`$9` (the rule's groups) and `%1`…`%9` (the last condition's) put into a substitution,
+// as the Rust host's `apply_backrefs` puts them.
+function applyBackrefs(text, ruleGroups, condGroups) {
+  return text.replace(/([$%])([0-9])/g, (_, sigil, digit) => {
+    const index = Number(digit);
+    return index > 0 ? ((sigil === '$' ? ruleGroups : condGroups)[index - 1] ?? '') : '';
+  });
+}
+
+const matchGroups = match => match.slice(1).map(group => group ?? '');
+
+// What a bundle's .htaccess files make of a request for `pathname`, worked out as the Rust
+// host's `evaluate_htaccess_chain` works it out: refused (`{refused: status}`), sent elsewhere
+// (`{redirected: status, location}`), or rewritten, perhaps to itself (`{pathname, query}`).
+// `request` holds what the rules' conditions read: the query, method, host, scheme and headers.
+// A request is refused by a deny (403), a RedirectMatch to a status of 400 or more, or a
+// RewriteRule `[F]` (403) or `[G]` (410): for the path asked for, and for each path the rules
+// rewrite it to on the way.
+function evaluateHtaccessChain(vfs, pathname, {query = '', method, host = 'localhost', https = false, headers = {}} = {}) {
+  // Each directory's rules, read once.
+  const read = new Map();
+  const rulesOf = dir => {
+    if (!read.has(dir)) {
+      const rawBuf = vfs.get(dir ? `${dir}/.htaccess` : '.htaccess');
+      read.set(dir, rawBuf ? parseHtaccessFile(rawBuf, dir) : null);
+    }
+    return read.get(dir);
+  };
+  // The root's .htaccess and that of every directory on the path, the path itself among them:
+  // a request for a directory is under that directory's rules.
+  const dirsOn = path => {
+    const dirs = [''];
+    let acc = '';
+    for (const seg of path.split('/').filter(Boolean)) {
+      acc = acc ? `${acc}/${seg}` : seg;
+      if (rulesOf(acc)) dirs.push(acc);
+    }
+    return dirs;
+  };
+  let bundleDirs = null;
+  const isBundleDir = rel => {
+    const clean = normalizeVfsKey(rel);
+    if (!clean) return true;
+    if (!bundleDirs) {
+      bundleDirs = new Set();
+      for (const key of vfs.keys()) {
+        for (let at = key.indexOf('/'); at >= 0; at = key.indexOf('/', at + 1)) if (at > 0) bundleDirs.add(key.slice(0, at));
+      }
+    }
+    return bundleDirs.has(clean);
+  };
+  const methodName = typeof method === 'string' ? method : '';
+
+  // The denies and RedirectMatch lines of every .htaccess a path is under.
+  const checkAccess = path => {
+    const segs = path.split('/').filter(Boolean);
+    for (const dir of dirsOn(path)) {
+      const ht = rulesOf(dir);
+      if (!ht) continue;
+      if (ht.denyAll.some(methods => denyApplies(methods, method))) return {refused: 403};
+      if (ht.denyFiles.length > 0) {
+        // A <Files> block names the file a request is mapped to. That is the last segment,
+        // and it is also any segment before it that is a file: Apache stops there and hands
+        // the rest to it as PATH_INFO, so `/db.inc/x` is `db.inc`.
+        const denied = name => ht.denyFiles.some(({matcher, methods}) => denyApplies(methods, method) && matcher.test(name));
+        if (segs.length > 0 && denied(segs[segs.length - 1])) return {refused: 403};
+        let probe = '';
+        for (const seg of segs.slice(0, -1)) {
+          probe = probe ? `${probe}/${seg}` : seg;
+          if (vfs.has(probe) && denied(seg)) return {refused: 403};
+        }
+      }
+      for (const {status, regex, target} of ht.redirectMatches) {
+        const match = regex.exec(path);
+        if (!match) continue;
+        if (status >= 400) return {refused: status};
+        if (target !== null) return {redirected: status, location: applyBackrefs(target, matchGroups(match), [])};
+      }
+    }
+    return null;
+  };
+
+  const trailingSlash = pathname.length > 1 && pathname.endsWith('/');
+  const rel = normalizeVfsKey(pathname);
+  let curPath = !rel ? '/' : trailingSlash ? `/${rel}/` : `/${rel}`;
+  let curQuery = query;
+  const blocked = checkAccess(curPath);
+  if (blocked) return blocked;
+
+  for (let pass = 0; pass < MAX_HTACCESS_PASSES; pass++) {
+    const pathBeforePass = curPath;
+    let rewroteAny = false;
+    for (const dir of dirsOn(curPath)) {
+      const ht = rulesOf(dir);
+      if (!ht || !ht.rewriteEngine || ht.rules.length === 0) continue;
+      // A directory's rules match the path below it, with no leading slash.
+      const dirSlashes = ht.dirPrefix ? `/${ht.dirPrefix}/` : '/';
+      let localPath;
+      if (!ht.dirPrefix) localPath = curPath.replace(/^\/+/, '');
+      else if (curPath === `/${ht.dirPrefix}`) localPath = '';
+      else if (curPath.startsWith(dirSlashes)) localPath = curPath.slice(dirSlashes.length);
+      else continue;
+
+      for (const rule of ht.rules) {
+        // A rule is for a path its pattern matches, or for one it does not when it is negated,
+        // which then has no groups: its `$1`…`$9` are empty.
+        const match = rule.regex.exec(localPath);
+        if (rule.negated ? match !== null : match === null) continue;
+        const ruleGroups = match ? matchGroups(match) : [];
+        const relPath =!ht.dirPrefix ? localPath : localPath ? `${ht.dirPrefix}/${localPath}` : ht.dirPrefix;
+        const vars = {relPath, fullPath: curPath, query: curQuery, method: methodName, host, https, headers};
+
+        // The conditions: each must hold, or one of a run joined by [OR].
+        let condsHold = true;
+        let condGroups = [];
+        let inOr = false;
+        let orHeld = false;
+        for (const cond of rule.conds) {
+          const tested = expandApacheVars(cond.testString, vars);
+          let groups = [];
+          let holds;
+          if (cond.pattern === '-f' || cond.pattern === '-F' || cond.pattern === '-s') holds = vfs.has(normalizeVfsKey(tested));
+          else if (cond.pattern === '-d') holds = isBundleDir(tested);
+          else if (cond.pattern === '-l' || cond.pattern === '-L') holds = false;
+          else if (cond.pattern.startsWith('=')) {
+            const other = cond.pattern.slice(1);
+            holds = cond.nocase ? asciiLower(tested) === asciiLower(other) : tested === other;
+          } else {
+            const condMatch = cond.regex ? cond.regex.exec(tested) : null;
+            holds = condMatch !== null;
+            if (condMatch) groups = matchGroups(condMatch);
+          }
+          const matched = cond.negated ? !holds : holds;
+          if (matched && groups.length > 0) condGroups = groups;
+          if (cond.orNext) {
+            orHeld = inOr ? orHeld || matched : matched;
+            inOr = true;
+          } else {
+            const term = inOr ? orHeld || matched : matched;
+            inOr = false;
+            orHeld = false;
+            if (!term) {
+              condsHold = false;
+              break;
+            }
+          }
+        }
+        if (inOr && !orHeld) condsHold = false;
+        if (!condsHold) continue;
+
+        if (rule.forbidden) return {refused: 403};
+        if (rule.gone) return {refused: 410};
+        if (rule.substitution === '-') {
+          if (rule.last) break;
+          continue;
+        }
+        // The variables go in before the groups, so that a group holding `%{HTTP:…}` stays text.
+        const expanded = applyBackrefs(expandApacheVars(rule.substitution, vars), ruleGroups, condGroups);
+        const queryAt = expanded.indexOf('?');
+        const subPath = queryAt >= 0 ? expanded.slice(0, queryAt) : expanded;
+        const subQuery = queryAt >= 0 ? expanded.slice(queryAt + 1) : null;
+        const nextQuery = subQuery === null ? curQuery : rule.qsa && curQuery ? (subQuery ? `${subQuery}&${curQuery}` : curQuery) : subQuery;
+        if (rule.redirectStatus !== null) {
+          return {redirected: rule.redirectStatus, location: nextQuery ? `${subPath}?${nextQuery}` : subPath};
+        }
+        const rawNext = subPath.startsWith('/')
+          ? subPath
+          : ht.rewriteBase !== null
+            ? `${ht.rewriteBase.replace(/\/+$/, '')}/${subPath}`
+            : `${dirSlashes}${subPath}`;
+        const nextRel = normalizeVfsKey(rawNext);
+        const nextPath = !nextRel ? '/' : rawNext.length > 1 && rawNext.endsWith('/') ? `/${nextRel}/` : `/${nextRel}`;
+        const blockedNext = checkAccess(nextPath);
+        if (blockedNext) return blockedNext;
+        localPath = ht.dirPrefix && nextPath.startsWith(dirSlashes) ? nextPath.slice(dirSlashes.length) : nextPath.replace(/^\/+/, '');
+        curPath = nextPath;
+        curQuery = nextQuery;
+        rewroteAny = true;
+        if (rule.last) break;
+      }
+    }
+    if (!rewroteAny || curPath === pathBeforePass) break;
+  }
+  return {pathname: curPath, query: curQuery};
+}
+
+// The status a bundle's .htaccess files refuse a request for `targetPath` with, or 0 when they
+// do not refuse it. A request they rewrite or send elsewhere is not refused: this host routes
+// it by the path it asks for (resolvePhpScript), where the Rust host follows the rewrite or
+// answers the redirect.
+function htaccessRefusal(vfs, targetPath, request) {
+  return evaluateHtaccessChain(vfs, targetPath, request).refused ?? 0;
+}
+
+// Whether a bundle's .htaccess files refuse a request for `targetPath` made with `method`.
+// A caller that does not say how the request was made is refused what any method is.
+function isDeniedByHtaccess(vfs, targetPath, method) {
+  return htaccessRefusal(vfs, targetPath, {method}) !== 0;
+}
+
+// The answer to a request the bundle's .htaccess refuses, with the status it refuses it with.
+const HTACCESS_REFUSALS = new Map([
+  [403, ['Forbidden.', 'forbidden']],
+  [404, ['Endpoint not found.', 'not_found']],
+  [410, ['Gone.', 'gone']],
+]);
+function htaccessRefusalResponse(status) {
+  const [error, code] = HTACCESS_REFUSALS.get(status) ?? ['Refused.', 'refused'];
+  return {
+    status,
+    headers: [['Content-Type', 'application/json; charset=utf-8']],
+    bodyBase64: Buffer.from(JSON.stringify({error, code})).toString('base64'),
+  };
 }
 
 function parseServerHostName(host) {
@@ -1876,13 +2393,13 @@ export async function handleContainerRequest({root, bundle, data, manifest, conf
     const bodyText = bodyBytes.toString('utf8');
 
     if (runtime === 'php') {
-      if (isDeniedByHtaccess(vfs, path)) {
-        return {
-          status: 403,
-          headers: [['Content-Type', 'application/json; charset=utf-8']],
-          bodyBase64: Buffer.from(JSON.stringify({error: 'Forbidden.', code: 'forbidden'})).toString('base64'),
-        };
-      }
+      const host = String(request.host || headers['host'] || 'localhost');
+      const https = request.https === true;
+      // What the bundle's .htaccess files refuse: the path asked for, and then the script that
+      // path runs (`/config` runs config.php, which a <Files> block may name).
+      const htaccessRequest = {query: queryString, method, host, https, headers};
+      const refused = htaccessRefusal(vfs, path, htaccessRequest);
+      if (refused) return htaccessRefusalResponse(refused);
       const scriptToRun = resolvePhpScript(vfs, backend, path);
       if (!scriptToRun) {
         return {
@@ -1891,21 +2408,14 @@ export async function handleContainerRequest({root, bundle, data, manifest, conf
           bodyBase64: Buffer.from(JSON.stringify({error: 'Endpoint not found.', code: 'not_found'})).toString('base64'),
         };
       }
-      if (isDeniedByHtaccess(vfs, '/' + scriptToRun)) {
-        return {
-          status: 403,
-          headers: [['Content-Type', 'application/json; charset=utf-8']],
-          bodyBase64: Buffer.from(JSON.stringify({error: 'Forbidden.', code: 'forbidden'})).toString('base64'),
-        };
-      }
+      const refusedScript = htaccessRefusal(vfs, '/' + scriptToRun, htaccessRequest);
+      if (refusedScript) return htaccessRefusalResponse(refusedScript);
       const vfsObj = vfsToZippObject(vfs);
       const overlayPath = join(data, 'php-overlay.json');
       const rawInitialOverlay = existsSync(overlayPath) && !lstatSync(overlayPath).isSymbolicLink() ? readFileSync(overlayPath, 'utf8') : '';
       const initialOverlay = sanitizePhpOverlayJson(rawInitialOverlay, entryKey);
 
       const contentType = headers['content-type'] || '';
-      const host = String(request.host || headers['host'] || 'localhost');
-      const https = request.https === true;
       const originalUri = queryString ? `${path}?${queryString}` : path;
       const server = {
         REQUEST_METHOD: method,
@@ -2121,4 +2631,4 @@ export async function handleContainerRequest({root, bundle, data, manifest, conf
   }
 }
 
-export {PRIVATE_STATIC_BLOCK, isDeniedByHtaccess};
+export {PRIVATE_STATIC_BLOCK, isDeniedByHtaccess, htaccessRefusal};

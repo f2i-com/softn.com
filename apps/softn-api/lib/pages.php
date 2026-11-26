@@ -425,44 +425,15 @@ final class Pages
             'permissionMode' => Apps::isTrusted($row) ? 'preapproved' : 'prompt',
             'directory' => $directory,
         ];
-        if ($useServerBackend) {
-            $bUrl = (string) $hosting['backendUrl'];
-            $siteOrigin = self::origin();
-            $ownBackendPrefix = "/api/apps/$slug/backend";
-            $isOwnHosted = $bUrl === $ownBackendPrefix;
-            $isTrustedCustom = $hosting['customBackendUrl'] !== null && Apps::isTrusted($row);
-            $sameOrigin = str_starts_with($bUrl, '/');
-            if (!$sameOrigin && $siteOrigin !== null) {
-                $pUrl = parse_url($bUrl);
-                $pSite = parse_url($siteOrigin);
-                if (is_array($pUrl) && is_array($pSite) && isset($pUrl['scheme'], $pUrl['host'], $pSite['scheme'], $pSite['host'])) {
-                    $norm = static function (array $p): string {
-                        $sc = strtolower((string) $p['scheme']);
-                        $h = strtolower(rtrim((string) $p['host'], '.'));
-                        $pt = isset($p['port']) ? (int) $p['port'] : ($sc === 'https' ? 443 : 80);
-                        return "$sc://$h:$pt";
-                    };
-                    $sameOrigin = $norm($pUrl) === $norm($pSite);
-                }
-            }
-            if ($isOwnHosted) {
-                $config['backendUrl'] = $bUrl;
-            } elseif ($sameOrigin && $isTrustedCustom) {
-                // Canonicalize the URL path so non-canonical paths (`/api//admin`, `/./api/...`,
-                // absolute `https://<site>/api/apps/<other>/backend`) are checked accurately.
-                $rawPath = (string) (parse_url($bUrl, PHP_URL_PATH) ?? '/');
-                $decodedPath = rawurldecode($rawPath);
-                $segs = [];
-                foreach (explode('/', str_replace('\\', '/', $decodedPath)) as $seg) {
-                    if ($seg === '' || $seg === '.') continue;
-                    if ($seg === '..') { array_pop($segs); continue; }
-                    $segs[] = $seg;
-                }
-                $canonPath = '/' . implode('/', $segs);
-                if (!preg_match('#^/api/(?:admin(?:/|$)|apps/(?!' . preg_quote($slug, '#') . '/backend(?:/|$)))#i', $canonPath)) {
-                    $config['backendUrl'] = $bUrl;
-                }
-            }
+        // Which backend an app's frontend is pointed at is hostingInfo's to say, by the one
+        // rule this page and the API the web app reads both follow (Apps::honouredBackendUrl).
+        // This page gives out what of it is a path on this origin, which is the app's own
+        // hosted backend: its shell refuses the whole configuration for a location anywhere
+        // else, so a backend elsewhere is the web app's to reach (/web/app/<slug>). This
+        // page kept a rule of its own here before, which also gave out a path on this site
+        // for an app the owner trusts.
+        if ($useServerBackend && $hosting['backendUrl'] === "/api/apps/$slug/backend") {
+            $config['backendUrl'] = $hosting['backendUrl'];
         }
         return $config;
     }
@@ -800,7 +771,10 @@ final class Pages
         $xml = implode("\n", $lines) . "\n";
         try {
             if (!is_dir($cacheDir)) @mkdir($cacheDir, 0775, true);
-            if (is_dir($cacheDir)) {
+            // Kept only while the disk has the room every other write is held to
+            // (Config::hasRoom): the sitemap is the whole catalogue, written again
+            // after each change to it, and it is served from here either way.
+            if (is_dir($cacheDir) && Config::hasRoom(strlen($xml))) {
                 $tmp = $sitemapCacheFile . '.tmp.' . getmypid() . '.' . bin2hex(random_bytes(4));
                 if (@file_put_contents($tmp, $xml) === strlen($xml)) {
                     if (!@rename($tmp, $sitemapCacheFile)) @unlink($tmp);
@@ -999,6 +973,23 @@ final class Pages
     }
 
     /**
+     * Where what the pages were rendered to is kept: a file for each page of
+     * each app's current version, named for the app and for the bundle
+     * (Prerender::cacheKey). An app's files of a version before go when its
+     * next one is first rendered, and all of them with the app.
+     */
+    private static function pageCache(): string
+    {
+        return Config::dataDir() . '/page-cache';
+    }
+
+    /** A removed app's rendered pages: no address asks for them again. */
+    public static function forget(string $slug): void
+    {
+        Prerender::forget(self::pageCache(), $slug);
+    }
+
+    /**
      * Load lightweight bundle-level metadata (theme, tier, publicPages, noindexPages)
      * for `/sitemap-apps.xml` without touching per-page HTML previews.
      *
@@ -1013,7 +1004,7 @@ final class Pages
         $srcPath = $dir . '/' . (string) ($ver['file'] ?? '');
         $bundleSha = (string) ($ver['sha256'] ?? '');
         $withhold = (bool) $hosting['withholdBackend'];
-        $pageCache = Config::dataDir() . '/page-cache';
+        $pageCache = self::pageCache();
         if ($withhold) {
             $cachePath = $dir . '/backend-cache/client-v' . (int) ($ver['version'] ?? 0) . '-' . substr($bundleSha, 0, 12) . '.softn';
             try {
@@ -1022,9 +1013,9 @@ final class Pages
             } catch (Throwable) {
                 return ['themeMode' => null, 'engineTier' => null, 'publicPages' => [], 'noindexPages' => [], 'hasSsrBackend' => false];
             }
-            return Prerender::bundleMetaFor($bundlePath, $sha, $pageCache, true);
+            return Prerender::bundleMetaFor($bundlePath, $sha, $pageCache, true, $slug);
         }
-        return Prerender::bundleMetaFor($srcPath, $bundleSha, $pageCache, false);
+        return Prerender::bundleMetaFor($srcPath, $bundleSha, $pageCache, false, $slug);
     }
 
     /**
@@ -1049,7 +1040,7 @@ final class Pages
         $srcPath = $appDir . '/' . (string) ($ver['file'] ?? '');
         $bundleSha = (string) ($ver['sha256'] ?? '');
         $withhold = (bool) $hosting['withholdBackend'];
-        $pageCache = Config::dataDir() . '/page-cache';
+        $pageCache = self::pageCache();
         $snapshotPath = $appDir . '/ssr.html';
         if ($withhold) {
             $cachePath = $appDir . '/backend-cache/client-v' . (int) ($ver['version'] ?? 0) . '-' . substr($bundleSha, 0, 12) . '.softn';
@@ -1078,9 +1069,9 @@ final class Pages
                     'hasSsrBackend' => false,
                 ];
             }
-            return Prerender::forBundlePage($bundlePath, $sha, $pageCache, true, $snapshotPath, $bundleSha, $subPath, $linkBase);
+            return Prerender::forBundlePage($bundlePath, $sha, $pageCache, true, $snapshotPath, $bundleSha, $subPath, $linkBase, $slug);
         }
-        return Prerender::forBundlePage($srcPath, $bundleSha, $pageCache, false, $snapshotPath, null, $subPath, $linkBase);
+        return Prerender::forBundlePage($srcPath, $bundleSha, $pageCache, false, $snapshotPath, null, $subPath, $linkBase, $slug);
     }
 
     /** Map SoftN category IDs to valid Schema.org SoftwareApplication categories. */

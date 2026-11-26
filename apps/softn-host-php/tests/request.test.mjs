@@ -70,6 +70,27 @@ test('the handler\'s JSON reaches the client exactly as the runner wrote it',()=
   bad.forEach(r=>assert.equal(r,null));
 });
 
+test('the path is decoded once, as the Rust host decodes it, before any rule or the backend reads it',()=>{
+  // An encoded letter is the letter: `/api/%61dmin` is `/api/admin` to a .htaccess rule
+  // written for it, as it is to the app's own router.
+  const decoded=php([
+    ['softn_decode_path','/api/%61dmin/x'],
+    ['softn_decode_path','/api/caf%C3%A9'],
+    ['softn_decode_path','/api//tasks/./1/'],
+    ['softn_decode_path','/api/tasks'],
+    ['softn_decode_path','/api'],
+  ]);
+  assert.deepEqual(decoded,['/api/admin/x','/api/café','/api/tasks/1/','/api/tasks','/api']);
+  // What the Rust host answers 400 for is refused here too.
+  for(const bad of ['/api/a%2fb','/api/a%5Cb','/api/%00','/api/%0a','/api/%7f','/api/a%3Fb','/api/a%23b','/api/%zz','/api/%4','/api/a\\b','/api/%2e%2e/x','/api/../x','/api/%C3%28','/api/a\tb']){
+    assert.deepEqual(php([['softn_decode_path',bad]]),[null],bad);
+  }
+  // And http.php hands that path on, not the one that came.
+  const http=readFileSync(new URL('../runtime/http.php',import.meta.url),'utf8');
+  assert.match(http,/\$path = softn_decode_path\(\$path\);/);
+  assert.ok(http.indexOf('softn_decode_path($path)')<http.indexOf('softn_container_route_matches($manifest,$path)'),'decoded before the routes are matched');
+});
+
 test('the query string is a map of decoded strings, as the Rust host gives it',()=>{
   const [q,empty,many]=php([
     ['softn_query','a%5B%5D=1&b.c=2&d=x&d=y&e&sp=a+b%20c&&=v&u=%ff'],
@@ -257,24 +278,33 @@ test('http.php hands the runner a HEAD as the GET it is, and leaves the body off
   assert.match(http,/if\(!\$head\)echo \$responseBody;/);
 });
 
-nodeTest('a container backend cannot set what the browser keeps for the whole origin, as on the Rust host',()=>{
+test('a container backend cannot set what the browser keeps for the whole origin, as on the Rust host',()=>{
+  const withheld=names=>php(names.map(name=>['softn_container_header_withheld',name]));
   // NEL and Report-To name where reports of every request to the origin go, for as long
   // as they say; the rest are kept for the origin the same way. They passed through here.
+  const origin=['nel','report-to','reporting-endpoints','alt-svc','origin-agent-cluster','accept-ch','critical-ch','clear-site-data','service-worker-allowed','strict-transport-security'];
+  assert.deepEqual(withheld(origin),origin.map(()=>true),origin.join());
+  // Every CORS answer is the host's. Six were named here, where the Rust host withholds the
+  // prefix: Access-Control-Allow-Private-Network, for one, passed.
+  const cors=['access-control-allow-origin','access-control-allow-credentials','access-control-allow-headers','access-control-allow-methods','access-control-expose-headers','access-control-max-age','access-control-allow-private-network','access-control-anything-else'];
+  assert.deepEqual(withheld(cors),cors.map(()=>true),cors.join());
+  // On a 401 or a 407 these raise the browser's own sign-in dialog, in the host's name.
+  // They passed on both hosts.
+  assert.deepEqual(withheld(['www-authenticate','proxy-authenticate']),[true,true]);
+  const kept=['content-type','cache-control','set-cookie','location','etag','link','x-custom','authorization','authentication-info','x-www-authenticate','access-control'];
+  assert.deepEqual(withheld(kept),kept.map(()=>false),kept.join());
+  // http.php asks this of every header a backend sends, by its name in lower case.
   const http=readFileSync(new URL('../runtime/http.php',import.meta.url),'utf8');
-  const list=http.slice(http.indexOf('$blockedResponseHeaders=['),http.indexOf('];',http.indexOf('$blockedResponseHeaders=[')));
-  const blocked=new Set([...list.matchAll(/'([a-z0-9-]+)'=>true/g)].map(m=>m[1]));
-  for(const name of ['nel','report-to','reporting-endpoints','alt-svc','origin-agent-cluster','accept-ch','critical-ch','clear-site-data','service-worker-allowed','strict-transport-security'])assert.ok(blocked.has(name),name);
-  for(const name of ['content-type','cache-control','set-cookie','location','etag'])assert.ok(!blocked.has(name),name);
-  // Every name the Rust host withholds is withheld here (it says its prefixes as prefixes).
+  assert.match(http,/\$lk=strtolower\(\$k\);[^;]*\n?[^;]*if\(\$k===''\|\|softn_container_header_withheld\(\$lk\)\)continue;/);
+  // Every name the Rust host withholds is withheld here, and every name under each of its
+  // prefixes (which it writes with the hyphen they end in).
   const rust=readFileSync(new URL('../../softn-host-rust/src/http.rs',import.meta.url),'utf8');
   const from=rust.indexOf('fn container_response_header_withheld');
   assert.ok(from>0);
   const names=[...rust.slice(from,rust.indexOf('\n}',from)).matchAll(/"([a-z0-9-]+)"/g)].map(m=>m[1]);
-  assert.ok(names.includes('nel')&&names.includes('transfer-encoding'),names.join());
-  for(const name of names) {
-    if(name.endsWith('-'))assert.ok(name==='access-control-'?blocked.has('access-control-allow-origin'):http.includes(`str_starts_with($lk,'${name}')`),name);
-    else assert.ok(blocked.has(name),name);
-  }
+  for(const expected of ['nel','transfer-encoding','www-authenticate','proxy-authenticate','access-control-','x-accel-'])assert.ok(names.includes(expected),`${expected} in ${names.join()}`);
+  const asked=names.map(name=>name.endsWith('-')?name+'any-name':name);
+  assert.deepEqual(withheld(asked),asked.map(()=>true),asked.join());
 });
 
 test('a body is a JSON object the runner can be handed, or it is refused',()=>{

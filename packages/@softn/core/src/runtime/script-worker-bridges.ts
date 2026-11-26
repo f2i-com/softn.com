@@ -305,12 +305,22 @@ export class SnapshotLocalStorageBridge {
   private counted(): StorageBudget | null {
     if (this.prefix === null) return null;
     if (!this.budget) {
-      // Counted once, from the snapshot as it is now; the budget follows each
-      // write after that.
+      // Counted from the snapshot as it is when the budget counts: on the
+      // first write, and again before it refuses one (storage-budget.ts),
+      // by when the snapshot holds what the script has written since. The
+      // budget follows each write between. `length` is read once a count.
       const prefix = this.prefix;
-      const keys = [...this.store.keys()];
+      const store = this.store;
+      let keys: string[] = [];
       this.budget = new StorageBudget(
-        { length: keys.length, key: (i: number) => (i < keys.length ? prefix + keys[i] : null), getItem: (k: string) => this.store.get(k.slice(prefix.length)) ?? null },
+        {
+          get length() {
+            keys = [...store.keys()];
+            return keys.length;
+          },
+          key: (i: number) => (i < keys.length ? prefix + keys[i] : null),
+          getItem: (k: string) => store.get(k.slice(prefix.length)) ?? null,
+        },
         prefix,
         LOCAL_STORAGE_BUDGET
       );

@@ -170,13 +170,13 @@ so a run that tested less than it looks says so:
 
 | Suite | Needs | Without it |
 | --- | --- | --- |
-| `package` (also that both `.htaccess` files ask for the Apache modules their rules need), `request-hook` | nothing | always run |
+| `package` (also that both `.htaccess` files ask for the Apache modules their rules need), `request-hook`, `client-key`, `poll-backoff` (how long the live bridge waits between polls of a host that refuses or fails) | nothing | always run |
 | `client-ip`, `request` | `php` (8.1+) on PATH; the tests that put one request through `api.php` (OPTIONS, methods, the rate marker, `open_basedir`, a public backend, disabled functions) also `php-cgi`; the one about a `private/` of another account a POSIX system and not root | skipped |
 | `sql-parity` (the shared SQL list, tests/sql-parity.json) | Node 24.19+ (node:sqlite) | skipped |
 | `migrations` (the migration helper: which `ALTER TABLE … ADD` a STRICT table takes, the authorizer held to each statement, files refused before any SQL runs, the setup deadline, the Coffee app's four migrations) | Node 24.19+ (node:sqlite) | skipped |
 | `route-declarations` (route schema, runner output, migrations, rollback after a failed host call, the configured rate limit, busy database, ALTER TABLE and request SQL end to end, that the runner started with http.php's flags compiles nothing with the optimizing compiler, and that a body handed on as text is the body a handler saw before) | `npm run fetch:zipp` (packages/@softn/core/wasm-zipp) and Node 24.19+; the body test also `php` | skipped |
 | `http-runner` (one request the whole way: php-cgi, api.php, http.php, the runner and back; setup.php with a real Node; the rate limit's note, answered by PHP with no runner left to start). With `SOFTN_TEST_RUNNER` naming a Linux build of softn-runner, the same suite on it, with no Node in the backend at all, and which runner answers where both are there, `requestMemoryMb`, and the lockdown's probes on this kernel | Linux or another POSIX system (http.php starts Node with an environment a Windows Node does not start under), `php-cgi`, `npm run fetch:zipp` and Node 24.19+ | skipped |
-| `runtime`, `websocket`, `startup-diagnostics` (15 tests: guest isolation, SQL and migration denial, the packaged migration helper, rollback, WebSocket auth, Origin checks and which routes may be subscribed to, startup diagnostics) | `SOFTN_PHP_TEST_BACKEND` naming an extracted, initialised Linux backend (`backend/` from a packaged archive, after `php backend/setup.php`) | skipped |
+| `runtime`, `websocket`, `startup-diagnostics` (20 tests: guest isolation, SQL and migration denial, the packaged migration helper, rollback, WebSocket auth, Origin checks, which routes may be subscribed to, the connection limits and the wait between polls of a host that refuses or fails, startup diagnostics) | `SOFTN_PHP_TEST_BACKEND` naming an extracted, initialised Linux backend (`backend/` from a packaged archive, after `php backend/setup.php`) | skipped |
 
 Run the fixture-bound suites on Linux against a fresh extracted package:
 

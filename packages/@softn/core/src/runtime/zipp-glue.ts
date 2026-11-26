@@ -54,8 +54,10 @@ function checked(source: ZippGlueSource): ZippGlueSource {
  * Run the glue at `source.url` instead of the one core carries. Called before
  * anything starts ZIPP in this realm, with the engine of the same ZIPP
  * (`configureZippWasmSource` or `awaitZippWasmSource`). With `sha256`, the
- * glue's bytes are checked before it is imported; a worker the page starts is
- * given the same address and trusts the page's check.
+ * glue's bytes are checked before it is imported, and a page runs only bytes
+ * the browser has held to that digest (runChecked). A worker the page starts
+ * is given the same address and no digest: it runs what the address answers
+ * it, and trusts the page's check (see runChecked for why it cannot be held).
  */
 export function configureZippGlue(source: ZippGlueSource): void {
   if (frozen) throw new Error('The ZIPP glue must be configured before initialization starts');
@@ -110,7 +112,62 @@ export function missingGlueExports(glue: Record<string, unknown>): string[] {
   return ZIPP_GLUE_EXPORTS.filter((name) => typeof glue[name] !== 'function');
 }
 
+/** A digest of 64 hex digits as `integrity` writes it. */
+function integrityOf(sha256: string): string {
+  const bytes = sha256.match(/../g)!.map((pair) => String.fromCharCode(parseInt(pair, 16)));
+  return `sha256-${btoa(bytes.join(''))}`;
+}
+
+/**
+ * Have the browser run the glue at `url` only as the bytes of `sha256`, where
+ * this realm is a page, and answer the address the `import()` after it asks
+ * for.
+ *
+ * The check in importHostGlue reads one answer from the address and
+ * `import()` asks for another: a server, or a cache between, that answered
+ * the named bytes to the first and others to the second had the others run,
+ * as the page's own script, under a check that had passed. A module script
+ * element carries the digest instead (`integrity`): the browser checks the
+ * very bytes it is about to run and runs nothing else, and the `import()`
+ * that follows is given that same module (a page keeps one module to an
+ * address), not a third answer.
+ *
+ * Not by importing a `blob:` or `data:` address made of the checked bytes:
+ * every policy SoftN's pages are served under (scripts/build/script-policy.mjs,
+ * formlogic-host's framePolicy.ts) names where script may come from and
+ * names neither, and a page that let `blob:` run as script would run any
+ * file an app handed it. A worker has no elements, and one started from a
+ * `blob:` address is held to its page's policy: it is left importing the
+ * address (adoptZippGlue).
+ *
+ * Nothing is done in a realm with no document (a worker, Node), or one
+ * whose scripts are not modules (jsdom), where the element would never load.
+ */
+function runChecked(url: string, sha256: string): Promise<string> {
+  if (typeof document === 'undefined') return Promise.resolve(url);
+  const script = document.createElement('script');
+  if (!('noModule' in script)) return Promise.resolve(url);
+  // One spelling for the element and for `import()`, which read a relative address against different places.
+  const address = new URL(url, document.baseURI).href;
+  return new Promise((resolve, reject) => {
+    script.type = 'module';
+    script.crossOrigin = 'anonymous';
+    script.integrity = integrityOf(sha256);
+    script.onload = () => {
+      script.remove();
+      resolve(address);
+    };
+    script.onerror = () => {
+      script.remove();
+      reject(new Error(`The ZIPP glue (${url}) was not run: it could not be loaded again, or what the address answered then is not the one its host named (expected ${sha256.slice(0, 12)})`));
+    };
+    script.src = address;
+    (document.head ?? document.documentElement).appendChild(script);
+  });
+}
+
 async function importHostGlue(source: ZippGlueSource): Promise<ZippGlue> {
+  let address = source.url;
   if (source.sha256) {
     let response: Response;
     try {
@@ -121,8 +178,10 @@ async function importHostGlue(source: ZippGlueSource): Promise<ZippGlue> {
     if (!response.ok) throw new Error(`The ZIPP glue (${source.url}) answered ${response.status}`);
     const digest = await sha256Hex(new Uint8Array(await response.arrayBuffer()));
     if (digest !== source.sha256) throw new Error(`The ZIPP glue (${source.url}) is not the one its host named (${digest.slice(0, 12)}, expected ${source.sha256.slice(0, 12)})`);
+    // That was one answer; what runs is another, which the browser holds to the same digest.
+    address = await runChecked(source.url, source.sha256);
   }
-  const glue = (await import(/* @vite-ignore */ source.url)) as Record<string, unknown>;
+  const glue = (await import(/* @vite-ignore */ address)) as Record<string, unknown>;
   const missing = missingGlueExports(glue);
   if (missing.length) throw new Error(`The ZIPP glue (${source.url}) does not export ${missing.join(', ')}, which SoftN calls; this ZIPP is not one this SoftN runs`);
   return glue as unknown as ZippGlue;

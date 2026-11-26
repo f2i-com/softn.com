@@ -65,7 +65,8 @@ checks the handshake Origin against the private manifest's allowedOrigins (an HT
 site's own origin must be listed, because PHP then sees the poll arrive for
 `127.0.0.1` and not for the site) and
 refuses routes not marked poll:true. A connection that has not subscribed within
-ten seconds is closed. Supply the bearer credential in the first
+two seconds is closed (code 1008, `Subscribe required`): send the subscription as
+soon as the socket opens. Supply the bearer credential in the first
 frame, never a URL:
 
 ```json
@@ -73,10 +74,31 @@ frame, never a URL:
 ```
 
 Returned frames are `{"type":"update","body":...}`, `{"type":"unchanged"}`,
-or `{"type":"error","status":401}`. A revoked/forbidden/missing route closes the
+or `{"type":"error","status":401}`. An error frame carries the status the host
+answered with, or 503 when the host could not be reached, did not answer within
+ten seconds, or sent a 200 the bridge could not take (not JSON, or over 3 MiB). A
+revoked/forbidden/missing route (401, 403, 404) closes the
 connection. Reconnect with backoff, and never retry with revoked credentials.
 Credentials are held in memory and are not logged. Clients can always use HTTP
 polling when they have no WebSocket transport.
+
+After any other error the connection stays open and the bridge goes on polling,
+less often: the wait doubles with each poll in a row that brings no answer (ten
+seconds, twenty, forty, up to five minutes), and is never shorter than the
+`Retry-After` the host sent, up to the same five minutes. The first poll that is
+answered (an update, or unchanged) puts the connection back on five seconds. So
+a client may see one error frame and then nothing for a while; the frame is not
+repeated every five seconds. The wait is each connection's own.
+
+One visitor may open twelve connections a minute. A thirteenth handshake inside
+the minute is answered `429 Too Many Requests` with `Retry-After: 60`, before any
+socket is made; the count starts again a minute after the visitor's first. (Each
+new connection is polled for at once, so connecting, subscribing and connecting
+again would otherwise spend the host's allowance for the bridge's address, which
+is every visitor's.) A visitor here is the same one the connection limit counts.
+The bridge counts 1024 visitors at a time; past that a new one is answered 429
+until a minute has ended for one of them. A handshake refused for its Origin, a
+wrong path or a full bridge is a 403 and is not counted.
 
 The initial bridge supports one exact route per connection, eight clients (at
 most two from one visitor — the last `X-Forwarded-For` address the proxy
@@ -86,8 +108,9 @@ five-second polling, ten-second upstream deadlines, an 8 KiB incoming frame cap,
 makes comes from one address (the server's own, or loopback), so all its clients
 share one bucket of the PHP host's rate limit: eight clients are 96 requests a
 minute, under the default 120. An app that sets `config.server.requestsPerMinute`
-below that starves the bridge: its polls are answered 429 and its clients are
-sent `{"type":"error","status":429}` until the minute turns. It is a small-deployment
+below that starves the bridge: its polls are answered 429, its clients are
+sent `{"type":"error","status":429}`, and each connection that was refused waits
+out the rest of the minute (the host's `Retry-After`) before it asks again. It is a small-deployment
 transport, not a high-concurrency replacement for the native server. An optional
 service must remain running for WebSocket connections to remain open: while it
 is down the proxy answers /events with 502 or 503 and nothing else is affected;

@@ -48,6 +48,7 @@ import {
   updateLastOpened,
   type CachedApp,
 } from './appCache';
+import { usableBackendUrl } from './hostedBackend';
 import { findPlaceholder, findRunningTab } from './tabIdentity';
 import { describePreviousBuild, previousBuildFor, type PreviousBuild } from './consentDiff';
 import { hasDraft } from './editIndex';
@@ -229,6 +230,11 @@ function mark(name: string): void {
 export async function openBundle(host: OpenBundleHost, request: OpenBundleRequest): Promise<string | null> {
   const { data, fileName, cachedAppId, initialPage, directorySlug, placeholderId } = request;
   const isForeground = request.isForeground ?? (() => true);
+  // The backend the app is pointed at, which is not every address this open was
+  // handed (lib/hostedBackend.ts): the directory's answer comes through here, and so
+  // does the address a record kept from an earlier open, whatever build wrote it. One
+  // that is not to be used is "none", so the record this open writes lets go of it too.
+  const backendUrl = typeof request.backendUrl === 'string' ? usableBackendUrl(request.backendUrl, directorySlug) : request.backendUrl;
 
   // The placeholder tab this call adopted, once it has adopted one.
   //
@@ -491,7 +497,7 @@ export async function openBundle(host: OpenBundleHost, request: OpenBundleReques
     const cachedRecord = await cacheApp(data, {
       name: manifest.name, version: manifest.version, description: manifest.description,
       format: containerCheck.isWebContainer ? 'web' : 'classic',
-    }, icon, directorySlug, requested, request.fromLink, request.backendUrl);
+    }, icon, directorySlug, requested, request.fromLink, backendUrl);
 
     if (cachedAppId) {
       await updateLastOpened(cachedAppId);
@@ -667,7 +673,7 @@ export async function openBundle(host: OpenBundleHost, request: OpenBundleReques
       themeMode: manifest.config?.theme?.mode,
       ...server,
       directorySlug,
-      ...(request.backendUrl ? { backendUrl: request.backendUrl } : {}),
+      ...(backendUrl ? { backendUrl } : {}),
       mine,
       edited,
       webContainer: containerCheck.isWebContainer || undefined,

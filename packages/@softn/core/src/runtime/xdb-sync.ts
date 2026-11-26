@@ -27,7 +27,11 @@
  *   stored is lost; the next `startSync` for the same app and room reloads
  *   it. This is what `stopSync` does.
  * - `destroy()`: close, and delete the stored cache. This is what
- *   `destroySync` does.
+ *   `destroySync` does. A cache another tab of the app has open is not
+ *   deleted under it; it is kept, as one long left is.
+ *
+ * A cache `close()` kept is not kept for ever: an app keeps those of the
+ * rooms it joined last, and `startSync` deletes the rest (sync-room-caches.ts).
  */
 
 import * as Y from 'yjs';
@@ -38,6 +42,7 @@ import type { XDBRecord } from '../types';
 import { deepEqual } from './vm-state';
 import { debug } from './debug';
 import { MAX_OPEN_SYNC_ROOMS_PER_APP, MAX_SYNC_ROOM_NAME_LEN, isRoomCollectionList, isSyncRoomName } from './sync-room-security';
+import { MAX_KEPT_ROOM_CACHES_PER_APP, deleteRoomCache, forgetRoomCaches, holdRoomCache, keptRoomCaches, noteRoomCache, restoreRoomCache } from './sync-room-caches';
 
 // ── Types ─────────────────────────────────────────────────
 
@@ -127,6 +132,8 @@ export class XDBSyncAdapter {
   private ydoc: Y.Doc;
   private provider: WebrtcProvider | null = null;
   private persistence: IndexeddbPersistence | null = null;
+  /** Lets go of the cache, held while it is open so that no tab deletes it as one of a room long left (sync-room-caches.ts). */
+  private releaseCache: (() => void) | null = null;
   private xdb: XDBService;
   private options: XDBSyncOptions;
   private unsubscribeXDB: (() => void) | null = null;
@@ -166,10 +173,9 @@ export class XDBSyncAdapter {
 
     // Optional: IndexedDB persistence for offline CRDT cache
     if (options.persist !== false) {
-      this.persistence = new IndexeddbPersistence(
-        persistenceNameFor(options.appId, options.room),
-        this.ydoc
-      );
+      const cacheName = persistenceNameFor(options.appId, options.room);
+      this.persistence = new IndexeddbPersistence(cacheName, this.ydoc);
+      this.releaseCache = holdRoomCache(cacheName);
     }
   }
 
@@ -432,6 +438,8 @@ export class XDBSyncAdapter {
         }
         this.persistence = null;
       }
+      this.releaseCache?.();
+      this.releaseCache = null;
       this.ydoc.destroy();
     }
   }
@@ -461,23 +469,46 @@ export class XDBSyncAdapter {
   }
 
   /**
-   * Forget: close, and delete the stored CRDT cache for this app and room.
+   * Forget: close, and delete the stored CRDT cache for this app and room,
+   * unless another tab has the room open.
    *
-   * The deletion is asynchronous inside y-indexeddb; the returned promise
-   * settles when it is done, and a caller that does not care may ignore it.
-   * The local XDB records are not touched — they are the app's data, and the
-   * cache is only a copy of what the room agreed on.
+   * The cache is one database for every tab of the app on this device, and a
+   * deletion closes the connection of each tab that has it open (the browser
+   * asks them to close, and y-indexeddb's does). It was deleted whatever the
+   * other tabs were doing: in one with the room open, y-indexeddb threw on
+   * every change to the document from then on, ahead of y-webrtc, so that
+   * room stopped sending and the app's own writes there threw. So it is
+   * deleted as an old cache is (deleteRoomCache): once this page has let go
+   * of it, and only if no tab holds it. One that is held is left, and put
+   * back on the app's list as the one joined longest ago, to go first when
+   * the app has more than it keeps. Where the browser has no locks to ask,
+   * it is deleted at once, as it always was.
+   *
+   * The returned promise settles when the deletion is done, or refused; a
+   * caller that does not care may ignore it. The local XDB records are not
+   * touched — they are the app's data, and the cache is only a copy of what
+   * the room agreed on.
    */
   destroy(): Promise<void> {
-    const persistence = this.persistence;
-    let cleared: Promise<void> = Promise.resolve();
-    if (persistence && typeof (persistence as { clearData?: unknown }).clearData === 'function') {
-      cleared = Promise.resolve(persistence.clearData()).catch((err: unknown) => {
-        console.warn('[XDB Sync] Could not clear persisted sync data:', err);
-      });
+    if (!this.persistence) {
+      this.close();
+      return Promise.resolve();
     }
+    const { appId, room } = this.options;
+    // Off the app's list of caches (sync-room-caches.ts) with it, and at once: the room
+    // may be joined again before the deletion is done, and goes back on the list then.
+    forgetRoomCaches(appId, [room]);
+    // Closed first: that lets go of this page's hold on the cache.
     this.close();
-    return cleared;
+    return deleteRoomCache(persistenceNameFor(appId, room), () => roomFreeHere(appId, room, this)).then(
+      (gone) => {
+        if (!gone) restoreRoomCache(appId, room);
+      },
+      (err: unknown) => {
+        console.warn('[XDB Sync] Could not clear persisted sync data:', err);
+        restoreRoomCache(appId, room);
+      },
+    );
   }
 
   // ── Internal: Initial Sync ──────────────────────────────
@@ -1180,7 +1211,17 @@ export function startSync(options: XDBSyncOptions): XDBSyncAdapter {
   if (open >= MAX_OPEN_SYNC_ROOMS_PER_APP) {
     throw new Error(`[XDB Sync] An app syncs at most ${MAX_OPEN_SYNC_ROOMS_PER_APP} rooms at a time; stop one before starting "${options.room.slice(0, 64)}".`);
   }
-  const adapter = new XDBSyncAdapter(getXDB(options.appId), options);
+  // A room the adapter would refuse (its collections no list of names) is refused before
+  // anything is kept of it.
+  roomCollections(options.collections);
+  // The room's cache goes on the app's list before it is opened (sync-room-caches.ts). Where
+  // the list cannot be kept the room is opened without a cache: one nothing lists is one
+  // nothing would delete.
+  const cached = options.persist !== false && noteRoomCache(options.appId, options.room);
+  if (!cached && options.persist !== false) {
+    console.warn(`[XDB Sync] Room "${options.room.slice(0, 64)}" is joined with no saved copy on this device: the page's storage is full or cannot be written, so there is nowhere to keep count of it.`);
+  }
+  const adapter = new XDBSyncAdapter(getXDB(options.appId), cached ? options : { ...options, persist: false });
   // A room whose document outgrew what a room holds is left for good: its cache deleted, and
   // not the room the app goes back to after a reload, which would load it again.
   adapter.onOvergrown = () => {
@@ -1192,7 +1233,7 @@ export function startSync(options: XDBSyncOptions): XDBSyncAdapter {
       // localStorage may be unavailable in restricted contexts
     }
     console.error(
-      `[XDB Sync] Room "${options.room.slice(0, 64)}" was left and its saved copy deleted: what the room sent grew past what a room holds (${MAX_ROOM_DOC_BYTES / (1024 * 1024)} MB). The app's own records are untouched.`
+      `[XDB Sync] Room "${options.room.slice(0, 64)}" was left and its saved copy deleted (unless another tab has the room open): what the room sent grew past what a room holds (${MAX_ROOM_DOC_BYTES / (1024 * 1024)} MB). The app's own records are untouched.`
     );
     void adapter.destroy();
   };
@@ -1204,7 +1245,47 @@ export function startSync(options: XDBSyncOptions): XDBSyncAdapter {
   } catch {
     // localStorage may be unavailable in restricted contexts
   }
+  dropOldRoomCaches(options.appId);
   return adapter;
+}
+
+/**
+ * Whether a room's cache is one to keep whatever its place on the app's list: its room is
+ * open, or is the saved room, which the app goes back to when it starts.
+ */
+function roomCacheInUse(appId: string | undefined, room: string): boolean {
+  return syncAdapters.has(registryKey(appId, room)) || readSavedSyncRoom(appId) === room;
+}
+
+/**
+ * Whether this page has the room open in an adapter other than `leaving`, the one deleting
+ * its cache (which may still be the registered one, where it was destroyed directly). The
+ * saved room does not keep a cache its app has asked to be deleted.
+ */
+function roomFreeHere(appId: string | undefined, room: string, leaving: XDBSyncAdapter): boolean {
+  const open = syncAdapters.get(registryKey(appId, room));
+  return open === undefined || open === leaving;
+}
+
+/**
+ * Delete the caches of the rooms an app joined longest ago, past the number an app keeps
+ * (sync-room-caches.ts). Asked as a room is started, the one time the list grows. An app that
+ * joined a new name each time and left kept a cache for every name it had ever used.
+ */
+function dropOldRoomCaches(appId: string | undefined): void {
+  const kept = keptRoomCaches(appId);
+  const over = kept.length - MAX_KEPT_ROOM_CACHES_PER_APP;
+  if (over <= 0) return;
+  const going = kept.filter((room) => !roomCacheInUse(appId, room)).slice(0, over);
+  // Off the list first: a room joined again while its cache is being deleted goes back on
+  // it, and is not then taken off by a deletion that began before.
+  forgetRoomCaches(appId, going);
+  for (const room of going) {
+    void deleteRoomCache(persistenceNameFor(appId, room), () => !roomCacheInUse(appId, room)).then((gone) => {
+      // Open in another tab, or joined here since: kept, and tried again at a later start.
+      if (!gone) restoreRoomCache(appId, room);
+    });
+  }
 }
 
 /**
@@ -1230,7 +1311,8 @@ export function closeSyncRoom(room: string, appId?: string): boolean {
 
 /**
  * Stop syncing — leaves the room and releases the adapter; the offline cache
- * in IndexedDB is kept. The saved room is forgotten with it, so the next
+ * in IndexedDB is kept, while the room is among those the app joined last
+ * (dropOldRoomCaches). The saved room is forgotten with it, so the next
  * mount does not offer back a room the app chose to leave.
  *
  * With a room, stops that room for this app. Without one, stops every room
@@ -1298,7 +1380,8 @@ export function stopAllSync(): void {
 /**
  * Destroy sync completely — disconnects AND deletes the IndexedDB cache.
  * Use this for full cleanup when you want to wipe CRDT state. Scoped to one
- * app exactly as `stopSync` is.
+ * app exactly as `stopSync` is. A cache another tab of the app still has
+ * open is kept, for that tab's room (see {@link XDBSyncAdapter.destroy}).
  */
 export function destroySync(room?: string, appId?: string): Promise<void> {
   const pending: Promise<void>[] = [];

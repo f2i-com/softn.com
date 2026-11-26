@@ -660,3 +660,142 @@ test('the page cache and the sitemap cache do not grow with the addresses asked 
   assert.equal(again.status, 200);
   assert.match(await again.text(), new RegExp(`<loc>${SITE}/app/${slug}</loc>`));
 });
+
+/** A site of two pages in one bundle; `version` is in its pages, so each version is other bytes. */
+function pagesBundle(name, version) {
+  const page = (title) => strToU8(`<!doctype html><html><head><title>${title}</title></head><body><main><h1>${title} ${version}</h1><a href="about.html">About</a></main></body></html>`);
+  return zipSync({
+    'manifest.json': strToU8(JSON.stringify({ engine: 2, name, version, description: `${name}, in two pages.`, main: 'index.html' })),
+    'index.html': page('Home'),
+    'about.html': page('About'),
+  });
+}
+
+test('the page cache keeps what an app\'s current version was rendered to, and nothing of the versions before it', skip, async () => {
+  // A cache file is named for the bundle it was made from, so the ones of a
+  // version that has been replaced are never read again; none was ever
+  // removed, and every version of every app left its pages behind for good.
+  const s = await startServer({
+    prefix: 'softn-seo-cache-prune-',
+    config: { seedDemos: false, siteOrigin: SITE },
+  });
+  servers.push(s);
+  const pageCache = path.join(s.dataDir, 'page-cache');
+  const cached = () => (fs.existsSync(pageCache) ? fs.readdirSync(pageCache).sort() : []);
+  // The latest version's digest, as far as a cache file's name carries it.
+  const sha32 = (slug) => JSON.parse(fs.readFileSync(path.join(s.dataDir, 'apps', slug, 'app.json'), 'utf8')).versions.reduce((a, b) => (b.version > a.version ? b : a)).sha256.slice(0, 32);
+  const publish = async (name, bytes) => {
+    const fd = new FormData();
+    fd.set('bundle', new Blob([bytes]), 'site.softn');
+    fd.set('name', name);
+    const res = await s.api('POST', '/api/apps', { body: fd });
+    assert.equal(res.status, 201, res.text);
+    return res.json;
+  };
+  const visit = async (slug) => {
+    for (const address of [`/play/${slug}`, `/play/${slug}/about.html`, `/app/${slug}`, '/sitemap-apps.xml']) {
+      assert.equal((await fetch(s.base + address)).status, 200, address);
+    }
+  };
+
+  // Two apps of the same bytes, as a remix nobody has changed yet is: one is given a new version, the other is not.
+  const first = pagesBundle('Tide Tables', '1.0.0');
+  const moving = await publish('Tide Tables', first);
+  const staying = await publish('Tide Tables Too', first);
+  await visit(moving.app.slug);
+  await visit(staying.app.slug);
+  const v1 = sha32(moving.app.slug);
+  assert.equal(sha32(staying.app.slug), v1);
+  const before = cached();
+  assert.ok(before.filter((f) => f.startsWith('page-meta-')).length >= 4, `each app's pages are cached: ${before.join(', ')}`);
+  assert.equal(before.filter((f) => f.startsWith('bundle-meta-')).length, 2, 'and what is known of each one\'s bundle');
+  // Asked for again, they are read from there: nothing is added.
+  await visit(moving.app.slug);
+  await visit(staying.app.slug);
+  assert.deepEqual(cached(), before);
+
+  // What an older build of the API left, under the names it used, and a file that is not the cache's.
+  const stale = ['page-meta-v7-0123456789abcdef0123456789abcdef-0123456789ab.json', 'bundle-meta-v6-0123456789abcdef0123456789abcdef-client-01234567.json'];
+  for (const name of stale) fs.writeFileSync(path.join(pageCache, name), '{}');
+  fs.writeFileSync(path.join(pageCache, 'notes.txt'), 'the operator\'s');
+
+  const fd = new FormData();
+  fd.set('bundle', new Blob([pagesBundle('Tide Tables', '2.0.0')]), 'site.softn');
+  const next = await s.api('POST', `/api/apps/${moving.app.slug}/versions`, { body: fd, headers: { 'X-Edit-Key': moving.editKey } });
+  assert.equal(next.status, 201, next.text);
+  const v2 = sha32(moving.app.slug);
+  assert.notEqual(v2, v1);
+  await visit(moving.app.slug);
+  assert.match(await (await fetch(`${s.base}/play/${moving.app.slug}`)).text(), /<h2>Home 2\.0\.0<\/h2>/);
+
+  const after = cached();
+  const ofV1 = after.filter((f) => f.includes(v1));
+  const ofV2 = after.filter((f) => f.includes(v2));
+  assert.ok(ofV2.some((f) => f.startsWith('page-meta-')) && ofV2.some((f) => f.startsWith('bundle-meta-')), 'the new version is cached');
+  // The other app is still at those bytes, and its files are its own.
+  assert.equal(ofV1.length * 2, before.length, `only the other app's files are of the first bytes now: ${after.join(', ')}`);
+  assert.equal(ofV1.length, ofV2.length, 'the app that moved has as many files as it had, and no more');
+  for (const name of stale) assert.ok(!after.includes(name), `${name} is of no version there is`);
+  assert.ok(after.includes('notes.txt'), 'a file that is not the cache\'s is left alone');
+  assert.equal(after.length, ofV1.length + ofV2.length + 1);
+  // The app that stayed is served from the files it had.
+  assert.match(await (await fetch(`${s.base}/play/${staying.app.slug}/about.html`)).text(), /<h2>About 1\.0\.0<\/h2>/);
+  assert.deepEqual(cached(), after);
+
+  // A version after that, and the count is the same again: it does not grow with the versions.
+  const fd3 = new FormData();
+  fd3.set('bundle', new Blob([pagesBundle('Tide Tables', '3.0.0')]), 'site.softn');
+  assert.equal((await s.api('POST', `/api/apps/${moving.app.slug}/versions`, { body: fd3, headers: { 'X-Edit-Key': moving.editKey } })).status, 201);
+  await visit(moving.app.slug);
+  assert.equal(cached().length, after.length);
+  assert.ok(!cached().some((f) => f.includes(v2)));
+
+  // An app that is removed takes its pages with it.
+  const purged = await s.api('DELETE', `/api/apps/${staying.app.slug}?purge=1`, { headers: { 'X-Admin-Key': s.adminKey } });
+  assert.equal(purged.status, 204, purged.text);
+  assert.ok(!cached().some((f) => f.includes(v1)), `nothing of the removed app is kept: ${cached().join(', ')}`);
+  assert.equal(cached().length, ofV2.length + 1);
+});
+
+test('a page is served with no room on the disk for its cache, and nothing is written for it', skip, async () => {
+  // The cache's writes went past the free-space floor every other write is
+  // held to (minFreeBytes): on a disk that was nearly full, each page asked
+  // for took a little more of what was left.
+  const s = await startServer({
+    prefix: 'softn-seo-cache-room-',
+    config: { seedDemos: false, siteOrigin: SITE },
+  });
+  servers.push(s);
+  const fd = new FormData();
+  fd.set('bundle', new Blob([pagesBundle('Low Water', '1.0.0')]), 'site.softn');
+  const pub = await s.api('POST', '/api/apps', { body: fd });
+  assert.equal(pub.status, 201, pub.text);
+  const slug = pub.json.app.slug;
+
+  const configFile = path.join(s.dataDir, 'config.json');
+  const config = JSON.parse(fs.readFileSync(configFile, 'utf8'));
+  const kept = () => [
+    ...(fs.existsSync(path.join(s.dataDir, 'page-cache')) ? fs.readdirSync(path.join(s.dataDir, 'page-cache')) : []),
+    ...fs.readdirSync(path.join(s.dataDir, 'cache')).filter((f) => f.startsWith('sitemap-apps-')),
+  ];
+  const visit = async () => {
+    assert.match(await (await fetch(`${s.base}/play/${slug}`)).text(), /<h2>Home 1\.0\.0<\/h2>/);
+    assert.match(await (await fetch(`${s.base}/play/${slug}/about.html`)).text(), /<h2>About 1\.0\.0<\/h2>/);
+    assert.match(await (await fetch(`${s.base}/app/${slug}`)).text(), /<h2>Home 1\.0\.0<\/h2>/);
+    const sitemap = await fetch(`${s.base}/sitemap-apps.xml`);
+    assert.equal(sitemap.status, 200);
+    assert.match(await sitemap.text(), new RegExp(`<loc>${SITE}/app/${slug}</loc>`));
+  };
+
+  // No disk has this much free: every write that is held to the floor is refused.
+  fs.writeFileSync(configFile, JSON.stringify({ ...config, minFreeBytes: 2 ** 60 }));
+  await visit();
+  assert.deepEqual(kept(), [], 'the pages were served, and no cache file was written for them');
+
+  // With room again, the same pages are cached as they always were.
+  fs.writeFileSync(configFile, JSON.stringify(config));
+  await visit();
+  assert.ok(kept().some((f) => f.startsWith('page-meta-')));
+  assert.ok(kept().some((f) => f.startsWith('bundle-meta-')));
+  assert.ok(kept().some((f) => f.startsWith('sitemap-apps-')));
+});

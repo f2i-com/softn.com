@@ -106,7 +106,8 @@ final class Prerender
         string $bundlePath,
         string $bundleSha,
         ?string $cacheDir,
-        bool $withholdBackend
+        bool $withholdBackend,
+        ?string $cacheOwner = null
     ): array {
         $empty = [
             'themeMode' => null,
@@ -118,10 +119,10 @@ final class Prerender
         if (!is_file($bundlePath)) return $empty;
 
         $cacheFile = null;
+        $cacheKey = '';
         if ($cacheDir !== null && $bundleSha !== '') {
-            $pathHash = substr(hash('sha256', $bundlePath), 0, 8);
-            $suffix = ($withholdBackend ? '-client' : '') . '-' . $pathHash;
-            $cacheFile = rtrim($cacheDir, '/\\') . '/bundle-meta-v' . self::VERSION . '-' . substr($bundleSha, 0, 32) . $suffix . '.json';
+            $cacheKey = self::cacheKey($cacheOwner, $bundlePath, $bundleSha);
+            $cacheFile = rtrim($cacheDir, '/\\') . '/bundle-meta-' . $cacheKey . ($withholdBackend ? '-client' : '') . '.json';
             $cached = @file_get_contents($cacheFile);
             if (is_string($cached)) {
                 $decoded = json_decode($cached, true);
@@ -144,32 +145,98 @@ final class Prerender
         }
 
         $meta = self::extractThemeAndTierFromZip($bundlePath);
-        if ($cacheFile !== null) {
-            self::writeCacheFile($cacheDir, $cacheFile, ['v' => self::VERSION] + $meta);
+        // This is the first file the cache is given of a bundle, written before
+        // any of its pages: where an app is seen to have a bundle it did not
+        // have, and what is kept of the one before it is removed.
+        if ($cacheFile !== null && self::writeCacheFile($cacheDir, $cacheFile, ['v' => self::VERSION] + $meta)) {
+            self::pruneSuperseded((string) $cacheDir, self::ownerTag($cacheOwner ?? dirname($bundlePath)), $cacheKey);
         }
         return $meta;
     }
 
-    /** @param array<string, mixed> $payload */
-    private static function writeCacheFile(?string $cacheDir, string $cacheFile, array $payload): void
+    /**
+     * How a cache file's name begins after `page-meta-` or `bundle-meta-`:
+     * which rendering made it, whose it is and which bundle it was made
+     * from, `v<N>-o<owner>-<digest>`. The owner is what the caller knows an
+     * app by through its versions and its folder's moves (its slug); a bundle
+     * nobody says that of is its folder's. The rest of the name is the page.
+     *
+     * An app's pages are made from one bundle at a time, its latest version,
+     * so a file of the same owner that begins any other way is of a version
+     * that has been replaced, and nothing asks for it again. The names had no
+     * owner in them, only the bundle's digest and a hash of its path: there
+     * was nothing to tell such a file by, none was ever removed, and every
+     * version of every app left its pages in the cache for good.
+     */
+    private static function cacheKey(?string $cacheOwner, string $bundlePath, string $bundleSha): string
     {
-        if ($cacheDir === null) return;
+        return 'v' . self::VERSION . '-' . self::ownerTag($cacheOwner ?? dirname($bundlePath)) . '-' . substr($bundleSha, 0, 32);
+    }
+
+    private static function ownerTag(string $cacheOwner): string
+    {
+        return 'o' . substr(hash('sha256', $cacheOwner), 0, 12);
+    }
+
+    /**
+     * Remove what the cache holds for one owner that is not of `$cacheKey`,
+     * the bundle its pages are made from now; all of it, when that is null.
+     * With them go the files named as they were before a name said whose it
+     * was (`page-meta-v7-<digest>-…`), which nothing reads either. Another
+     * owner's files, and a file that is not the cache's, are left alone.
+     *
+     * One pass over the folder, made when an app's bundle is first met and
+     * when an app is removed, not for each page. A request still rendering
+     * the version before can write a page of it after this; that file goes
+     * with the next version.
+     */
+    private static function pruneSuperseded(string $cacheDir, string $ownerTag, ?string $cacheKey): void
+    {
+        $dir = rtrim($cacheDir, '/\\');
+        foreach (@scandir($dir) ?: [] as $name) {
+            if (preg_match('/^(page|bundle)-meta-v[0-9]+-(o[0-9a-f]{12}-)?[0-9a-f]{32}/', $name, $m) !== 1) continue;
+            $owner = $m[2] ?? '';
+            if ($owner !== '' && $owner !== $ownerTag . '-') continue;
+            if ($owner !== '' && $cacheKey !== null && str_starts_with($name, $m[1] . '-meta-' . $cacheKey)) continue;
+            @unlink("$dir/$name");
+        }
+    }
+
+    /** Remove everything the cache holds for `$cacheOwner`: an app that is gone has no page left to ask for. */
+    public static function forget(string $cacheDir, string $cacheOwner): void
+    {
+        if (is_dir($cacheDir)) self::pruneSuperseded($cacheDir, self::ownerTag($cacheOwner), null);
+    }
+
+    /**
+     * Whether the file was written. A cache is gone without: a folder that
+     * cannot be written, or a disk with no room to spare, costs the page its
+     * place in the cache and nothing else. The room is the directory's own
+     * floor (Config::hasRoom) where this runs as part of it.
+     *
+     * @param array<string, mixed> $payload
+     */
+    private static function writeCacheFile(?string $cacheDir, string $cacheFile, array $payload): bool
+    {
+        if ($cacheDir === null) return false;
         try {
+            $encoded = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+            if (!is_string($encoded)) return false;
+            if (class_exists('Config', false) && !Config::hasRoom(strlen($encoded))) return false;
             if (!is_dir($cacheDir)) @mkdir($cacheDir, 0775, true);
             if (is_dir($cacheDir)) {
-                $encoded = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
-                if (is_string($encoded)) {
-                    $tmp = $cacheFile . '.tmp.' . getmypid() . '.' . bin2hex(random_bytes(4));
-                    if (@file_put_contents($tmp, $encoded) === strlen($encoded)) {
-                        if (!@rename($tmp, $cacheFile)) @unlink($tmp);
-                    } else {
-                        @unlink($tmp);
-                    }
+                $tmp = $cacheFile . '.tmp.' . getmypid() . '.' . bin2hex(random_bytes(4));
+                if (@file_put_contents($tmp, $encoded) === strlen($encoded)) {
+                    if (@rename($tmp, $cacheFile)) return true;
+                    @unlink($tmp);
+                } else {
+                    @unlink($tmp);
                 }
             }
         } catch (Throwable) {
             // Read-only or full cache directories never break page rendering.
         }
+        return false;
     }
 
     public static function forBundlePage(
@@ -180,7 +247,8 @@ final class Prerender
         ?string $snapshotPath = null,
         ?string $snapshotSha = null,
         string $subPath = '',
-        ?string $linkBase = null
+        ?string $linkBase = null,
+        ?string $cacheOwner = null
     ): array {
         $empty = [
             'themeMode' => null,
@@ -229,10 +297,12 @@ final class Prerender
 
         $cacheFile = null;
         if ($cacheDir !== null && $bundleSha !== '') {
+            // Whose page and of which bundle is the key's to say; the rest is the
+            // page asked for, and the snapshot it was made from when there is one.
             $routeKey = $normSub . ($trailingSlash ? '/' : '') . '|' . ($cleanLinkBase ?? '');
-            $pathHash = substr(hash('sha256', $bundlePath . '|' . ($activeSnapshot ?? '') . '|' . $routeKey), 0, 12);
-            $suffix = ($withholdBackend ? '-client' : '') . '-' . $pathHash . $snapTag;
-            $cacheFile = rtrim($cacheDir, '/\\') . '/page-meta-v' . self::VERSION . '-' . substr($bundleSha, 0, 32) . $suffix . '.json';
+            $routeHash = substr(hash('sha256', $routeKey), 0, 12);
+            $suffix = ($withholdBackend ? '-client' : '') . '-' . $routeHash . $snapTag;
+            $cacheFile = rtrim($cacheDir, '/\\') . '/page-meta-' . self::cacheKey($cacheOwner, $bundlePath, $bundleSha) . $suffix . '.json';
             $cached = @file_get_contents($cacheFile);
             if (is_string($cached)) {
                 $decoded = json_decode($cached, true);
@@ -280,7 +350,7 @@ final class Prerender
         // Reuse cached bundle-level metadata (theme, tier, publicPages, noindexPages, hasSsrBackend)
         // so sub-page misses never re-scan or re-decompress every JS/HTML file in the ZIP.
         $bundleMeta = ($cacheDir !== null && $bundleSha !== '')
-            ? self::bundleMetaFor($bundlePath, $bundleSha, $cacheDir, $withholdBackend)
+            ? self::bundleMetaFor($bundlePath, $bundleSha, $cacheDir, $withholdBackend, $cacheOwner)
             : null;
 
         if ($activeSnapshot !== null) {

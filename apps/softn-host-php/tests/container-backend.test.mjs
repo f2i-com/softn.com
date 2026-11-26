@@ -15,7 +15,7 @@ import {join, dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {unzipSync} from 'fflate';
 import {deploymentConfig, packagePhp} from '../package.mjs';
-import {isDeniedByHtaccess} from '../runtime/container-backend.mjs';
+import {isDeniedByHtaccess, htaccessRefusal} from '../runtime/container-backend.mjs';
 import {readArchive} from '../../../scripts/lib/archive.mjs';
 
 const runtimeDir = fileURLToPath(new URL('../runtime/', import.meta.url));
@@ -471,7 +471,7 @@ function handleRequest(req) {
   }
 });
 
-const htaccessDenies = (source, path) => isDeniedByHtaccess(new Map([['.htaccess', Buffer.from(source)]]), path);
+const htaccessDenies = (source, path, method = 'GET') => isDeniedByHtaccess(new Map([['.htaccess', Buffer.from(source)]]), path, method);
 const LOOKAHEAD_HTACCESS = '<FilesMatch "^(?!index\\.php$).*\\.php$">\n  Require all denied\n</FilesMatch>\n';
 const DRUPAL_HTACCESS = [
   '<FilesMatch "\\.(engine|inc|install|make|module|profile|po|sh|.*sql|theme|twig|tpl(\\.php)?|xtmpl|yml)',
@@ -485,23 +485,28 @@ const DRUPAL_HTACCESS = [
 // The same cases as the Rust host's htaccess_deny_inside_a_section_is_not_a_deny_for_the_directory,
 // which reads .htaccess the same way.
 test('an .htaccess deny inside a section is not a deny for the directory', () => {
-  // Patterns this host does not compile: over 256 characters (Drupal's stock rule), shaped
-  // like one that backtracks without end, or not a regular expression. None of the blocks
-  // may take the entry script, or anything else, with it.
-  const tooLong = `<FilesMatch "${'a'.repeat(2000)}">\nDeny from all\n</FilesMatch>\n`;
+  // Patterns this host does not compile: shaped like one that backtracks without end, or not a
+  // regular expression. None of the blocks may take the entry script, or anything else, with it.
+  // Nor may Drupal's stock rule, which compiles here (this host did not compile it when it held
+  // a pattern to 256 characters) and not on the Rust host. (A pattern over 512 bytes is not read
+  // either, and closes the directory instead: "the two hosts close a directory whose <Files>
+  // pattern is too long".)
   const nested = '<FilesMatch "^(a+)+$">\nDeny from all\n</FilesMatch>\n';
   const invalid = '<FilesMatch "(">\nDeny from all\n</FilesMatch>\n';
-  for (const source of [DRUPAL_HTACCESS, tooLong, nested, invalid]) {
+  for (const source of [DRUPAL_HTACCESS, nested, invalid]) {
     for (const path of ['/index.php', '/', '/assets/app.css', '/api/notes', '/aaa']) {
       assert.equal(htaccessDenies(source, path), false, `${path} under ${source}`);
     }
   }
+  assert.equal(htaccessDenies(DRUPAL_HTACCESS, '/core.module'), true, 'what Drupal names, it refuses here');
   // A look-ahead does compile here, and names every script but the entry.
   assert.equal(htaccessDenies(LOOKAHEAD_HTACCESS, '/index.php'), false);
   assert.equal(htaccessDenies(LOOKAHEAD_HTACCESS, '/admin.php'), true);
-  // A header that is not closed, or whose pattern holds a quote or a `>`, still opens a block.
+  // A header whose pattern holds a `<` or a `>` still opens a block. One that is not closed is
+  // not a header Apache reads, and closes the directory ("the two hosts close a directory whose
+  // section tags are malformed").
   const unclosedHeader = '<FilesMatch "\\.inc$"\nDeny from all\n</FilesMatch>\n';
-  assert.equal(htaccessDenies(unclosedHeader, '/index.php'), false);
+  assert.equal(htaccessDenies(unclosedHeader, '/index.php'), true);
   assert.equal(htaccessDenies(unclosedHeader, '/db.inc'), true);
   const named = '<FilesMatch "\\.(?<ext>bak|old)$">\nDeny from all\n</FilesMatch>\n';
   assert.equal(htaccessDenies(named, '/index.php'), false);
@@ -513,8 +518,9 @@ test('an .htaccess deny inside a section is not a deny for the directory', () =>
   assert.equal(htaccessDenies(thenFiles, '/index.php'), false);
   assert.equal(htaccessDenies(`${DRUPAL_HTACCESS}Require all denied\n`, '/index.php'), true);
 
-  // `<Files ~ "regex">` is the regular-expression form, and tags tolerate spacing.
-  const tilde = '<Files ~ "^\\.ht|\\.bak$">\nDeny from all\n</Files >\n';
+  // `<Files ~ "regex">` is the regular-expression form, and an opening tag may have spaces before
+  // its `>` (a closing one may not: `</Files >` closes the directory).
+  const tilde = '<Files ~ "^\\.ht|\\.bak$">\nDeny from all\n</Files>\n';
   assert.equal(htaccessDenies(tilde, '/old.BAK'), true);
   assert.equal(htaccessDenies(tilde, '/index.php'), false);
   const quoted = "<FilesMatch '\\.(inc|tpl)$' >\nRequire all denied\n</FilesMatch>\n<Files config.php>\nRequire all denied\n</Files>\n";
@@ -522,7 +528,8 @@ test('an .htaccess deny inside a section is not a deny for the directory', () =>
   assert.equal(htaccessDenies(quoted, '/config.php'), true);
   assert.equal(htaccessDenies(quoted, '/index.php'), false);
 
-  // Method and expression sections are not evaluated, so their denies are for nobody.
+  // Expression sections are not evaluated, so their denies are for nobody. A method section's
+  // are for the methods it names ("the two hosts read .htaccess denies alike").
   const conditional = [
     '<LimitExcept GET POST>\n  Order deny,allow\n  Deny from all\n</LimitExcept>\n',
     '<Limit PUT DELETE>\n  Require all denied\n</Limit>\n',
@@ -533,9 +540,14 @@ test('an .htaccess deny inside a section is not a deny for the directory', () =>
     '<Files "notes.txt">\n  Require all denied\n</Files>\n',
   ].join('');
   for (const path of ['/index.php', '/admin.php', '/assets/app.css']) {
-    assert.equal(htaccessDenies(conditional, path), false, path);
+    assert.equal(htaccessDenies(conditional, path, 'GET'), false, `GET ${path}`);
+    assert.equal(htaccessDenies(conditional, path, 'PUT'), true, `PUT ${path}`);
   }
-  assert.equal(htaccessDenies(conditional, '/notes.txt'), true);
+  assert.equal(htaccessDenies(conditional, '/index.php', 'POST'), false);
+  assert.equal(htaccessDenies(conditional, '/admin.php', 'POST'), true);
+  for (const method of ['GET', 'POST', 'PUT']) {
+    assert.equal(htaccessDenies(conditional, '/notes.txt', method), true);
+  }
 
   // <IfModule> bodies apply as written: the usual way to close a directory still does.
   const closed = '<IfModule mod_authz_core.c>\n  Require all denied\n</IfModule>\n<IfModule !mod_authz_core.c>\n  Deny from all\n</IfModule>\n';
@@ -545,7 +557,477 @@ test('an .htaccess deny inside a section is not a deny for the directory', () =>
   assert.equal(htaccessDenies(inIfModule, '/index.php'), false);
 });
 
-test('a PHP bundle with a FilesMatch this host cannot compile still answers', {skip: (!hasCoreWasm || !hasPhpWasm) && 'ZIPP WASM engines not built'}, t => {
+// The same cases as the Rust host's the_two_hosts_read_htaccess_denies_alike: where the two
+// differed.
+test('the two hosts read .htaccess denies alike', () => {
+  // Whether a request is refused under a bundle whose root .htaccess is `source` and whose
+  // other files are `files`.
+  const fileDenies = (source, files, method, path) =>
+    isDeniedByHtaccess(new Map([['.htaccess', Buffer.from(source)], ...files.map(file => [file, Buffer.alloc(0)])]), path, method);
+  const denies = (source, method, path) => fileDenies(source, [], method, path);
+
+  // A directive is its words: in any case, with any run of spaces and tabs between. The Rust
+  // host wanted single spaces; this one took `Deny from all.example.com` for a deny.
+  for (const deny of ['deny  from\tall', 'DENY FROM ALL', 'Require\t\tall   denied', 'require all DENIED', '\t Deny from all \t', '\uFEFFDeny from all']) {
+    assert.equal(denies(`${deny}\n`, 'GET', '/index.php'), true, JSON.stringify(deny));
+    assert.equal(denies(`<Files "a.txt">\n${deny}\n</Files>\n`, 'GET', '/a.txt'), true, JSON.stringify(deny));
+  }
+  for (const other of ['Deny from all.example.com', 'Deny from allowed.example', 'Require all deniedx', 'Require all granted', 'Denyfrom all', '# Deny from all']) {
+    assert.equal(denies(`${other}\n`, 'GET', '/index.php'), false, JSON.stringify(other));
+  }
+
+  // A rules file too large to read in full refuses everything under it. This host read none
+  // of it and the Rust host its first 64 KiB: each let through what the rest refused.
+  const padding = bytes => `#${'x'.repeat(bytes - 2)}\n`;
+  const tooLarge = `${padding(64 * 1024)}Options -Indexes\n`;
+  for (const path of ['/index.php', '/assets/app.css', '/']) {
+    assert.equal(denies(tooLarge, 'GET', path), true, path);
+  }
+  const lastBlock = '<Files "z.txt">\nDeny from all\n</Files>\n';
+  const largest = `${padding(64 * 1024 - lastBlock.length)}${lastBlock}`;
+  assert.equal(Buffer.byteLength(largest), 64 * 1024);
+  assert.equal(denies(largest, 'GET', '/index.php'), false);
+  assert.equal(denies(largest, 'GET', '/z.txt'), true, 'a file that fits is read to its end');
+  // By the file's size, not its text's: these bytes are three times as long read as text.
+  const notUtf8 = Buffer.concat([Buffer.from('Options -Indexes\n'), Buffer.alloc(30 * 1024, 0xff)]);
+  assert.equal(fileDenies(notUtf8, [], 'GET', '/index.php'), false);
+
+  // A <Files> block names the file a request is mapped to: the last segment, and a segment
+  // before it that is a file (the rest is its PATH_INFO). This host tested only the last.
+  const inc = '<FilesMatch "\\.inc$">\nRequire all denied\n</FilesMatch>\n';
+  const under = path => fileDenies(inc, ['index.php', 'db.inc', 'lib/db.inc'], 'GET', path);
+  for (const path of ['/db.inc', '/lib/db.inc', '/nowhere/x.inc', '/db.inc/anything', '/lib/db.inc/a/b']) {
+    assert.equal(under(path), true, path);
+  }
+  // `/missing.inc` is not a file, so not what the request is mapped to.
+  for (const path of ['/missing.inc/anything', '/index.php/anything', '/lib/other']) {
+    assert.equal(under(path), false, path);
+  }
+
+  // A deny inside <Limit>/<LimitExcept> is for the methods the section names. Both hosts
+  // dropped it, and then it was for nobody.
+  const except = '<LimitExcept GET POST>\n  Order deny,allow\n  Deny from all\n</LimitExcept>\n';
+  for (const [method, refused] of [['GET', false], ['HEAD', false], ['POST', false], ['get', false], ['PUT', true], ['DELETE', true], ['PROPFIND', true]]) {
+    assert.equal(denies(except, method, '/index.php'), refused, method);
+  }
+  const only = '<Limit PUT DELETE>\n  Require all denied\n</Limit>\n';
+  for (const [method, refused] of [['PUT', true], ['DELETE', true], ['delete', true], ['GET', false], ['POST', false]]) {
+    assert.equal(denies(only, method, '/index.php'), refused, method);
+  }
+  // To Apache HEAD is GET, and a method's name is matched by case.
+  const get = '<Limit GET>\nDeny from all\n</Limit>\n';
+  assert.deepEqual(['GET', 'HEAD', 'POST'].map(method => denies(get, method, '/')), [true, true, false]);
+  const head = '<LimitExcept HEAD>\nDeny from all\n</LimitExcept>\n';
+  assert.deepEqual(['GET', 'HEAD', 'POST'].map(method => denies(head, method, '/')), [false, false, true]);
+  assert.equal(denies('<Limit get>\nDeny from all\n</Limit>\n', 'GET', '/'), false);
+  assert.equal(denies('<LimitExcept get>\nDeny from all\n</LimitExcept>\n', 'GET', '/'), true);
+  // Inside a block, and with the block's own deny beside it.
+  const admin = '<Files "admin.php">\n  <Limit POST>\n    Require all denied\n  </Limit>\n</Files>\n<Limit PUT>\nDeny from all\n</Limit>\n<Files "x.txt">\nDeny from all\n</Files>\n';
+  assert.deepEqual(
+    [['POST', '/admin.php'], ['GET', '/admin.php'], ['POST', '/index.php'], ['PUT', '/index.php'], ['GET', '/x.txt'], ['GET', '/index.php']].map(([method, path]) => denies(admin, method, path)),
+    [true, false, false, true, true, false]
+  );
+  // What Apache would not load is read the safe way: for every method.
+  const nested = '<Limit POST>\n<LimitExcept GET>\nDeny from all\n</LimitExcept>\n</Limit>\n';
+  assert.deepEqual(['GET', 'POST'].map(method => denies(nested, method, '/')), [true, true]);
+  assert.equal(denies('<Limit>\nDeny from all\n</Limit>\n', 'GET', '/'), true);
+  // A method section under an expression section is skipped with it, as before.
+  assert.equal(denies('<If "true">\n<Limit GET>\nDeny from all\n</Limit>\n</If>\n', 'GET', '/'), false);
+  // A caller that does not say how the request was made is refused what any method is.
+  assert.equal(isDeniedByHtaccess(new Map([['.htaccess', Buffer.from(only)]]), '/index.php'), true);
+
+  // More denies than are kept close the directory. The Rust host dropped the ones past the
+  // sixty-fourth; this one kept them all.
+  const blocks = count =>
+    Array.from({length: count}, (_, n) => `<Files "f${n}.txt">\n<IfModule a>\nRequire all denied\n</IfModule>\n<IfModule !a>\nDeny from all\n</IfModule>\n</Files>\n`).join('');
+  assert.equal(denies(blocks(64), 'GET', '/index.php'), false, 'said twice in a block is one deny');
+  assert.equal(denies(blocks(64), 'GET', '/f63.txt'), true);
+  assert.equal(denies(blocks(65), 'GET', '/index.php'), true);
+  assert.equal(denies(`${blocks(64)}Require all denied\n`, 'GET', '/assets/app.css'), true);
+
+  // A request for a directory is under that directory's own rules, as one for a file in it
+  // is. This host read them only for what lay below the directory.
+  const closedDir = new Map([['admin/.htaccess', Buffer.from('Require all denied\n')], ['admin/index.php', Buffer.alloc(0)]]);
+  for (const path of ['/admin', '/admin/', '/admin/index.php', '/admin/missing']) {
+    assert.equal(isDeniedByHtaccess(closedDir, path, 'GET'), true, path);
+  }
+  assert.equal(isDeniedByHtaccess(closedDir, '/', 'GET'), false);
+  assert.equal(isDeniedByHtaccess(closedDir, '/administrator', 'GET'), false);
+});
+
+// The status a request is refused with under a bundle whose .htaccess files are `htaccess`
+// (each a directory and its text) and whose other files are `files`, or 0 when it is not.
+function refusalUnder(htaccess, files, {method = 'GET', path, query = '', host = 'localhost', headers = {}}) {
+  const vfs = new Map([
+    ...Object.entries(htaccess).map(([dir, text]) => [dir ? `${dir}/.htaccess` : '.htaccess', Buffer.from(text)]),
+    ...files.map(file => [file, Buffer.alloc(0)]),
+  ]);
+  return htaccessRefusal(vfs, path, {method, query, host, https: false, headers});
+}
+
+// The same cases as the Rust host's the_two_hosts_refuse_what_redirect_match_and_rewrite_rules_refuse.
+// This host enforced neither: a request the Rust host refused was run here.
+test('the two hosts refuse what RedirectMatch and RewriteRule refuse', () => {
+  const files = ['index.php', 'lib/db.inc', 'lib/util.php'];
+  const refused = (htaccess, request) => refusalUnder(htaccess, files, request);
+  const get = (source, path, query = '') => refused({'': source}, {path, query});
+
+  // A RedirectMatch to a status of 400 or more refuses what it matches with that status. It
+  // matches the whole path, by case, for any method.
+  const statuses = [
+    'RedirectMatch 403 ^/secret/',
+    'RedirectMatch 404 ^/includes/',
+    'RedirectMatch gone ^/old\\.php$',
+    'RedirectMatch 401 ^/members',
+    'RedirectMatch 451 ^/withheld',
+    'RedirectMatch 503 ^/down$',
+    'RedirectMatch 403 ^/Cased',
+  ].join('\n');
+  for (const [path, status] of [
+    ['/secret/key', 403], ['/secret', 0], ['/includes/config.php', 404], ['/old.php', 410], ['/members/list', 401],
+    ['/withheld', 451], ['/down', 503], ['/down/x', 0], ['/Cased', 403], ['/cased', 0], ['/index.php', 0],
+  ]) {
+    assert.equal(get(statuses, path), status, path);
+  }
+  assert.equal(refused({'': statuses}, {method: 'POST', path: '/secret/key'}), 403);
+  // One that sends the request elsewhere first is the answer; one without a target is passed over.
+  const order = 'RedirectMatch 301 ^/moved/(.*)$ /new/$1\nRedirectMatch 403 ^/moved/\nRedirectMatch 302 ^/bare\nRedirectMatch 403 ^/bare\n';
+  assert.equal(get(order, '/moved/x'), 0);
+  assert.equal(get(order, '/bare'), 403);
+  // A status of 400 or more refuses with a target too; `seeother` is a redirect (303).
+  assert.equal(get('RedirectMatch 401 ^/members /login\n', '/members/x'), 401);
+  assert.equal(get('RedirectMatch seeother ^/x /y\nRedirectMatch 403 ^/x\n', '/x'), 0);
+  // Not read inside a block, a method section or an expression section; read inside <IfModule>.
+  const sections = [
+    '<Files "x.txt">\nRedirectMatch 403 ^/\n</Files>\n',
+    '<Limit GET>\nRedirectMatch 403 ^/\n</Limit>\n',
+    '<If "true">\nRedirectMatch 403 ^/\n</If>\n',
+    '<IfModule mod_alias.c>\nRedirectMatch 404 ^/hidden/\n</IfModule>\n',
+  ].join('');
+  assert.deepEqual(['/x.txt', '/index.php', '/hidden/a'].map(path => get(sections, path)), [0, 0, 404]);
+  // A directory's own, for the directory and what is under it, by the whole path.
+  const admin = {admin: 'RedirectMatch 403 ^/admin/?$\nRedirectMatch 404 ^/admin/private/\n'};
+  assert.deepEqual(
+    ['/admin', '/admin/', '/admin/private/x', '/admin/ok.php', '/private/x'].map(path => refused(admin, {path})),
+    [403, 403, 404, 0, 0]
+  );
+
+  // `RewriteRule … [F]` refuses with 403 and `[G]` with 410, where the rewrite engine is on,
+  // the rules before it let the request get that far, and its conditions hold.
+  const rules = [
+    'RewriteEngine On',
+    'RewriteRule ^index\\.php$ - [L]',
+    'RewriteRule ^admin/ - [F]',
+    'RewriteRule ^ADMIN2 - [F,NC]',
+    'RewriteRule ^old\\.html$ - [G]',
+    'RewriteCond %{REQUEST_METHOD} =POST',
+    'RewriteRule ^api/ - [F]',
+    'RewriteCond %{QUERY_STRING} (^|&)debug=',
+    'RewriteRule ^ - [F]',
+  ].join('\n');
+  for (const [path, query, status] of [
+    ['/admin/x', '', 403], ['/admin2', '', 403], ['/old.html', '', 410], ['/api/notes', '', 0],
+    ['/page', 'debug=1', 403], ['/page', 'a=1&debug', 0], ['/page', '', 0], ['/index.php', 'debug=1', 0], ['/other', '', 0],
+  ]) {
+    assert.equal(get(rules, path, query), status, `${path}?${query}`);
+  }
+  assert.equal(refused({'': rules}, {method: 'POST', path: '/api/notes'}), 403);
+  // With the engine off, at the end of the file or never turned on, no rule is run.
+  assert.equal(get('RewriteEngine On\nRewriteRule ^ - [F]\nRewriteEngine Off\n', '/x'), 0);
+  assert.equal(get('RewriteRule ^ - [F]\n', '/x'), 0);
+
+  // A request the rules rewrite is refused for where it is rewritten to: by a later rule, a
+  // <FilesMatch> or a RedirectMatch. One they send elsewhere first is not refused.
+  const rewrites = [
+    'RewriteEngine On',
+    'RewriteRule ^go$ /elsewhere [R=301,L]',
+    'RewriteRule ^go$ - [F]',
+    'RewriteRule ^old/(.*)$ new/$1',
+    'RewriteRule ^new/secret - [F]',
+    'RewriteRule ^config$ lib/db.inc [L]',
+    'RewriteRule ^hide/(.*)$ /hidden/$1 [L]',
+    '<FilesMatch "\\.inc$">\nRequire all denied\n</FilesMatch>',
+    'RedirectMatch 404 ^/hidden/',
+  ].join('\n');
+  assert.deepEqual(['/go', '/old/secret', '/old/public', '/config', '/hide/a'].map(path => get(rewrites, path)), [0, 403, 0, 403, 404]);
+
+  // Conditions on the bundle's files and directories, the host and the request's headers, with
+  // [OR] and [NC]. The Cookie header is never read into one.
+  const conditions = [
+    'RewriteEngine On',
+    'RewriteCond %{REQUEST_FILENAME} !-f',
+    'RewriteRule \\.php$ - [F]',
+    'RewriteCond %{REQUEST_FILENAME} -d',
+    'RewriteRule ^ - [G]',
+    'RewriteCond %{HTTP_HOST} ^old\\. [NC,OR]',
+    'RewriteCond %{HTTP:X-Legacy} ^1$',
+    'RewriteRule ^ - [F]',
+    'RewriteCond %{HTTP:Cookie} session',
+    'RewriteRule ^ - [F]',
+  ].join('\n');
+  const asked = request => refused({'': conditions}, request);
+  assert.equal(asked({path: '/missing.php'}), 403);
+  assert.equal(asked({path: '/index.php'}), 0);
+  assert.equal(asked({path: '/lib/util.php'}), 0);
+  assert.equal(asked({path: '/lib'}), 410);
+  assert.equal(asked({path: '/page', host: 'Old.example.com'}), 403);
+  assert.equal(asked({path: '/page', headers: {'x-legacy': '1'}}), 403);
+  assert.equal(asked({path: '/page', headers: {cookie: 'session=abc'}}), 0);
+  assert.equal(asked({path: '/page'}), 0);
+
+  // A directory's rules are for what is under it, matched without its name.
+  const sub = {admin: 'RewriteEngine On\nRewriteRule ^secret - [F]\n'};
+  assert.deepEqual(['/admin/secret.txt', '/secret.txt', '/admin', '/admin/x/secret'].map(path => refused(sub, {path})), [403, 0, 0, 0]);
+  // Not read inside a method section; a rule whose pattern does not compile is not read, and
+  // the conditions before it go with it.
+  assert.equal(refused({'': 'RewriteEngine On\n<Limit POST>\nRewriteRule ^ - [F]\n</Limit>\n'}, {method: 'POST', path: '/x'}), 0);
+  const invalid = 'RewriteEngine On\nRewriteCond %{REQUEST_METHOD} =GET\nRewriteRule ( - [F]\nRewriteRule ^blocked - [F]\n';
+  assert.equal(refused({'': invalid}, {method: 'POST', path: '/blocked'}), 403);
+  assert.equal(get(invalid, '/x'), 0);
+});
+
+// The same cases as the Rust host's the_two_hosts_close_a_directory_with_more_rules_than_are_kept.
+// The Rust host dropped the lines past the count, and any of them could have refused a request,
+// or kept one from a rule that would have.
+test('the two hosts close a directory with more rules than are kept', () => {
+  const get = (source, path) => refusalUnder({'': source}, ['index.php'], {path});
+  const lines = (count, line) => Array.from({length: count}, (_, n) => `${line(n)}\n`).join('');
+
+  // 256 RewriteRule lines are read, the last of them too; a 257th closes the directory.
+  const rules = count => `RewriteEngine On\n${lines(count, n => `RewriteRule ^r${n}$ /x${n}`)}RewriteRule ^admin - [F]\n`;
+  assert.equal(get(rules(255), '/admin'), 403);
+  assert.equal(get(rules(255), '/index.php'), 0);
+  for (const path of ['/admin', '/index.php', '/assets/app.css']) {
+    assert.equal(get(rules(256), path), 403, path);
+  }
+  // So do 257 RedirectMatch lines.
+  const redirects = count => `${lines(count, n => `RedirectMatch 301 ^/r${n}$ /x${n}`)}RedirectMatch 403 ^/secret\n`;
+  assert.equal(get(redirects(255), '/secret'), 403);
+  assert.equal(get(redirects(255), '/index.php'), 0);
+  assert.equal(get(redirects(256), '/secret'), 403);
+  assert.equal(get(redirects(256), '/index.php'), 403);
+  // And 65 RewriteCond lines before one rule (64 are read). The one past the count, here the
+  // last, would have kept `/public` from the pass-through and so for the [F] after it.
+  const conds = (count, then) =>
+    `RewriteEngine On\n${lines(count, n => `RewriteCond %{HTTP_HOST} !^nowhere${n}$`)}${then}RewriteRule ^public - [L]\nRewriteRule ^ - [F]\n`;
+  assert.equal(get(conds(64, ''), '/public'), 0);
+  assert.equal(get(conds(64, ''), '/other'), 403);
+  assert.equal(get(conds(64, 'RewriteCond %{HTTP_HOST} =nowhere\n'), '/public'), 403);
+  assert.equal(get(conds(65, ''), '/public'), 403);
+  // Lines that are not read (in an expression section) are not counted.
+  const skipped = `RewriteEngine On\n<If "true">\n${lines(300, n => `RewriteRule ^r${n}$ /x${n}`)}</If>\nRewriteRule ^admin - [F]\n`;
+  assert.equal(get(skipped, '/admin'), 403);
+  assert.equal(get(skipped, '/index.php'), 0);
+});
+
+// The same cases as the Rust host's the_two_hosts_close_a_directory_whose_sections_do_not_match_up.
+// Apache will not load such a file and answers 500 for everything under it; both hosts read as
+// far as it went, so a block left open denied nothing, and what followed a stray closing tag
+// was read as though it were outside the section.
+test('the two hosts close a directory whose sections do not match up', () => {
+  const get = (source, path) => refusalUnder({'': source}, ['index.php'], {path});
+  // Left open at the end of the file: a block, a method section, <IfModule>, <If>.
+  for (const source of [
+    '<Files "secret.txt">\nRequire all denied\n',
+    '<FilesMatch "\\.inc$">\nDeny from all\n',
+    '<Files "a.txt">\nRequire all denied\nRewriteEngine On\nRewriteRule ^admin - [F]\n',
+    '<Limit POST>\nRequire all denied\n',
+    '<IfModule mod_rewrite.c>\nRewriteEngine On\n',
+    '<If "true">\nRequire all denied\n',
+    '<IfModule a>\n<Files "x.txt">\nRequire all denied\n</Files>\n',
+  ]) {
+    for (const path of ['/index.php', '/secret.txt', '/assets/app.css', '/']) {
+      assert.equal(get(source, path), 403, `${path} under ${JSON.stringify(source)}`);
+    }
+  }
+  // Closed where it is not the innermost open section, or not open at all.
+  for (const source of [
+    '</Files>\nOptions -Indexes\n',
+    '<Files "a.txt">\nRequire all denied\n</FilesMatch>\n',
+    '<IfModule a>\n<Files "x">\n</IfModule>\n</Files>\n',
+    '<Limit POST>\n</LimitExcept>\n',
+    '<If "true">\n</If>\n</If>\n',
+  ]) {
+    assert.equal(get(source, '/index.php'), 403, JSON.stringify(source));
+  }
+  // Sections that match up are read as before, whatever the case of their names.
+  const nested = '<IfModule a>\n<Files "x.txt">\nRequire all denied\n</Files>\n</IfModule>\n';
+  assert.deepEqual([get(nested, '/x.txt'), get(nested, '/index.php')], [403, 0]);
+  const cased = '<files "x.txt">\nRequire all denied\n</FILES>\n';
+  assert.deepEqual([get(cased, '/x.txt'), get(cased, '/index.php')], [403, 0]);
+  assert.equal(get('# <Files "x.txt">\nOptions -Indexes\n', '/index.php'), 0);
+});
+
+// The status a request is refused with under a bundle of index.php, lib/db.inc and lib/util.php
+// whose .htaccess files are `htaccess`, or 0.
+const refusalOf = (htaccess, request) => refusalUnder(htaccess, ['index.php', 'lib/db.inc', 'lib/util.php'], request);
+
+// The same cases as the Rust host's the_two_hosts_read_negated_rule_patterns_as_apache_does, and
+// the browser's reader's (packages/@softn/container/test/htaccess-and-vnav.test.ts). All three
+// took the `!` of `RewriteRule !pattern` for part of the pattern, so `RewriteRule !^public/ - [F]`
+// matched nothing and forbade nothing.
+test('the two hosts read negated rule patterns as Apache does', () => {
+  const get = (source, path) => refusalOf({'': source}, {path});
+
+  // `RewriteRule !pattern` is for a path the pattern does not match, by case unless [NC].
+  const outside = 'RewriteEngine On\nRewriteRule !^public/ - [F]\n';
+  assert.deepEqual(
+    ['/public/app.css', '/public/', '/index.php', '/public', '/', '/x/public/a', '/PUBLIC/a'].map(path => get(outside, path)),
+    [0, 0, 403, 403, 403, 403, 403]
+  );
+  assert.deepEqual(['/PUBLIC/a', '/Other'].map(path => get('RewriteEngine On\nRewriteRule !^public/ - [F,NC]\n', path)), [0, 403]);
+  assert.deepEqual(['/keep.html', '/x'].map(path => get('RewriteEngine On\nRewriteRule !^keep\\.html$ - [G]\n', path)), [0, 410]);
+  // An empty pattern matches every path, so its negation none.
+  assert.equal(get('RewriteEngine On\nRewriteRule ! - [F]\n', '/x'), 0);
+  // A directory's, for what is under it, matched without its name.
+  const admin = {admin: 'RewriteEngine On\nRewriteRule !^login\\.php$ - [F]\n'};
+  assert.deepEqual(['/admin/login.php', '/admin/users', '/admin', '/index.php'].map(path => refusalOf(admin, {path})), [0, 403, 403, 0]);
+  // Its conditions must hold, as for any rule.
+  const posted = {'': 'RewriteEngine On\nRewriteCond %{REQUEST_METHOD} =POST\nRewriteRule !^api/ - [F]\n'};
+  assert.deepEqual(
+    [['POST', '/x'], ['POST', '/api/notes'], ['GET', '/x']].map(([method, path]) => refusalOf(posted, {method, path})),
+    [403, 0, 0]
+  );
+  // `$1`…`$9` are empty, as the pattern matched nothing: `/x` is rewritten to `/gone/`.
+  const groups = 'RewriteEngine On\nRewriteRule !^(public)/(.*)$ /gone/$2 [L]\nRedirectMatch 410 ^/gone/$\n';
+  assert.deepEqual(['/x', '/public/a'].map(path => get(groups, path)), [410, 0]);
+});
+
+// The same cases as the Rust host's the_two_hosts_read_negated_conditions_and_redirect_match_as_apache_does,
+// and the browser's reader's. All three read these so already.
+test('the two hosts read negated conditions and RedirectMatch as Apache does', () => {
+  const get = (source, path) => refusalOf({'': source}, {path});
+
+  // RedirectMatch has no negated form: a leading `!` is part of its pattern, as Apache reads it,
+  // so `!^/public/` matches nothing.
+  const redirects = 'RedirectMatch 403 !^/public/\nRedirectMatch 404 !private\n';
+  assert.deepEqual(['/x', '/public/a', '/private', '/a!private'].map(path => get(redirects, path)), [0, 0, 0, 404]);
+
+  // `RewriteCond … !CondPattern` holds where the pattern does not: a pattern, `=text` (by case
+  // unless [NC]) or a file test, alone or in an [OR] run.
+  const conds = {'': 'RewriteEngine On\nRewriteCond %{REQUEST_URI} !^/public/\nRewriteCond %{HTTP_HOST} !=static.example [NC]\nRewriteRule ^ - [F]\n'};
+  assert.deepEqual(
+    [['/public/x', 'localhost'], ['/other', 'localhost'], ['/other', 'STATIC.example'], ['/other', 'static.example.com']].map(([path, host]) => refusalOf(conds, {path, host})),
+    [0, 403, 0, 403]
+  );
+  assert.deepEqual(['/lib', '/lib.txt'].map(path => get('RewriteEngine On\nRewriteCond %{REQUEST_FILENAME} !-d\nRewriteRule ^lib - [F]\n', path)), [0, 403]);
+  const either = {'': 'RewriteEngine On\nRewriteCond %{HTTP_HOST} ^admin\\. [OR]\nRewriteCond %{QUERY_STRING} !(^|&)token=\nRewriteRule ^panel - [F]\n'};
+  assert.deepEqual(
+    [['', 'localhost'], ['token=1', 'localhost'], ['token=1', 'admin.example']].map(([query, host]) => refusalOf(either, {path: '/panel', query, host})),
+    [403, 0, 403]
+  );
+  // A negated condition gives `%1`…`%9` nothing, even where its pattern matched: `%1` here is the
+  // first condition's `secret`, not the second's `public`.
+  const backrefs = {
+    '': [
+      'RewriteEngine On',
+      'RewriteCond %{QUERY_STRING} ^to=([a-z]+)$',
+      'RewriteCond %{HTTP_HOST} !^(public)\\. [OR]',
+      'RewriteCond %{REQUEST_METHOD} =GET',
+      'RewriteRule ^go$ /%1 [L]',
+      'RewriteRule ^secret$ - [F]',
+    ].join('\n'),
+  };
+  assert.deepEqual(
+    [['to=secret', 'public.example'], ['to=secret', 'localhost'], ['to=public', 'public.example']].map(([query, host]) => refusalOf(backrefs, {path: '/go', query, host})),
+    [403, 403, 0]
+  );
+});
+
+// The same cases as the Rust host's the_two_hosts_close_a_directory_whose_section_tags_are_malformed,
+// and the browser's reader's. Apache will not load a file with a section tag like these and answers
+// 500 for everything under the directory; all three readers took `</Files >` and
+// `<Files "secret.txt"` for the tags they look like.
+test('the two hosts close a directory whose section tags are malformed', () => {
+  const get = (source, path) => refusalUnder({'': source}, ['index.php'], {path});
+  const malformed = [
+    // An opening tag without its `>`, one with a `>` among its arguments and none at the end, one
+    // whose name runs into its argument, and one in a section not evaluated.
+    '<Files "secret.txt"\nRequire all denied\n</Files>\n',
+    '<FilesMatch "\\.inc$"\nDeny from all\n</FilesMatch>\n',
+    '<IfModule mod_rewrite.c\nRewriteEngine On\n</IfModule>\n',
+    '<IfVersion >= 2.4\n</IfVersion>\n',
+    '<Files"secret.txt">\nRequire all denied\n</Files>\n',
+    '<If "true">\n<Files "secret.txt"\n</Files>\n</If>\n',
+    // A closing tag that is not `</Name>`: a space before its `>`, no `>`, a space after its `<`.
+    '<Files "secret.txt">\nRequire all denied\n</Files >\n',
+    '<Files "secret.txt">\nRequire all denied\n</Files\n',
+    '<IfModule a>\n</IfModule >\n',
+    '</ Files>\nOptions -Indexes\n',
+    // Words after a tag's `>`. Apache passes over them after some tags and not others; here a
+    // tag is its whole line.
+    '<Files "secret.txt"> # private\nRequire all denied\n</Files>\n',
+    '<Files "secret.txt">\nRequire all denied\n</Files> # private\n',
+  ];
+  const readAnyway = malformed.filter(source => ['/index.php', '/secret.txt', '/assets/app.css', '/'].some(path => get(source, path) !== 403));
+  assert.deepEqual(readAnyway, [], 'not refused everything under these');
+  // Spaces before an opening tag's `>`, a tab after its name, a `>` among its arguments or in its
+  // pattern, and a name with its `>` alone, are tags Apache reads, and so are they here.
+  for (const source of [
+    '<Files "secret.txt" >\nRequire all denied\n</Files>\n',
+    '<Files\t"secret.txt">\nRequire all denied\n</Files>\n',
+    '<IfVersion >= 2.4>\n<Files "secret.txt">\nRequire all denied\n</Files>\n</IfVersion>\n',
+    '<FilesMatch "^secret>?\\.txt$">\nRequire all denied\n</FilesMatch>\n',
+    '<If "true">\n</If>\n<Else>\nRequire all denied\n</Else>\n<Files "secret.txt">\nRequire all denied\n</Files>\n',
+  ]) {
+    assert.deepEqual([get(source, '/secret.txt'), get(source, '/index.php')], [403, 0], JSON.stringify(source));
+  }
+});
+
+// The same cases as the Rust host's the_two_hosts_close_a_directory_whose_files_pattern_is_too_long,
+// and the browser's reader's. A <FilesMatch> or <Files ~> pattern was held to 256 characters here,
+// 1024 bytes on the Rust host and 512 characters in the browser, and a <Files> name to 256
+// characters here and bytes there, and one past the limit denied nothing.
+test('the two hosts close a directory whose <Files> pattern is too long', () => {
+  const get = (source, path) => refusalUnder({'': source}, ['index.php'], {path});
+  const regexOf = padding => `^secret\\.txt$|^${padding}$`;
+  const filesMatch = pattern => `<FilesMatch "${pattern}">\nRequire all denied\n</FilesMatch>\n`;
+  const tilde = pattern => `<Files ~ "${pattern}">\nRequire all denied\n</Files>\n`;
+  const files = name => `<Files "${name}">\nRequire all denied\n</Files>\n`;
+  // 512 bytes, in ASCII and in two-byte characters, and a byte more.
+  const [fits, fitsShort] = [regexOf('a'.repeat(496)), regexOf('é'.repeat(248))];
+  const [over, overShort] = [regexOf('a'.repeat(497)), regexOf(`a${'é'.repeat(248)}`)];
+  const [name, nameShort] = [`${'a'.repeat(508)}.txt`, `${'é'.repeat(254)}.txt`];
+  const [longName, longNameShort] = [`${'a'.repeat(509)}.txt`, `a${'é'.repeat(254)}.txt`];
+  assert.deepEqual(
+    [fits, fitsShort, over, overShort, name, nameShort, longName, longNameShort].map(pattern => [Buffer.byteLength(pattern), pattern.length]),
+    [[512, 512], [512, 264], [513, 513], [513, 265], [512, 512], [512, 258], [513, 513], [513, 259]]
+  );
+
+  // A pattern of 512 bytes is read: it names what it names, and nothing else.
+  const read = [
+    ['<FilesMatch> of 512 bytes', filesMatch(fits), '/secret.txt'],
+    ['<FilesMatch> of 512 bytes in 264 characters', filesMatch(fitsShort), '/secret.txt'],
+    ['<Files ~> of 512 bytes', tilde(fits), '/secret.txt'],
+    ['<Files ~> of 512 bytes in 264 characters', tilde(fitsShort), '/secret.txt'],
+    ['<Files> of 512 bytes', files(name), `/${name}`],
+    ['<Files> of 512 bytes in 258 characters', files(nameShort), `/${nameShort}`],
+  ];
+  const misread = read.filter(([, source, named]) => get(source, named) !== 403 || get(source, '/index.php') !== 0).map(([label]) => label);
+
+  // One a byte longer, or far longer, refuses everything under the directory.
+  const closing = [
+    ['<FilesMatch> of 513 bytes', filesMatch(over)],
+    ['<FilesMatch> of 513 bytes in 265 characters', filesMatch(overShort)],
+    ['<FilesMatch> of 2000 bytes', filesMatch('a'.repeat(2000))],
+    ['<Files ~> of 513 bytes', tilde(over)],
+    ['<Files ~> of 513 bytes in 265 characters', tilde(overShort)],
+    ['<Files> of 513 bytes', files(longName)],
+    ['<Files> of 513 bytes in 259 characters', files(longNameShort)],
+  ];
+  const readAnyway = closing
+    .filter(([, source]) => ['/index.php', '/secret.txt', '/assets/app.css', '/'].some(path => get(source, path) !== 403))
+    .map(([label]) => label);
+  // Those not read as written, and those not refused everything under.
+  assert.deepEqual({misread, readAnyway}, {misread: [], readAnyway: []});
+
+  // Not read in a section that is not evaluated, and so not held to the limit.
+  assert.equal(get(`<If "true">\n${filesMatch('a'.repeat(2000))}</If>\n`, '/index.php'), 0);
+});
+
+// Drupal's stock <FilesMatch>, which the Rust host cannot compile and this host did not while it
+// held a pattern to 256 characters, takes neither the entry script nor the block after it with it.
+test("a PHP bundle with Drupal's stock FilesMatch still answers", {skip: (!hasCoreWasm || !hasPhpWasm) && 'ZIPP WASM engines not built'}, t => {
   const root = makeBackendFixture(t, {
     'manifest.json': JSON.stringify({
       engine: 2,
@@ -567,4 +1049,64 @@ test('a PHP bundle with a FilesMatch this host cannot compile still answers', {s
   assert.equal(entry.bodyText, 'entry');
   assert.equal(get('/closed.php').status, 403);
   assert.equal(get('/closed').status, 403);
+});
+
+// The refusals of "the two hosts refuse what RedirectMatch and RewriteRule refuse", through the
+// runner: the query and the headers reach the conditions, and each refusal is answered with its
+// own status. The entry script used to answer all of these.
+test('a PHP bundle is refused what its RewriteRule and RedirectMatch refuse', {skip: (!hasCoreWasm || !hasPhpWasm) && 'ZIPP WASM engines not built'}, t => {
+  const root = makeBackendFixture(t, {
+    'manifest.json': JSON.stringify({
+      engine: 2,
+      id: 'php-rewrite-refusals',
+      name: 'PHP rewrite refusals',
+      version: '1.0.0',
+      main: 'public/index.html',
+      frontendRoot: 'public',
+      backend: {runtime: 'php', entry: 'index.php', mode: 'api', routes: ['/api/']},
+    }),
+    'public/index.html': '<!doctype html><h1>ok</h1>',
+    '.htaccess': [
+      'RewriteEngine On',
+      'RewriteCond %{QUERY_STRING} (^|&)debug=',
+      'RewriteRule ^ - [F]',
+      'RewriteCond %{HTTP:X-Legacy} ^1$',
+      'RewriteRule ^api/ - [G]',
+      'RedirectMatch 404 ^/api/hidden/',
+      'RedirectMatch 451 ^/api/withheld$',
+    ].join('\n'),
+    'index.php': "<?php header('Content-Type: text/plain'); echo 'entry';",
+  }, 'php-rewrite-refusals');
+  const ask = (path, queryString = '', headers = {}) =>
+    runRunner(root, {path, method: 'GET', queryString, headers, bodyBase64: '', client_ip: '127.0.0.1'});
+  const entry = ask('/api/hello', 'debugging=1');
+  assert.equal(entry.status, 200, entry.bodyText);
+  assert.equal(entry.bodyText, 'entry');
+  for (const [answer, status, code] of [
+    [ask('/api/hello', 'debug=1'), 403, 'forbidden'],
+    [ask('/api/hello', '', {'x-legacy': '1'}), 410, 'gone'],
+    [ask('/api/hidden/x'), 404, 'not_found'],
+    [ask('/api/withheld'), 451, 'refused'],
+  ]) {
+    assert.equal(answer.status, status, answer.bodyText);
+    assert.equal(JSON.parse(answer.bodyText).code, code);
+  }
+});
+
+test('a <Files> wildcard is matched in time its length bounds, not by backtracking', () => {
+  // As a backtracking RegExp, `*a*a*a*a*b` took over a minute against one 400-character segment of
+  // a path, which anybody may send. The wildcard keeps its meaning: `*` any run, `?` one character,
+  // by any case.
+  const rules = '<Files "*.ini">\n  Require all denied\n</Files>\n<Files "secret?.txt">\n  Require all denied\n</Files>\n';
+  assert.equal(htaccessDenies(rules, '/config.ini'), true);
+  assert.equal(htaccessDenies(rules, '/conf/CONFIG.INI'), true, 'by any case');
+  assert.equal(htaccessDenies(rules, '/config.ini.txt'), false, 'a wildcard name is matched whole');
+  assert.equal(htaccessDenies(rules, '/secret1.txt'), true);
+  assert.equal(htaccessDenies(rules, '/secret12.txt'), false, '? is one character');
+  assert.equal(htaccessDenies(rules, '/secret.txt'), false);
+  const slow = '<Files "*a*a*a*a*b">\n  Require all denied\n</Files>\n';
+  const started = Date.now();
+  assert.equal(htaccessDenies(slow, '/' + 'a'.repeat(400)), false);
+  assert.equal(htaccessDenies(slow, '/' + 'a'.repeat(400) + 'b'), true);
+  assert.ok(Date.now() - started < 1000, `answered in ${Date.now() - started} ms`);
 });

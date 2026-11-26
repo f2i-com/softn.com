@@ -658,6 +658,18 @@ pull's query ordered by `COALESCE(server_received_at, '')`, which no index
 holds, so every message read and sorted the collection to find its five
 hundred records: twenty times a page, where a page had been one query.
 
+A record's receipt stamp goes up with every write to its collection, whatever
+the clock does. It was the clock's time: a correction that stepped the clock
+back stamped what was written next before stamps already sent out as places,
+and a device that had pulled up to one of those was never sent it; two writes
+in one millisecond had one stamp, and went by id. Each collection's latest
+stamp is now kept in the database (the table `server_received_clock`), and a
+write is stamped with the time, or with the millisecond after the latest when
+the time is not after it. An existing database starts from the latest stamp
+its records have. After a large step back the stamps stay ahead of the clock
+until it catches up, and a client that finds its place more than a minute
+ahead of `serverTime` pulls the collection whole, as it did before.
+
 Other clients are sent a push's ops in the order the pushes were stored: the
 broadcast is made before the store's writer lock is let go. It was made
 after, once the ops had been copied, so of two pushes stored one after the

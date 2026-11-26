@@ -387,7 +387,7 @@ final class Bundle
      */
     public static function clientBundlePath(string $bundlePath, string $cachePath): string
     {
-        if (is_file($cachePath) && @filemtime($cachePath) >= @filemtime($bundlePath)) {
+        if (is_file($cachePath) && @filemtime($cachePath) >= @filemtime($bundlePath) && self::clientBundleInUse($cachePath)) {
             return $cachePath;
         }
         Config::requireRoom((int) (@filesize($bundlePath) ?: 0));
@@ -518,6 +518,77 @@ final class Bundle
             @$src->close();
             if (is_file($tmp)) @unlink($tmp);
             throw $e;
+        }
+    }
+
+    /** How long a superseded client bundle no request has used is kept: as long as an extracted backend (HostedBackend::ensureExtracted). */
+    private const CLIENT_BUNDLE_GRACE_SECONDS = 120;
+
+    /**
+     * Mark a cached client bundle as in use now, which is what pruning goes
+     * by (pruneClientBundles), as an extracted backend's folder is marked on
+     * each use: its time was when it was built and nothing later. The digest
+     * beside it is marked with it while it is the bundle's (as new as the
+     * bundle), so it stays the bundle's. False when the bundle was pruned in
+     * between: the mark made an empty file of the name, which goes, and the
+     * bundle is built again.
+     *
+     * A mark is a write, and the app's page uses the client bundle of every
+     * version it lists, so one marked within the last half of the grace
+     * period is not marked again: pruning only asks whether it was used
+     * within the grace period.
+     */
+    private static function clientBundleInUse(string $cachePath): bool
+    {
+        $now = time();
+        $mtime = @filemtime($cachePath);
+        if ($mtime !== false && $mtime >= $now - intdiv(self::CLIENT_BUNDLE_GRACE_SECONDS, 2)) return true;
+        $shaFile = $cachePath . '.sha256';
+        $shaCurrent = is_file($shaFile) && @filemtime($shaFile) >= $mtime;
+        @touch($cachePath, $now);
+        clearstatcache(true, $cachePath);
+        if ((int) @filesize($cachePath) === 0) {
+            @unlink($cachePath);
+            return false;
+        }
+        if ($shaCurrent) @touch($shaFile, $now);
+        clearstatcache(true, $shaFile);
+        return true;
+    }
+
+    /**
+     * Remove from an app's `backend-cache/` (`$dir`) the client bundles its
+     * versions no longer name, each with its digest, once no request has
+     * used one for the grace period; and a digest whose bundle is gone.
+     * `$live` holds the file names the app's listed versions have now,
+     * `client-v<N>-<first 12 of the bundle's SHA-256>.softn`, while it
+     * withholds its backend, and is empty when it does not.
+     *
+     * A client bundle is superseded when no version names it: the version
+     * was dropped at maxVersionsPerApp or taken out of the folder, its bytes
+     * were replaced (the seed writes a demo's v1 again), or the app no longer
+     * withholds its backend. None was ever removed, so every one of those was
+     * kept for good. One a version still names is in use as an extracted
+     * backend is, and stays: the app's page lists every version with the
+     * digest and size of its client bundle (Apps::detail), and a pruned one
+     * would only be built again for the next view of it.
+     *
+     * @param array<string, true> $live
+     */
+    public static function pruneClientBundles(string $dir, array $live): void
+    {
+        if (!is_dir($dir) || is_link($dir)) return;
+        $cutoff = time() - self::CLIENT_BUNDLE_GRACE_SECONDS;
+        foreach (@scandir($dir) ?: [] as $entry) {
+            if (preg_match('/^(client-v[0-9]+-[0-9a-f]{12}\.softn)(\.sha256)?$/D', $entry, $m) !== 1 || isset($live[$m[1]])) continue;
+            $path = "$dir/$entry";
+            if (is_link($path) || !is_file($path)) continue;
+            $digest = ($m[2] ?? '') !== '';
+            // A digest goes with its bundle, by the bundle's time.
+            if ($digest && is_file("$dir/{$m[1]}")) continue;
+            $mtime = @filemtime($path);
+            if ($mtime === false || $mtime >= $cutoff) continue;
+            if (@unlink($path) && !$digest) @unlink("$path.sha256");
         }
     }
 

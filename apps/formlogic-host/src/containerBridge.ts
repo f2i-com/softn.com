@@ -161,9 +161,31 @@ export function isSafeLocalContainerPath(name: string): boolean {
 }
 
 /**
- * Combine `init.client` text files and `init.assets` (bytes or base64 strings) into the
- * VFS map `@softn/container` mounts from. Unsafe and server-only paths are dropped unless
- * `options.allowLocalBackend` is enabled for a local-sandbox container.
+ * A file's bytes from base64 text, read by the browser's own decoder as media.ts's `bytesOf` reads
+ * one (it passes over spaces and line breaks, takes text whose `=` padding is left off, and refuses
+ * anything else), or null for text that is not base64.
+ */
+function base64Bytes(text: string): Uint8Array | null {
+  let binary: string;
+  try {
+    binary = atob(text);
+  } catch {
+    return null;
+  }
+  const out = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
+  return out;
+}
+
+/**
+ * Combine `init.client` text files and `init.assets` into the VFS map `@softn/container` mounts
+ * from, each file under its own path: what web.ts gives the container. That is the app's pages
+ * and code, its media, and the `.softn` archives its page nests: `<softn-app
+ * src="assets/widgets/clock.softn">` is read from the archive by exactly that name (FormLogic
+ * keeps one with the app's media, under `assets/`). An asset is taken as the bytes it came as (a
+ * Uint8Array, as FormLogic sends them to a frame that says `mediaBytes: 1`, or an ArrayBuffer) or
+ * from base64 text; text that is not base64 is no file and is left out. Unsafe and server-only
+ * paths are dropped unless `options.allowLocalBackend` is enabled for a local-sandbox container.
  */
 export function buildContainerSource(
   files: ReadonlyMap<string, string>,
@@ -198,15 +220,101 @@ export function buildContainerSource(
       } else if (value instanceof ArrayBuffer) {
         out[path] = new Uint8Array(value);
       } else if (typeof value === 'string') {
-        try {
-          out[path] = decodeBase64(value);
-        } catch {
-          // Ignore malformed asset payload.
-        }
+        const bytes = base64Bytes(value);
+        if (bytes) out[path] = bytes;
       }
     }
   }
   return out;
+}
+
+/**
+ * What of another document the frame's container lets an app's page hold (`@softn/container`'s
+ * `frames` and `nestedApps`).
+ *
+ * No frame of another site: this document's policy names no `frame-src` (framePolicy.ts), and it
+ * runs in the parent's sandbox with no origin of its own, which a frame in it would inherit (a
+ * video player keeps nothing there and does not play).
+ *
+ * An app of the app's own (`<softn-app src>`) needs neither, and is nested as anywhere: an
+ * archive among the files the parent sent (buildContainerSource), run in a Worker and a VM of its
+ * own, allowed no more than the app around it (here, what `init.permissions` grants), keeping
+ * nothing between visits and none of this frame's storage, and with no backend call of its own:
+ * none of the parent's calls is the nested app's to make (the full engine, where it needs one, is
+ * fetched for it as for the app). A file it offers to save is asked about in the app's own bar.
+ * Said here rather than left to the container's default: FormLogic keeps a hosted app's `.softn`
+ * files so that its page can nest them.
+ */
+export const FRAME_EMBEDS = Object.freeze({ frames: 'deny', nestedApps: 'allow' } as const);
+
+/**
+ * The calls FormLogic's own page answers for an app itself (HostedAppFrame, NativeAppView), beside
+ * its backend and its uploads: `formlogicWallet` opens FormLogic's wallet over the app (an app
+ * that takes payments, after a declined charge), `formlogicHost` says what else the page can do
+ * for it, `formlogicDictate` has the page listen and hands the app the words, and
+ * `formlogicAddApp` has it offer the person an app this one made. The page holds each to what the
+ * app declared and its owner allowed: the wallet only for an app that takes payments (any other is
+ * answered as for an action the page does not know), listening and offers only where the owner
+ * turned them on (refused `off` otherwise). The web frame refused all four ("Use an app-relative API route under /api/."), so a web app that takes
+ * payments had no way to the wallet after a declined charge, and one that listens or offers apps
+ * was told the page could do neither. The classic frame passes every call on.
+ */
+export const PAGE_ACTIONS: ReadonlySet<string> = new Set(['formlogicWallet', 'formlogicHost', 'formlogicDictate', 'formlogicAddApp']);
+
+/**
+ * What answers an app's `softn.backend.call` in the web frame, given `call`, which sends an action
+ * to the parent over the port: an upload to the app's file store (`formlogicUpload`, its shape
+ * checked first), one of the page's own calls (PAGE_ACTIONS), or a request to one of the app's own
+ * routes (`nativeRequest`, an app-relative path under `/api/`). Any other name is refused here and
+ * never reaches the parent: the app's storage (`nativeStorage`), its container's HTTP
+ * (`containerHttp`) and its engine (`containerEngine`) are this frame's own to send, in the shape
+ * the parent takes them. An app nested in this one has no backend call at all (FRAME_EMBEDS).
+ */
+export function frameBackendCall(call: FrameBackendCall): FrameBackendCall {
+  return (action, input) => {
+    if (action === 'formlogicUpload') {
+      if (!input || typeof input !== 'object' || Array.isArray(input)) {
+        return Promise.resolve({ error: 'Invalid upload request.' });
+      }
+      const op = input.op === undefined ? 'upload' : input.op;
+      if (op !== 'upload' && op !== 'list' && op !== 'delete') {
+        return Promise.resolve({ error: 'Unsupported upload operation.' });
+      }
+      if (op === 'delete') {
+        if (typeof input.id !== 'string' || !/^[a-zA-Z0-9_-]{4,64}$/.test(input.id.trim())) {
+          return Promise.resolve({ error: 'Invalid upload id.' });
+        }
+      } else if (op === 'upload') {
+        if (
+          typeof input.contentBase64 !== 'string' ||
+          input.contentBase64.length === 0 ||
+          input.contentBase64.length > 34 * 1024 * 1024 ||
+          (input.filename !== undefined && typeof input.filename !== 'string') ||
+          (input.mimeType !== undefined && typeof input.mimeType !== 'string') ||
+          (input.folder !== undefined && typeof input.folder !== 'string')
+        ) {
+          return Promise.resolve({ error: 'Invalid upload payload.' });
+        }
+      } else if (input.folder !== undefined && typeof input.folder !== 'string') {
+        return Promise.resolve({ error: 'Invalid upload folder.' });
+      }
+      return call('formlogicUpload', input);
+    }
+    if (PAGE_ACTIONS.has(action)) return call(action, input);
+    const pathOnly = typeof input.url === 'string' ? input.url.split('?')[0] : '';
+    if (
+      action !== 'nativeRequest' ||
+      typeof input.url !== 'string' ||
+      input.url.length > 2048 ||
+      /[\r\n\0]/.test(input.url) ||
+      !/^\/api\/[A-Za-z0-9_.%~/-]+(?:\?[^#]*)?$/.test(input.url) ||
+      /(?:^|\/)\.\.(?:\/|$)/.test(pathOnly) ||
+      /%(?:2e|2f|5c|00|25)/i.test(pathOnly)
+    ) {
+      return Promise.resolve({ error: 'Use an app-relative API route under /api/.' });
+    }
+    return call('nativeRequest', input);
+  };
 }
 
 /**

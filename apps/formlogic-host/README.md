@@ -215,6 +215,17 @@ deadline of its own and refuses a fifth, so a slot is freed only when the
 parent answers that call, or the port fails. A call still waiting for a slot
 thirty-five seconds after it was made answers that it timed out.
 
+In the web frame (`index.html?format=web`) a call reaches the parent only by one of these names
+(`src/containerBridge.ts`, `frameBackendCall`): `nativeRequest`, for one of the app's own routes
+(an app-relative path under `/api/`, which `softn:api`'s `fetch` sends); `formlogicUpload`, its
+shape checked first; and the four calls FormLogic's page answers itself, `formlogicWallet`,
+`formlogicHost`, `formlogicDictate` and `formlogicAddApp`, which the page holds to what the app
+declared and its owner allowed. Any other name is answered "Use an app-relative API route under
+/api/." and never reaches the parent: the app's storage, its container's HTTP and its engine are
+the frame's own calls, in the shape the parent checks. Up to v0.0.52 the four page calls were
+refused there as well, so a web app that takes payments could not open the wallet after a declined
+charge. An app nested in the app's page has no backend call of its own.
+
 A native app's `softn.net.fetch` is answered by the frame itself
 (`src/nativeFetch.ts`): it sends `nativeRequest` with the URL and the options,
 its method upper-cased as a browser's `fetch` sends it, and the parent routes
@@ -241,6 +252,13 @@ A file may come as base64 text, as it always could, or as bytes: a `Uint8Array` 
 `ArrayBuffer`. `ready` says `mediaBytes: 1` for this. A parent that reads it may send any file as
 bytes; one that does not sends text, which works as before. The frame takes either, file by file.
 Text that is not base64 is no file and is left out, as a file of a type the page is not given is.
+
+In the web frame every file in `init.assets` goes into the archive the container opens, under its
+own path and whatever its kind (`buildContainerSource`): the container serves the page's media from
+there, and runs an archive the page nests (`<softn-app src="assets/widgets/clock.softn">`; FormLogic
+keeps one with the app's media) in a container of its own, allowed no more than the app around it
+and keeping nothing between visits. Frames of other sites stay off: this document's policy names no
+`frame-src` (`FRAME_EMBEDS`).
 
 The files used to be `data:` URLs, which carry a file as base64 text: a 24 MB model was a 32 MB
 string, put into the page wherever it was named and decoded again each time it was read, and a

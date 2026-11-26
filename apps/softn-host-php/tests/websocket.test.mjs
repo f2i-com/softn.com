@@ -112,3 +112,64 @@ test('one visitor cannot connect, subscribe and connect again without end',{time
   clock+=1_000;assert.deepEqual(await attempt('203.0.113.9'),{closed:1008});
   assert.equal(polls,5);
 });
+test('a connection that does not subscribe is closed after two seconds, as LIVE_UPDATES.md says',{timeout:10000},async t=>{
+  // The document said ten seconds for as long as the bridge has closed at two.
+  const live=createLiveServer({upstream:'http://127.0.0.1:9',origins:['https://app.example'],routes:[]});
+  live.server.listen(0,'127.0.0.1');await once(live.server,'listening');t.after(()=>live.close());
+  const socket=new WebSocket('ws://127.0.0.1:'+live.server.address().port+'/events',{origin:'https://app.example'});
+  await once(socket,'open');const opened=Date.now();
+  const [code,reason]=await once(socket,'close');
+  assert.equal(code,1008);assert.equal(String(reason),'Subscribe required');
+  const waited=Date.now()-opened;
+  assert.ok(waited>=1500&&waited<6000,`closed after ${waited} ms`);
+  const doc=(await import('node:fs')).readFileSync(new URL('../LIVE_UPDATES.md',import.meta.url),'utf8');
+  assert.match(doc,/has not subscribed within\s+two seconds is closed/);
+});
+test('a host that refuses or fails is polled less and less often, and at the interval again once it answers',{timeout:15000},async t=>{
+  // Every poll was followed by the next a full interval later, whatever came back: a host
+  // answering 429 or 5xx was asked again as often by every connection (tests/poll-backoff.test.mjs
+  // has the arithmetic; this is the bridge keeping to it).
+  let failing=true,polls=0;
+  const upstream=http.createServer((req,res)=>{
+    polls++;
+    // An error page, as a proxy in front of the host answers: not JSON.
+    if(failing){res.writeHead(503,{'Content-Type':'text/html'});res.end('<h1>Service Unavailable</h1>');return;}
+    res.writeHead(200,{'Content-Type':'application/json'});res.end('{"ok":true}');
+  });
+  upstream.listen(0,'127.0.0.1');await once(upstream,'listening');t.after(()=>upstream.close());
+  const live=createLiveServer({upstream:'http://127.0.0.1:'+upstream.address().port,origins:['https://app.example'],routes:[{path:'/api/feed',method:'GET',poll:true}],intervalMs:10,maxBackoffMs:2000});
+  live.server.listen(0,'127.0.0.1');await once(live.server,'listening');t.after(()=>live.close());
+  const socket=new WebSocket('ws://127.0.0.1:'+live.server.address().port+'/events',{origin:'https://app.example'});await once(socket,'open');t.after(()=>socket.terminate());
+  const messages=[];socket.on('message',bytes=>messages.push(JSON.parse(bytes)));
+  const until=(what,ms=5000)=>new Promise((resolve,reject)=>{const started=Date.now();const check=()=>what()?resolve():Date.now()-started>ms?reject(Error('timed out waiting')):setTimeout(check,5);check();});
+  socket.send(JSON.stringify({type:'subscribe',path:'/api/feed',authorization:'Bearer fixture'}));
+  // At the interval that is some forty polls in the 450 ms; doubling from 20 ms it is five
+  // (at 0, 20, 60, 140 and 300 ms; the sixth is at 620).
+  await new Promise(resolve=>setTimeout(resolve,450));
+  assert.ok(polls>=3&&polls<=8,`${polls} polls of a failing host in 450 ms`);
+  // The client is told the status the host gave (it was 503 for any body that was not JSON).
+  assert.deepEqual(messages[0],{type:'error',status:503});
+  assert.ok(messages.every(m=>m.type==='error'&&m.status===503),JSON.stringify(messages));
+  // The host recovers: the next poll finds it, and the ones after come at the interval.
+  failing=false;
+  await until(()=>messages.some(m=>m.type==='update'));
+  const before=polls;
+  await new Promise(resolve=>setTimeout(resolve,300));
+  assert.ok(polls-before>=6,`${polls-before} polls of a well host in 300 ms`);
+});
+test('the bridge does not ask again before the Retry-After of a 429',{timeout:15000},async t=>{
+  let polls=0;
+  const upstream=http.createServer((req,res)=>{polls++;res.writeHead(429,{'Content-Type':'application/json','Retry-After':'1'});res.end('{"error":"rate_limited"}');});
+  upstream.listen(0,'127.0.0.1');await once(upstream,'listening');t.after(()=>upstream.close());
+  const live=createLiveServer({upstream:'http://127.0.0.1:'+upstream.address().port,origins:['https://app.example'],routes:[{path:'/api/feed',method:'GET',poll:true}],intervalMs:10});
+  live.server.listen(0,'127.0.0.1');await once(live.server,'listening');t.after(()=>live.close());
+  const socket=new WebSocket('ws://127.0.0.1:'+live.server.address().port+'/events',{origin:'https://app.example'});await once(socket,'open');t.after(()=>socket.terminate());
+  const message=once(socket,'message');
+  socket.send(JSON.stringify({type:'subscribe',path:'/api/feed',authorization:'Bearer fixture'}));
+  assert.deepEqual(JSON.parse((await message)[0]),{type:'error',status:429});
+  // The doubled wait would be 20 ms; the host said a second.
+  await new Promise(resolve=>setTimeout(resolve,700));
+  assert.equal(polls,1,'asked again inside the second the host named');
+  await new Promise(resolve=>setTimeout(resolve,800));
+  assert.equal(polls,2,'and once it had passed');
+});

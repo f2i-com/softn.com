@@ -163,19 +163,38 @@ describe('two apps that choose the same room label', () => {
 });
 
 describe('what stopping does to resources', () => {
-  it('closes the cache connection without deleting the cache', () => {
+  /** The databases deleted, by name: the cache is deleted by name (sync-room-caches.ts), after its connection is closed. */
+  function deletions(): string[] {
+    const deleted: string[] = [];
+    vi.stubGlobal('indexedDB', {
+      deleteDatabase(name: string) {
+        deleted.push(name);
+        const request: Record<string, (() => void) | null> = { onsuccess: null, onerror: null, onblocked: null };
+        setTimeout(() => request.onsuccess?.(), 0);
+        return request;
+      },
+    });
+    return deleted;
+  }
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('closes the cache connection without deleting the cache', async () => {
+    const deleted = deletions();
     startSync({ room: 'keep', appId: 'AppA', signaling: [] });
     const persistence = persistenceInstances[0];
     stopSync('keep', 'AppA');
+    await new Promise((resolve) => setTimeout(resolve, 10));
     expect(persistence.destroy).toHaveBeenCalledTimes(1);
     expect(persistence.clearData).not.toHaveBeenCalled();
+    expect(deleted).toEqual([]);
   });
 
   it('deletes the cache only when asked to forget', async () => {
+    const deleted = deletions();
     startSync({ room: 'forget', appId: 'AppA', signaling: [] });
     const persistence = persistenceInstances[0];
     await destroySync('forget', 'AppA');
-    expect(persistence.clearData).toHaveBeenCalledTimes(1);
+    expect(deleted).toEqual([persistenceNameFor('AppA', 'forget')]);
     expect(persistence.destroy).toHaveBeenCalledTimes(1);
     expect(getSyncAdapter('forget', 'AppA')).toBeNull();
   });

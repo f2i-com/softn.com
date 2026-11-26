@@ -1250,6 +1250,24 @@ fn a_container_backend_cannot_set_what_the_browser_keeps_for_the_origin() {
     }
 }
 
+/// Nor what has the browser ask its user for a password in the host's name:
+/// `WWW-Authenticate` on a 401 (and `Proxy-Authenticate` on a 407) raises the
+/// browser's own dialog, titled with the host, and the app is sent what is
+/// typed into it. Both passed through, here and on the PHP host. Every CORS
+/// answer is the host's as well, the ones not thought of included.
+#[test]
+fn a_container_backend_cannot_raise_the_browsers_sign_in_dialog_or_answer_cors() {
+    for name in [
+        "www-authenticate", "proxy-authenticate", "access-control-allow-origin", "access-control-allow-private-network",
+        "access-control-allow-credentials", "access-control-anything-else",
+    ] {
+        assert!(container_response_header_withheld(name), "{name}");
+    }
+    for name in ["authorization", "authentication-info", "x-www-authenticate", "accept", "access-control"] {
+        assert!(!container_response_header_withheld(name), "{name}");
+    }
+}
+
 /// A sync token that is the operator's token is refused at startup: every
 /// browser of the app would hold the operator's secret.
 #[test]

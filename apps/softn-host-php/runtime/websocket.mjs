@@ -6,9 +6,10 @@ import {fileURLToPath} from 'node:url';
 import {resolve} from 'node:path';
 import {WebSocketServer} from './vendor/ws/wrapper.mjs';
 import {clientKey} from './client-key.mjs';
+import {MAX_BACKOFF_MS,pollDelayMs,retryAfterMs} from './poll-backoff.mjs';
 export {clientKey};
 
-export function createLiveServer({upstream,origins,routes,intervalMs=5000,maxClients=8,maxPerClient=2,maxUpgradesPerMinute=12,fetchImpl=fetch,now=Date.now}) {
+export function createLiveServer({upstream,origins,routes,intervalMs=5000,maxBackoffMs=MAX_BACKOFF_MS,maxClients=8,maxPerClient=2,maxUpgradesPerMinute=12,fetchImpl=fetch,now=Date.now}) {
   const target=new URL(upstream);
   if(target.username||target.password||target.search||target.hash||target.pathname!=='/'||!(target.protocol==='https:'||target.protocol==='http:'&&['127.0.0.1','[::1]','localhost'].includes(target.hostname)))throw Error('Use an HTTPS origin or loopback HTTP upstream');
   // A GET with no transaction declared, or the Rust host's `none`, is a read:
@@ -49,26 +50,41 @@ export function createLiveServer({upstream,origins,routes,intervalMs=5000,maxCli
   });
   sockets.on('connection',(ws,req)=>{
     let subscription=null,timer=null,controller=null,closed=false;
+    // Polls in a row that brought no answer. Each doubles the wait before the next
+    // (poll-backoff.mjs), where every one used to be followed at the full interval.
+    let failures=0;
+    // Two seconds to subscribe, as LIVE_UPDATES.md says (it was ten, and the document
+    // went on saying so): a connection that says nothing holds one of eight places.
     const admission=setTimeout(()=>ws.close(1008,'Subscribe required'),2000);
     function send(value){if(ws.readyState!==1)return;if(ws.bufferedAmount>65536){ws.close(1013,'Client too slow');return;}ws.send(JSON.stringify(value));}
     async function poll(){
       if(closed||!subscription)return;
       controller=new AbortController();const deadline=setTimeout(()=>controller.abort(),10000);
-      let keep=true;
+      let keep=true,answered=false,retryAfter=null;
       try {
         const headers={Origin:req.headers.origin,Authorization:subscription.authorization};
         if(subscription.etag)headers['If-None-Match']=subscription.etag;
         const r=await fetchImpl(new URL(subscription.path,target),{headers,redirect:'error',signal:controller.signal});
-        if(r.status===304){await r.body?.cancel();send({type:'unchanged'});}
-        else {
+        if(r.status===304){await r.body?.cancel();answered=true;send({type:'unchanged'});}
+        else if(r.status===200) {
           const reader=r.body.getReader();let size=0;const chunks=[];
           try{while(true){const part=await reader.read();if(part.done)break;size+=part.value.length;if(size>3*1024*1024)throw Error('Response limit');chunks.push(Buffer.from(part.value));}}finally{await reader.cancel();}
           const body=JSON.parse(Buffer.concat(chunks).toString('utf8'));
-          if(r.status===200){subscription.etag=r.headers.get('etag');send({type:'update',body});}
-          else {send({type:'error',status:r.status});if([401,403,404].includes(r.status)){keep=false;ws.close(1008,'Subscription unavailable');}}
+          subscription.etag=r.headers.get('etag');answered=true;send({type:'update',body});
+        } else {
+          // A refusal or a failure. Its status and when it says to come back are all that
+          // is taken from it: the body is not the client's, and need not be JSON (a proxy's
+          // error page was read as one, and the client was told 503 whatever the status).
+          retryAfter=retryAfterMs(r.headers.get('retry-after'),now());
+          send({type:'error',status:r.status});
+          if([401,403,404].includes(r.status)){keep=false;ws.close(1008,'Subscription unavailable');}
+          try{await r.body?.cancel();}catch{}
         }
       }catch{send({type:'error',status:503});}
-      finally{clearTimeout(deadline);controller=null;if(keep&&!closed)timer=setTimeout(poll,intervalMs);}
+      finally{
+        clearTimeout(deadline);controller=null;failures=answered?0:failures+1;
+        if(keep&&!closed)timer=setTimeout(poll,pollDelayMs({intervalMs,failures,retryAfter,maxBackoffMs}));
+      }
     }
     ws.on('message',(data,binary)=>{
       if(subscription||binary){ws.close(1008,'One subscription per connection');return;}

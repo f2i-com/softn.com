@@ -168,6 +168,42 @@ test('dropping an updated .softn increments version suffixes (v2.softn) and dedu
   }
 });
 
+test('a dropped version never overwrites a version file in the app\'s folder that its record does not list', skip, async () => {
+  // A dropped file was renamed to v<next>.softn, next after the versions in
+  // the app's record, over whatever file of that name was in the folder: one
+  // the scan had passed over (a bundle it could not read, one still being
+  // copied in) was lost to the drop.
+  const s = await server({
+    prefix: 'softn-drop-unlisted-',
+    config: { seedDemos: false, folderLayout: 'categorized' },
+  });
+  try {
+    const arcadeDir = path.join(s.dataDir, 'apps', 'games', 'arcade');
+    const appDir = path.join(arcadeDir, 'duck-dash');
+    fs.mkdirSync(arcadeDir, { recursive: true });
+    fs.writeFileSync(path.join(arcadeDir, 'duck-dash.softn'), makeBundle('Duck Dash', { version: '1.0.0' }));
+    assert.equal((await s.api('GET', '/api/apps/duck-dash')).json.app.version, 1);
+
+    // On disk and not in the record: a v2 the scan cannot read, and the start of a v3 still being written.
+    const unreadable = Buffer.from('PK\u0003\u0004 not a whole archive');
+    fs.writeFileSync(path.join(appDir, 'v2.softn'), unreadable);
+    fs.writeFileSync(path.join(appDir, 'duck-dash-v3.softn'), unreadable);
+    let detail = (await s.api('GET', '/api/apps/duck-dash')).json.app;
+    assert.deepEqual(detail.versions.map((v) => v.version), [1], 'neither is listed');
+
+    fs.writeFileSync(path.join(arcadeDir, 'duck-dash.softn'), makeBundle('Duck Dash', { version: '2.0.0', extra: { 'notes.txt': strToU8('dropped') } }));
+    detail = (await s.api('GET', '/api/apps/duck-dash')).json.app;
+    assert.ok(!fs.existsSync(path.join(arcadeDir, 'duck-dash.softn')), 'the drop was taken in');
+    assert.ok(fs.readFileSync(path.join(appDir, 'v2.softn')).equals(unreadable), 'v2.softn is as it was');
+    assert.ok(fs.readFileSync(path.join(appDir, 'duck-dash-v3.softn')).equals(unreadable), 'and so is the file that will be version 3');
+    assert.deepEqual(detail.versions.map((v) => v.version), [4, 1], 'the drop is the next version free in the record and on disk');
+    assert.ok(fs.existsSync(path.join(appDir, 'v4.softn')));
+    assert.equal(detail.version, 4);
+  } finally {
+    await s.stop();
+  }
+});
+
 test('moving folders on disk or PATCHing category/subcategory updates layout, app.json, and category caches dynamically', skip, async () => {
   const s = await server({
     prefix: 'softn-move-cat-',
@@ -292,12 +328,286 @@ test('an app named after a subcategory folder gets a name of its own, and the fo
     // Refiled under games by its owner, that app is not moved to where the subcategory's folder goes.
     assert.ok(!fs.existsSync(path.join(s.dataDir, 'apps', 'games', 'retro')));
     const refiled = await s.api('PATCH', '/api/apps/retro', { body: { category: 'games' }, headers: { 'X-Edit-Key': elsewhere.json.editKey } });
-    assert.equal(refiled.status, 200, refiled.text);
+    assert.equal(refiled.status, 409, refiled.text);
     assert.ok(!fs.existsSync(path.join(s.dataDir, 'apps', 'games', 'retro')), 'the subcategory\'s name is still its own');
     assert.ok(fs.existsSync(path.join(s.dataDir, 'apps', 'tools', 'retro', 'v1.softn')));
     assert.equal((await s.api('GET', '/api/apps/retro')).status, 200);
   } finally {
     await s.stop();
+  }
+});
+
+test('a PATCH whose category the app\'s folder cannot move to is refused, and the app keeps the category its folder has', skip, async () => {
+  // The category was written to app.json and the folder moved after, and a
+  // move that could not be made was passed over in silence: the PATCH
+  // answered with the new category, and the next request, which reads an
+  // app's category from where its folder is, had the old one again.
+  const s = await server({
+    prefix: 'softn-patch-move-',
+    config: { seedDemos: false, folderLayout: 'categorized' },
+  });
+  try {
+    const appsDir = path.join(s.dataDir, 'apps');
+    const fd = new FormData();
+    fd.append('bundle', new Blob([makeBundle('Retro')]), 'app.softn');
+    fd.append('name', 'Retro');
+    fd.append('category', 'tools');
+    const pub = await s.api('POST', '/api/apps', { body: fd });
+    assert.equal(pub.status, 201, pub.text);
+    const key = { 'X-Edit-Key': pub.json.editKey };
+    const onDisk = () => JSON.parse(fs.readFileSync(path.join(appsDir, 'tools', 'retro', 'app.json'), 'utf8')).app;
+    const before = onDisk();
+
+    // games/retro is where the subcategory "retro" goes: the folder cannot move there.
+    const refused = await s.api('PATCH', '/api/apps/retro', { body: { category: 'games', name: 'Retro Renamed', hiddenRemixes: [] }, headers: key });
+    assert.equal(refused.status, 409, refused.text);
+    assert.match(refused.json.error, /games/);
+    assert.match(refused.json.error, /Nothing was changed/);
+    assert.deepEqual(onDisk(), before, 'app.json was not written: neither the category nor the rest of what was sent');
+    assert.ok(!fs.existsSync(path.join(appsDir, 'games', 'retro')));
+    const after = (await s.api('GET', '/api/apps/retro')).json.app;
+    assert.deepEqual([after.category, after.subcategory, after.name], ['tools', null, 'Retro']);
+
+    // Where it can move, the answer, the folder, app.json and the next request agree.
+    const moved = await s.api('PATCH', '/api/apps/retro', { body: { category: 'games', subcategory: 'arcade', name: 'Retro Renamed' }, headers: key });
+    assert.equal(moved.status, 200, moved.text);
+    assert.deepEqual([moved.json.app.category, moved.json.app.subcategory, moved.json.app.name], ['games', 'arcade', 'Retro Renamed']);
+    assert.ok(!fs.existsSync(path.join(appsDir, 'tools', 'retro')));
+    const filed = JSON.parse(fs.readFileSync(path.join(appsDir, 'games', 'arcade', 'retro', 'app.json'), 'utf8')).app;
+    assert.deepEqual([filed.category, filed.subcategory], ['games', 'arcade']);
+    // The folders' own counts were made, by that request, from the category the app has now.
+    const arcadeMeta = JSON.parse(fs.readFileSync(path.join(appsDir, 'games', 'arcade', 'category.json'), 'utf8'));
+    assert.deepEqual(arcadeMeta.cache.apps, ['retro']);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(appsDir, 'tools', 'category.json'), 'utf8')).cache.appCount, 0);
+    const next = (await s.api('GET', '/api/apps/retro')).json.app;
+    assert.deepEqual([next.category, next.subcategory, next.name], ['games', 'arcade', 'Retro Renamed']);
+
+    // A folder already where it would go is in the way just the same: one made by hand, here.
+    fs.mkdirSync(path.join(appsDir, 'tools', 'retro'), { recursive: true });
+    const inTheWay = await s.api('PATCH', '/api/apps/retro', { body: { category: 'tools' }, headers: key });
+    assert.equal(inTheWay.status, 409, inTheWay.text);
+    const still = (await s.api('GET', '/api/apps/retro')).json.app;
+    assert.deepEqual([still.category, still.subcategory], ['games', 'arcade']);
+    assert.ok(fs.existsSync(path.join(appsDir, 'games', 'arcade', 'retro', 'v1.softn')));
+  } finally {
+    await s.stop();
+  }
+});
+
+test('the demo sync moves a demo\'s folder before it writes the category, and leaves the demo filed where its folder is when the folder cannot move', skip, async () => {
+  // The seed wrote the index's category into app.json and moved the folder
+  // after, passing over a move that could not be made: the request answered
+  // with the new category, the next scan took the folder's back, and the
+  // demo, whose recorded filing (seed_category) no longer matched its
+  // category, was taken for one the operator had refiled and never filed by
+  // the seed again.
+  const s = await server({
+    prefix: 'softn-seed-move-',
+    config: { seedDemos: true, folderLayout: 'categorized' },
+    // The log on stderr, where the harness reads it, whatever php.ini names.
+    ini: { error_log: '' },
+  });
+  try {
+    const appsDir = path.join(s.dataDir, 'apps');
+    const demos = path.join(s.root, 'demos');
+    fs.mkdirSync(demos, { recursive: true });
+    const demo = path.join(demos, 'Retro.softn');
+    fs.writeFileSync(demo, makeBundle('Retro', { description: 'As shipped' }));
+    const index = (category, subcategory) => fs.writeFileSync(
+      path.join(demos, 'index.json'),
+      JSON.stringify([{ id: 'retro', name: 'Retro', file: 'Retro.softn', category, ...(subcategory ? { subcategory } : {}) }]),
+    );
+    const filed = async () => {
+      const app = (await s.api('GET', '/api/apps?perPage=48')).json.apps.find((a) => a.slug === 'retro');
+      return app && [app.category, app.subcategory];
+    };
+    const record = (rel) => JSON.parse(fs.readFileSync(path.join(appsDir, rel, 'app.json'), 'utf8')).app;
+    index('tools');
+    assert.deepEqual(await filed(), ['tools', null]);
+    assert.equal(record('tools/retro').seed_category, 'tools');
+
+    // A release files it under games, where its name is kept for the subcategory "retro", and changes its bundle.
+    index('games');
+    fs.writeFileSync(demo, makeBundle('Retro', { description: 'As shipped, second printing' }));
+    assert.deepEqual(await filed(), ['tools', null], 'the request that synced it answers with the category its folder has');
+    assert.deepEqual(await filed(), ['tools', null]);
+    const kept = record('tools/retro');
+    assert.deepEqual([kept.category, kept.subcategory, kept.seed_category], ['tools', null, 'tools'], 'app.json says so, and the seed\'s own filing is as it was');
+    assert.equal(kept.description, 'As shipped, second printing', 'the rest of the update was made');
+    assert.ok(!fs.existsSync(path.join(appsDir, 'games', 'retro')), 'nothing was put where the subcategory goes');
+    // The server's log is read as it arrives, which can be after the answer.
+    const why = (line) => line.includes('demo retro stays filed under tools') && line.includes('taken');
+    for (let i = 0; i < 40 && !s.log.some(why); i++) await new Promise((r) => setTimeout(r, 50));
+    assert.ok(s.log.some(why), `the log says why:\n${s.log.join('\n')}`);
+
+    // Where the folder can go, it goes, and the seed's filing is recorded with it: the seed still files the demo.
+    index('games', 'arcade');
+    assert.deepEqual(await filed(), ['games', 'arcade']);
+    assert.ok(fs.existsSync(path.join(appsDir, 'games', 'arcade', 'retro', 'v1.softn')));
+    const moved = record('games/arcade/retro');
+    assert.deepEqual([moved.category, moved.subcategory, moved.seed_category, moved.seed_subcategory], ['games', 'arcade', 'games', 'arcade']);
+    assert.deepEqual(await filed(), ['games', 'arcade']);
+  } finally {
+    await s.stop();
+  }
+});
+
+test('a .softn dropped beside a subcategory of its name is filed under a name of its own, and the subcategory and its apps stay', skip, async () => {
+  // The same takeover as the publish above, by a file the operator drops:
+  // arcade.softn put into games/ was moved into games/arcade/ itself, the
+  // subcategory's folder, and the next scan read that folder as the app.
+  const s = await server({
+    prefix: 'softn-drop-squat-',
+    config: { seedDemos: false, folderLayout: 'categorized' },
+  });
+  try {
+    const gamesDir = path.join(s.dataDir, 'apps', 'games');
+    const arcadeDir = path.join(gamesDir, 'arcade');
+    await s.publish('Star Hopper', {}, { category: 'games', subcategory: 'arcade' });
+    assert.ok(fs.existsSync(path.join(arcadeDir, 'star-hopper', 'v1.softn')));
+
+    // Named for a subcategory that has a folder, for one the site starts with that has none yet,
+    // and for the folder an app keeps its runtime data in, which the scan passes over.
+    fs.writeFileSync(path.join(gamesDir, 'arcade.softn'), makeBundle('Arcade'));
+    fs.writeFileSync(path.join(gamesDir, 'puzzle.softn'), makeBundle('Puzzle'));
+    fs.writeFileSync(path.join(gamesDir, 'backend-data.softn'), makeBundle('Backend Data'));
+    assert.ok(!fs.existsSync(path.join(gamesDir, 'puzzle')));
+
+    const adopted = async () => {
+      const listed = (await s.api('GET', '/api/apps?category=games')).json;
+      return Object.fromEntries(listed.apps.map((a) => [a.name, a]));
+    };
+    const first = await adopted();
+    for (const [name, taken] of [['Arcade', 'arcade'], ['Puzzle', 'puzzle'], ['Backend Data', 'backend-data']]) {
+      const app = first[name];
+      assert.ok(app, `${name} is listed`);
+      assert.notEqual(app.slug, taken, `${taken} is not an app's name to take in games`);
+      assert.deepEqual([app.category, app.subcategory], ['games', null]);
+      assert.ok(fs.existsSync(path.join(gamesDir, app.slug, 'v1.softn')), `${name} has a folder of its own`);
+      assert.ok(!fs.existsSync(path.join(gamesDir, `${taken}.softn`)), 'the dropped file was taken in');
+    }
+    assert.ok(!fs.existsSync(path.join(arcadeDir, 'app.json')), 'nothing was written into the subcategory folder');
+    assert.ok(!fs.existsSync(path.join(arcadeDir, 'v1.softn')));
+    assert.ok(!fs.existsSync(path.join(gamesDir, 'puzzle', 'app.json')));
+    assert.ok(!fs.existsSync(path.join(gamesDir, 'backend-data')));
+
+    // The next request scans the tree again: the same apps, the subcategory and the app in it.
+    const second = await adopted();
+    assert.deepEqual(Object.keys(second).sort(), ['Arcade', 'Backend Data', 'Puzzle', 'Star Hopper']);
+    assert.equal(second['Star Hopper'].subcategory, 'arcade');
+    assert.equal((await s.api('GET', '/api/apps/star-hopper')).status, 200);
+    const inArcade = (await s.api('GET', '/api/apps?category=games&subcategory=arcade')).json;
+    assert.deepEqual(inArcade.apps.map((a) => a.slug), ['star-hopper']);
+
+    // And the subcategory that had no folder still takes the first app filed under it.
+    const filed = await s.publish('Sliding Tiles', {}, { category: 'games', subcategory: 'puzzle' });
+    assert.equal(filed.app.subcategory, 'puzzle');
+    assert.equal((await s.api('GET', '/api/apps/sliding-tiles')).json.app.subcategory, 'puzzle');
+  } finally {
+    await s.stop();
+  }
+});
+
+test('a dropped file names an app whose slug ends in a number by its whole name, before a number at its end is read as a version', skip, async () => {
+  // A trailing -<n> was always taken off as a version label, so no file's
+  // name reached an app called arcade-2, and the drop above files apps under
+  // such names: a later arcade-2.softn was read as "arcade", and made another
+  // new app (arcade-3) each time it was dropped.
+  const s = await server({
+    prefix: 'softn-drop-suffixed-',
+    config: { seedDemos: false, folderLayout: 'categorized' },
+  });
+  try {
+    const gamesDir = path.join(s.dataDir, 'apps', 'games');
+    const toolsDir = path.join(s.dataDir, 'apps', 'tools');
+    await s.publish('Star Hopper', {}, { category: 'games', subcategory: 'arcade' });
+    fs.writeFileSync(path.join(gamesDir, 'arcade.softn'), makeBundle('Arcade'));
+    const slugs = async () => (await s.api('GET', '/api/apps?perPage=48')).json.apps.map((a) => a.slug).sort();
+    assert.deepEqual(await slugs(), ['arcade-2', 'star-hopper']);
+
+    const versions = async (slug) => (await s.api('GET', `/api/apps/${slug}`)).json.app.versions.map((v) => v.version);
+    fs.writeFileSync(path.join(gamesDir, 'arcade-2.softn'), makeBundle('Arcade', { version: '1.1.0', extra: { 'notes.txt': strToU8('two') } }));
+    assert.deepEqual(await slugs(), ['arcade-2', 'star-hopper'], 'no new app was made of it');
+    assert.deepEqual(await versions('arcade-2'), [2, 1]);
+    assert.ok(!fs.existsSync(path.join(gamesDir, 'arcade-2.softn')));
+    // A version label after the whole name is still one.
+    fs.writeFileSync(path.join(gamesDir, 'arcade-2-v3.softn'), makeBundle('Arcade', { version: '1.2.0', extra: { 'notes.txt': strToU8('three') } }));
+    assert.deepEqual(await versions('arcade-2'), [3, 2, 1]);
+    assert.deepEqual(await slugs(), ['arcade-2', 'star-hopper']);
+
+    // Where both names are apps, the whole name is the one it names; without its number, the other.
+    await s.publish('Kite', {}, { category: 'tools' });
+    await s.publish('Kite 2', {}, { category: 'tools' });
+    fs.writeFileSync(path.join(toolsDir, 'kite-2.softn'), makeBundle('Kite 2', { version: '2.0.0', extra: { 'notes.txt': strToU8('kite 2, again') } }));
+    assert.deepEqual([await versions('kite'), await versions('kite-2')], [[1], [2, 1]]);
+    fs.writeFileSync(path.join(toolsDir, 'kite-v2.softn'), makeBundle('Kite', { version: '2.0.0', extra: { 'notes.txt': strToU8('kite, again') } }));
+    assert.deepEqual([await versions('kite'), await versions('kite-2')], [[2, 1], [2, 1]]);
+    // And with no app of the whole name, a number at the end is a version, as it was.
+    fs.writeFileSync(path.join(toolsDir, 'kite-7.softn'), makeBundle('Kite', { version: '3.0.0', extra: { 'notes.txt': strToU8('kite, third') } }));
+    assert.deepEqual(await versions('kite'), [3, 2, 1]);
+
+    // An app's folder made by hand, with the bundle named for it and nothing else, is that app's
+    // and no subcategory, when its name ends in a number too.
+    const handMade = path.join(gamesDir, 'lantern-2');
+    fs.mkdirSync(handMade);
+    fs.writeFileSync(path.join(handMade, 'lantern-2.softn'), makeBundle('Lantern Two'));
+    assert.ok((await slugs()).includes('lantern-2'), JSON.stringify(await slugs()));
+    const lantern = (await s.api('GET', '/api/apps/lantern-2')).json.app;
+    assert.deepEqual([lantern.category, lantern.subcategory, lantern.versions.length], ['games', null, 1]);
+    assert.ok(fs.existsSync(path.join(handMade, 'lantern-2.softn')), 'its bundle stays where it was put');
+    assert.ok(!fs.existsSync(path.join(handMade, 'category.json')), 'it was not taken for a subcategory');
+  } finally {
+    await s.stop();
+  }
+});
+
+test('a .softn dropped for a folder the scan skipped waits for the folder, and one dropped onto a category folder leaves it be', skip, async () => {
+  const s = await server({
+    prefix: 'softn-drop-skipped-',
+    config: { seedDemos: false, folderLayout: 'categorized' },
+  });
+  // The flat layout, with a folder of apps an earlier layout left: a file dropped into data/apps/ goes to data/apps/<slug>/.
+  const flat = await server({
+    prefix: 'softn-drop-flat-',
+    config: { seedDemos: false, folderLayout: 'flat' },
+  });
+  try {
+    // A folder whose app.json will not read is skipped with its files left as they are.
+    // A file dropped for it was written over the bundle in it, as a new app's first version.
+    await s.publish('Lantern', {}, { category: 'games' });
+    const lanternDir = path.join(s.dataDir, 'apps', 'games', 'lantern');
+    const appJson = fs.readFileSync(path.join(lanternDir, 'app.json'));
+    const v1 = fs.readFileSync(path.join(lanternDir, 'v1.softn'));
+    fs.writeFileSync(path.join(lanternDir, 'app.json'), '{ not json');
+    const dropped = path.join(s.dataDir, 'apps', 'games', 'lantern.softn');
+    fs.writeFileSync(dropped, makeBundle('Lantern', { version: '2.0.0', extra: { 'notes.txt': strToU8('second') } }));
+    assert.equal((await s.api('GET', '/api/apps/lantern')).status, 404);
+    assert.ok(fs.readFileSync(path.join(lanternDir, 'v1.softn')).equals(v1), 'the skipped folder\'s bundle is as it was');
+    assert.equal(fs.readFileSync(path.join(lanternDir, 'app.json'), 'utf8'), '{ not json');
+    assert.ok(fs.existsSync(dropped), 'the dropped file waits where it was put');
+    assert.equal((await s.api('GET', '/api/apps')).json.total, 0, 'and is no app of another name meanwhile');
+    // Mended, the folder takes it as its next version.
+    fs.writeFileSync(path.join(lanternDir, 'app.json'), appJson);
+    const mended = (await s.api('GET', '/api/apps/lantern')).json.app;
+    assert.equal(mended.version, 2);
+    assert.ok(!fs.existsSync(dropped));
+    assert.ok(fs.readFileSync(path.join(lanternDir, 'v1.softn')).equals(v1));
+
+    const toolsDir = path.join(flat.dataDir, 'apps', 'tools');
+    fs.mkdirSync(toolsDir, { recursive: true });
+    fs.writeFileSync(path.join(toolsDir, 'quick-calc.softn'), makeBundle('Quick Calc'));
+    assert.equal((await flat.api('GET', '/api/apps/quick-calc')).status, 200);
+    fs.writeFileSync(path.join(flat.dataDir, 'apps', 'tools.softn'), makeBundle('Tools'));
+    const all = (await flat.api('GET', '/api/apps')).json.apps;
+    const tools = all.find((a) => a.name === 'Tools');
+    assert.ok(tools, 'the dropped app is listed');
+    assert.notEqual(tools.slug, 'tools');
+    assert.ok(!fs.existsSync(path.join(toolsDir, 'app.json')), 'nothing was written into the category folder');
+    assert.ok(!fs.existsSync(path.join(toolsDir, 'v1.softn')));
+    assert.equal((await flat.api('GET', '/api/apps/quick-calc')).status, 200, 'the app filed in the category folder is still there');
+  } finally {
+    await s.stop();
+    await flat.stop();
   }
 });
 

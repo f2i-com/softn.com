@@ -53,6 +53,13 @@ final class HostedBackend
         'expect-ct' => true,
         'public-key-pins' => true,
         'public-key-pins-report-only' => true,
+        // The browser's own sign-in dialog. It names the directory's host and
+        // not the app, and what is typed into it comes back as Authorization,
+        // which is passed on to the app's backend: any hosted app could ask a
+        // visitor for a password as the directory, and be sent it. The 401 is
+        // the app's to answer and stays; the challenge that raises the dialog
+        // does not (nor a proxy's, `proxy-authenticate` above).
+        'www-authenticate' => true,
         'access-control-allow-origin' => true,
         'access-control-allow-methods' => true,
         'access-control-allow-headers' => true,
@@ -139,9 +146,27 @@ final class HostedBackend
             $lower = strtolower((string) $k);
             if ($lower === '' || isset(self::STRIP_REQUEST_HEADERS[$lower])) continue;
             if (str_starts_with($lower, 'x-forwarded-') || str_starts_with($lower, 'x-formlogic')) continue;
+            if ($lower === 'authorization' && self::isBrowserSignIn((string) $v)) continue;
             $safe[$lower] = (string) $v;
         }
         return $safe;
+    }
+
+    /**
+     * Whether an Authorization header is HTTP Basic or Digest: the sign-in a
+     * browser keeps for an origin and sends, unasked, with every request to
+     * it. A directory behind a password of its own (Basic or Digest auth on
+     * the whole site) had that password handed to every hosted app's backend
+     * with each request. No hosted app can ask for one of these (its
+     * WWW-Authenticate is withheld, above), so one that arrives is the
+     * site's and never the app's. Any other scheme is the app's own, a
+     * bearer token its frontend sends, and is passed on. Read
+     * case-insensitively, as the scheme is (RFC 9110 §11.1), and in every
+     * value of a header that was sent more than once.
+     */
+    private static function isBrowserSignIn(string $value): bool
+    {
+        return preg_match('/(?:^|,)\s*(?:basic|digest)(?:\s|,|$)/i', $value) === 1;
     }
 
     /** Acquire a bounded concurrency slot (flock) for hosted sandbox workers. @return resource */
@@ -180,7 +205,10 @@ final class HostedBackend
         if (!$hosting['serverHosted']) {
             throw new ApiError(404, 'This app is configured to run locally in your browser sandbox rather than hosted on SoftN.');
         }
-        if ($hosting['customBackendUrl'] !== null) {
+        // Served here is the backend hostingInfo points the app's frontend at when
+        // that is the app's own, which a backendUrl naming it (however written)
+        // is too; any other the app names is not this route's to answer.
+        if ($hosting['backendUrl'] !== "/api/apps/$slug/backend") {
             throw new ApiError(400, 'This app routes its backend to a custom URL rather than the SoftN hosted sandbox.');
         }
         if (!is_string($row['backend_runtime'] ?? null) || $row['backend_runtime'] === '') {

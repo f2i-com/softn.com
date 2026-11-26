@@ -6,6 +6,28 @@ declare(strict_types=1);
 // unless a comment says why this host differs.
 
 /**
+ * The request's path as the app's rules and its backend read it: percent-decoded
+ * once, as the Rust host's decode_http_path does at ingress, or null where that
+ * host answers 400. The raw path went on as it came, so `/api/%61dmin` was not
+ * `/api/admin` to an `.htaccess` rule (`RewriteRule ^api/admin - [F]`) while the
+ * PHP app's own router, which decodes, served it as `/api/admin`. Refused: a
+ * `%` not followed by two hex digits, an encoded separator, control character,
+ * `?` or `#`, a raw control character or backslash, text that is not UTF-8,
+ * and a `..` segment. Empty and `.` segments go, and a trailing `/` stays, as
+ * that host's normalize_vfs_key leaves a path.
+ */
+function softn_decode_path(string $raw): ?string {
+    if(preg_match('/[\x00-\x1f\x7f\\\\]/',$raw)===1||preg_match('/%(?![0-9A-Fa-f]{2})/',$raw)===1)return null;
+    if(preg_match('/%(?:[01][0-9A-Fa-f]|7[Ff]|2[Ff]|5[Cc]|3[Ff]|23)/',$raw)===1)return null;
+    $text=rawurldecode($raw);
+    // (`//u` fails on text that is not UTF-8, with no extension needed for it)
+    if(preg_match('//u',$text)!==1||in_array('..',explode('/',$text),true))return null;
+    $trailing=strlen($text)>1&&str_ends_with($text,'/');
+    $parts=array_values(array_filter(explode('/',$text),fn(string $s):bool=>$s!==''&&$s!=='.'));
+    return $parts===[]?'/':'/'.implode('/',$parts).($trailing?'/':'');
+}
+
+/**
  * The query string as the app sees it: names and values percent-decoded
  * (`+` is a space), every value a string, the last of a repeated name kept.
  * PHP's own $_GET is not that: it turns `a.b` into `a_b`, makes `a[]=1` an
@@ -580,6 +602,43 @@ function softn_runner_result(string $output): ?array {
     $body=substr($output,strlen($match[0]),-1);
     if($body==='')return null;
     return ['status'=>(int)$match[1],'body'=>$body];
+}
+
+/**
+ * Whether a container backend's response header (its name in lower case) is
+ * one it may not set: the framing the host writes itself, what steers a
+ * server in front of it, the policies and the CORS answers the host gives,
+ * what a browser keeps for the whole origin rather than for the response, and
+ * what has the browser ask its user for a password in the host's name. The
+ * Rust host withholds the same names (http.rs
+ * container_response_header_withheld).
+ *
+ * `access-control-` is a prefix there and was six names here, so any other
+ * (Access-Control-Allow-Private-Network, which lets a public page reach a
+ * private network through this origin) passed. `WWW-Authenticate` and
+ * `Proxy-Authenticate` passed on both: with a 401 or a 407 they raise the
+ * browser's own sign-in dialog, which names the host and not the app, and
+ * what is typed into it goes to the app.
+ */
+function softn_container_header_withheld(string $lk): bool {
+    static $names=[
+        'status'=>true,'transfer-encoding'=>true,'connection'=>true,'content-length'=>true,
+        'service-worker-allowed'=>true,'content-security-policy'=>true,
+        'content-security-policy-report-only'=>true,'x-content-type-options'=>true,
+        'x-frame-options'=>true,'referrer-policy'=>true,
+        'strict-transport-security'=>true,'clear-site-data'=>true,
+        'cross-origin-opener-policy'=>true,'cross-origin-embedder-policy'=>true,
+        'cross-origin-resource-policy'=>true,'refresh'=>true,
+        // Kept by the browser for the whole origin, past this response: where reports of
+        // every request to it are sent, another server to reach it at, the hints sent
+        // with every request to it, how its documents are grouped.
+        'nel'=>true,'report-to'=>true,'reporting-endpoints'=>true,'alt-svc'=>true,
+        'origin-agent-cluster'=>true,'accept-ch'=>true,'critical-ch'=>true,
+        'www-authenticate'=>true,'proxy-authenticate'=>true,
+    ];
+    if(isset($names[$lk]))return true;
+    foreach(['access-control-','x-accel-','x-litespeed-','x-sendfile','x-lighttpd-'] as $prefix)if(str_starts_with($lk,$prefix))return true;
+    return false;
 }
 
 /**

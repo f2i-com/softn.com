@@ -46,6 +46,7 @@ import { displayNameFor, findCachedAppTab, findTabForAddress } from './lib/tabId
 import { openBundle, type OpenBundleHost, type OpenBundleRequest, type OpenTab } from './lib/openBundle';
 import { parseAppPath, buildAppPath, publicPath, savedOnlyName, tabAddress, tabLink } from './lib/appUrl';
 import { resolveBundleUrl, fetchRemoteBundle, bundleNameFromUrl, directorySlugOf } from './lib/remoteBundle';
+import { usableBackendUrl } from './lib/hostedBackend';
 import { forgetEdits, peekEdits, restoreEdits } from './lib/editIndex';
 import { reopenTab } from './lib/reopenTab';
 import type { EditHost } from './edit/host';
@@ -695,6 +696,7 @@ function App(): React.ReactElement {
                   if (!res.ok) return undefined;
                   const json = (await res.json()) as {
                     app?: {
+                      slug?: unknown;
                       hosting?: {
                         serverHosted?: boolean;
                         browserSupported?: boolean;
@@ -706,7 +708,11 @@ function App(): React.ReactElement {
                   const h = json?.app?.hosting;
                   if (!h?.serverHosted || typeof h.backendUrl !== 'string' || !h.backendUrl) return null;
                   if (forceLocal && h.browserSupported && !h.withholdBackend) return null;
-                  return h.backendUrl;
+                  // Not as it came: on this origin an app is pointed at its own hosted backend and
+                  // at nothing else (lib/hostedBackend.ts). The slug is the directory's own word for
+                  // the app, where the address may only have spelt it; the open asks again, of this
+                  // and of an address a record kept.
+                  return usableBackendUrl(h.backendUrl, typeof json.app?.slug === 'string' ? json.app.slug : directorySlug);
                 })
                 .catch(() => undefined)
             : Promise.resolve(undefined);

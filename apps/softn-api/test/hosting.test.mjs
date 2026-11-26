@@ -11,6 +11,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -372,6 +373,80 @@ test('the bundle a hosted backend was extracted into is kept while its version i
   assert.deepEqual(extracted(), ['v2', 'v3']);
 });
 
+test('a client bundle no version of a withheld app names any more is pruned once it is not in use, and one a version names is kept', skip, async () => {
+  // backend-cache/client-v<N>-<sha>.softn and its .sha256 were never removed:
+  // the client bundle of a version dropped at maxVersionsPerApp, of bytes
+  // replaced where they were (the seed does that to a demo's v1), and every
+  // one of an app that has stopped withholding its backend stayed for good.
+  const s = await startServer({ prefix: 'softn-client-prune-', config: { maxVersionsPerApp: 2 } });
+  try {
+    const admin = { 'X-Admin-Key': s.adminKey };
+    const b64 = (bytes) => Buffer.from(bytes).toString('base64');
+    const sha12 = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex').slice(0, 12);
+    const v1 = makePhpContainerBundle('Withheld Ledger', '1.0.0');
+    const pub = await s.api('POST', '/api/apps', { headers: admin, body: { name: 'Withheld Ledger', hosting: 'server', withholdBackend: true, bundleBase64: b64(v1) } });
+    assert.equal(pub.status, 201, pub.text);
+    assert.equal(pub.json.app.hosting.withholdBackend, true);
+    const slug = pub.json.app.slug;
+    const appDir = path.join(s.dataDir, 'apps', slug);
+    assert.ok(fs.existsSync(path.join(appDir, 'v1.softn')));
+    const cacheRoot = path.join(appDir, 'backend-cache');
+    const clients = () => (fs.existsSync(cacheRoot) ? fs.readdirSync(cacheRoot) : []).filter((n) => n.startsWith('client-')).sort();
+    const of = (n, bytes) => [`client-v${n}-${sha12(bytes)}.softn`, `client-v${n}-${sha12(bytes)}.softn.sha256`];
+    const sorted = (...pairs) => pairs.flat().sort();
+    const unused = (...names) => {
+      const then = new Date(Date.now() - 600_000);
+      for (const name of names.flat()) fs.utimesSync(path.join(cacheRoot, name), then, then);
+    };
+    const detail = async () => {
+      const res = await s.api('GET', `/api/apps/${slug}`);
+      assert.equal(res.status, 200, res.text);
+      return res.json.app;
+    };
+    const publishNext = async (bytes) => {
+      const res = await s.api('POST', `/api/apps/${slug}/versions`, { headers: admin, body: { bundleBase64: b64(bytes) } });
+      assert.equal(res.status, 201, res.text);
+      return res.json;
+    };
+
+    // The app's page lists each version with its client bundle's digest and size.
+    await detail();
+    assert.deepEqual(clients(), sorted(of(1, v1)));
+    const v2 = makePhpContainerBundle('Withheld Ledger', '1.0.1');
+    await publishNext(v2);
+    assert.deepEqual(clients(), sorted(of(1, v1), of(2, v2)));
+
+    // Version 2 is dropped to make room for version 3. Built a moment ago, its client bundle is kept a while.
+    const v3 = makePhpContainerBundle('Withheld Ledger', '1.0.2');
+    assert.deepEqual((await publishNext(v3)).app.droppedVersions, [2]);
+    assert.deepEqual(clients(), sorted(of(1, v1), of(2, v2), of(3, v3)));
+    // Unused for ten minutes, it goes, digest and all. The ones the versions still name are in use, however old.
+    unused(of(1, v1), of(2, v2), of(3, v3));
+    await detail();
+    assert.deepEqual(clients(), sorted(of(1, v1), of(3, v3)));
+
+    // Version 1's bytes replaced where they are, as the seed replaces a demo's.
+    const v1b = makePhpContainerBundle('Withheld Ledger', '1.0.0-second-printing');
+    fs.writeFileSync(path.join(appDir, 'v1.softn'), v1b);
+    await detail();
+    assert.deepEqual(clients(), sorted(of(1, v1), of(1, v1b), of(3, v3)), 'the replaced one was used a moment ago');
+    unused(of(1, v1));
+    await detail();
+    assert.deepEqual(clients(), sorted(of(1, v1b), of(3, v3)));
+
+    // An app that no longer withholds its backend serves no client bundle, and all of them go in time.
+    const freed = await s.api('PATCH', `/api/apps/${slug}`, { headers: admin, body: { withholdBackend: false } });
+    assert.equal(freed.status, 200, freed.text);
+    assert.equal(freed.json.app.hosting.withholdBackend, false);
+    assert.deepEqual(clients(), sorted(of(1, v1b), of(3, v3)));
+    unused(of(1, v1b), of(3, v3));
+    await detail();
+    assert.deepEqual(clients(), []);
+  } finally {
+    s.stop();
+  }
+});
+
 test(
   'a hosted backend cannot set what a browser keeps for the whole origin: reporting, alternative services, client hints, pins',
   { skip: (!HAVE_PHP || !hasPhpWasm) && 'PHP CLI or zipp-php.wasm missing' },
@@ -418,6 +493,92 @@ test(
     assert.deepEqual(res.json, { ok: true });
     assert.equal(res.headers.get('x-app-note'), 'kept', 'a header of the app\'s own is passed on');
     for (const name of Object.keys(originWide)) assert.equal(res.headers.get(name), null, `${name} is not passed on`);
+  }
+);
+
+test(
+  'a hosted backend cannot raise the browser\'s own sign-in dialog under the directory\'s name',
+  { skip: (!HAVE_PHP || !hasPhpWasm) && 'PHP CLI or zipp-php.wasm missing' },
+  async () => {
+    // A 401 with WWW-Authenticate makes the browser ask for a name and a
+    // password in its own dialog, which names the directory's host and not the
+    // app, and what is typed is sent back as Authorization, which is passed on
+    // to the app's backend: any hosted app could ask the directory's visitors
+    // for their password as the directory. The status is the app's to give;
+    // the challenge is not.
+    const bundle = zipSync({
+      'manifest.json': strToU8(
+        JSON.stringify({
+          engine: 2,
+          id: 'test.sign-in-asker',
+          name: 'Sign In Asker',
+          version: '1.0.0',
+          description: 'A backend that asks for a password',
+          main: 'index.html',
+          backend: { runtime: 'php', entry: 'server/index.php', mode: 'api', routes: ['/api/'] },
+        })
+      ),
+      'index.html': strToU8('<!doctype html><html><body><h1>Sign In Asker</h1></body></html>'),
+      'server/index.php': strToU8(
+        `<?php\nhttp_response_code(401);\nheader('Content-Type: application/json; charset=utf-8');\nheader('X-App-Note: kept');\nheader('WWW-Authenticate: Basic realm="SoftN directory account"');\nheader('Proxy-Authenticate: Basic realm="SoftN directory account"');\necho json_encode(['ok' => false, 'saw' => $_SERVER['HTTP_AUTHORIZATION'] ?? null]);\n`
+      ),
+    });
+    const pub = await api('POST', '/api/apps', {
+      headers: { 'X-Admin-Key': adminKey },
+      body: { name: 'Sign In Asker', category: 'tools', hosting: 'server', bundleBase64: Buffer.from(bundle).toString('base64') },
+    });
+    assert.equal(pub.status, 201, JSON.stringify(pub.json));
+    const res = await api('GET', `/api/apps/${pub.json.app.slug}/backend/api/account`, { headers: { Authorization: 'Bearer app-token' } });
+    assert.equal(res.status, 401, res.text);
+    assert.equal(res.headers.get('x-app-note'), 'kept', 'the answer is the backend\'s own');
+    assert.equal(res.headers.get('www-authenticate'), null, 'WWW-Authenticate is not passed on');
+    assert.equal(res.headers.get('proxy-authenticate'), null, 'Proxy-Authenticate is not passed on');
+    // An app's own token scheme still reaches it: only the browser's dialog is withheld.
+    assert.equal(res.json.saw, 'Bearer app-token');
+  }
+);
+
+test(
+  'the directory\'s own Basic or Digest sign-in is not passed on to a hosted backend, and an app\'s own token is',
+  { skip: (!HAVE_PHP || !hasPhpWasm) && 'PHP CLI or zipp-php.wasm missing' },
+  async () => {
+    // A directory behind HTTP Basic or Digest auth (a password on the whole
+    // site, say) has the browser send its sign-in with every request to it,
+    // a hosted app's backend among them, which was handed Authorization as it
+    // came: any hosted app could read the site's password. An app's own
+    // scheme (a bearer token its frontend sends) is still the app's.
+    const bundle = zipSync({
+      'manifest.json': strToU8(
+        JSON.stringify({
+          engine: 2,
+          id: 'test.credential-echo',
+          name: 'Credential Echo',
+          version: '1.0.0',
+          description: 'A backend that says what Authorization it was given',
+          main: 'index.html',
+          backend: { runtime: 'php', entry: 'server/index.php', mode: 'api', routes: ['/api/'] },
+        })
+      ),
+      'index.html': strToU8('<!doctype html><html><body><h1>Credential Echo</h1></body></html>'),
+      'server/index.php': strToU8(`<?php\nheader('Content-Type: application/json; charset=utf-8');\necho json_encode(['saw' => $_SERVER['HTTP_AUTHORIZATION'] ?? null]);\n`),
+    });
+    const pub = await api('POST', '/api/apps', {
+      headers: { 'X-Admin-Key': adminKey },
+      body: { name: 'Credential Echo', category: 'tools', hosting: 'server', bundleBase64: Buffer.from(bundle).toString('base64') },
+    });
+    assert.equal(pub.status, 201, JSON.stringify(pub.json));
+    const saw = async (authorization) => {
+      const res = await api('GET', `/api/apps/${pub.json.app.slug}/backend/api/whoami`, { headers: { Authorization: authorization } });
+      assert.equal(res.status, 200, res.text);
+      return res.json.saw;
+    };
+    const site = Buffer.from('site-owner:the site password').toString('base64');
+    for (const withheld of [`Basic ${site}`, `basic ${site}`, `BASIC   ${site}`, 'Digest username="site-owner", realm="softn", nonce="abc", uri="/", response="0123"', 'digest username="site-owner"']) {
+      assert.equal(await saw(withheld), null, `${withheld.split(' ')[0]} is the site's sign-in and is not passed on`);
+    }
+    for (const passed of ['Bearer app-token', 'bearer app-token', 'Token abc123', 'Basicish not-the-basic-scheme']) {
+      assert.equal(await saw(passed), passed);
+    }
   }
 );
 
@@ -508,10 +669,11 @@ test('a publisher\'s custom backendUrl is taken only by a directory that knows i
       body: { backendUrl: 'https://directory.example/api/apps/victim/backend', hosting: 'server' },
     });
     assert.equal(patched.status, 403, patched.text);
-    // The site owner still sets one.
+    // The site owner still sets one. It is kept, and is the app's backend once the directory knows its own address.
     const byOwner = await publish(unset, 'Owner Backend', 'https://backend.example/api', { 'X-Admin-Key': unset.adminKey });
     assert.equal(byOwner.status, 201, byOwner.text);
-    assert.equal(byOwner.json.app.hosting.backendUrl, 'https://backend.example/api');
+    assert.equal(byOwner.json.app.hosting.customBackendUrl, 'https://backend.example/api');
+    assert.equal(byOwner.json.app.hosting.backendUrl, null);
 
     // Where the address is known, a backend elsewhere is a publisher's to name, and the site's own is not.
     const elsewhere = await publish(known, 'Own Server', 'https://backend.example/api');
@@ -523,6 +685,142 @@ test('a publisher\'s custom backendUrl is taken only by a directory that knows i
     unset.stop();
     known.stop();
   }
+});
+
+test('one rule says which backendUrl of its own an app\'s frontend is pointed at, on the play page and in the API the web app reads', skip, async () => {
+  // The play page never gave out a backend elsewhere and gave out one on this
+  // site for an app the owner trusts; the API gave the web app whatever was
+  // stored, the site's own addresses among them, and the web app used it:
+  // an app pointed at /api/apps/<another>/backend spoke to that backend as
+  // the visitor. Now Apps::hostingInfo decides once, and both read it.
+  const unset = await startServer({ prefix: 'softn-backend-rule-no-origin-' });
+  const known = await startServer({ prefix: 'softn-backend-rule-', config: { siteOrigin: 'https://directory.example' } });
+  try {
+    // Set by the site owner, who may store any address: the rule is about which one is used.
+    const publish = async (s, name, backendUrl, bundle = makeBundle(name)) => {
+      const fd = new FormData();
+      fd.append('bundle', new Blob([bundle]), 'app.softn');
+      fd.append('name', name);
+      fd.append('hosting', 'server');
+      fd.append('backendUrl', backendUrl);
+      const res = await s.api('POST', '/api/apps', { body: fd, headers: { 'X-Admin-Key': s.adminKey } });
+      assert.equal(res.status, 201, res.text);
+      assert.equal(res.json.app.hosting.customBackendUrl, backendUrl, 'what was set is kept as it was set');
+      return res.json.app.slug;
+    };
+    // What the API tells the web app (/web/app/<slug>), and what the play page's shell is given.
+    const pointedAt = async (s, slug) => {
+      const hosting = (await s.api('GET', `/api/apps/${slug}`)).json.app.hosting;
+      const page = await s.api('GET', `/play/${slug}`);
+      assert.equal(page.status, 200, page.text);
+      const cfg = JSON.parse(page.text.match(/id="softn-runtime-config">([^<]+)</)[1]);
+      return { api: hosting.backendUrl, play: cfg.backendUrl ?? null };
+    };
+    const nowhere = { api: null, play: null };
+
+    // On this site, and not the app's own hosted backend: never, whoever set it and however it is written.
+    const path = await publish(known, 'Path Backend', '/internal/backend');
+    assert.deepEqual(await pointedAt(known, path), nowhere);
+    const another = await publish(known, 'Borrowed Backend', 'https://directory.example/api/apps/victim/backend');
+    assert.deepEqual(await pointedAt(known, another), nowhere);
+    const root = await publish(known, 'Whole Site', 'https://DIRECTORY.example:443');
+    assert.deepEqual(await pointedAt(known, root), nowhere);
+    // By the name the request came to, which is this site too whatever siteOrigin says.
+    const byHost = await publish(known, 'Other Name', `${known.base}/api/apps/victim/backend`);
+    assert.deepEqual(await pointedAt(known, byHost), nowhere);
+    // Nor for an app the owner trusts, which the play page used to make an exception of.
+    const appJson = `${known.dataDir}/apps/${path}/app.json`;
+    const doc = JSON.parse(fs.readFileSync(appJson, 'utf8'));
+    doc.app.trusted = true;
+    fs.writeFileSync(appJson, JSON.stringify(doc, null, 2));
+    assert.equal((await known.api('GET', `/api/apps/${path}`)).json.app.trusted, true);
+    assert.deepEqual(await pointedAt(known, path), nowhere);
+
+    // The app's own hosted backend is the one address on this site it may name, as a path or in full
+    // (an app with a backend of its own to host: naming it is naming none, as the next test shows).
+    const own = await publish(known, 'Own Backend', 'https://backend.example/api', makePhpContainerBundle('Own Backend'));
+    for (const written of [`/api/apps/${own}/backend`, `https://directory.example/api/apps/${own}/backend/`]) {
+      const set = await known.api('PATCH', `/api/apps/${own}`, { body: { backendUrl: written }, headers: { 'X-Admin-Key': known.adminKey } });
+      assert.equal(set.status, 200, set.text);
+      assert.deepEqual(await pointedAt(known, own), { api: `/api/apps/${own}/backend`, play: `/api/apps/${own}/backend` });
+    }
+    // A path that only begins like it is another app's, or the site's.
+    for (const written of [`/api/apps/${own}/backend/../../victim/backend`, `/api/apps/${own}/backend?x=1`, `https://directory.example/api/apps/${own}/backendx`]) {
+      const set = await known.api('PATCH', `/api/apps/${own}`, { body: { backendUrl: written }, headers: { 'X-Admin-Key': known.adminKey } });
+      if (set.status === 200) assert.deepEqual(await pointedAt(known, own), nowhere, written);
+      else assert.equal(set.status, 400, set.text);
+    }
+
+    // A backend elsewhere is used where the site knows its own address. The play page's shell takes a
+    // backend on its own origin only, so there it is the web app that reaches one elsewhere.
+    const elsewhere = await publish(known, 'Own Server', 'https://backend.example/api');
+    assert.deepEqual(await pointedAt(known, elsewhere), { api: 'https://backend.example/api', play: null });
+    // And where it does not, none is: it cannot tell an address elsewhere from one of its own.
+    const unknown = await publish(unset, 'Own Server', 'https://backend.example/api', makePhpContainerBundle('Own Server'));
+    assert.deepEqual(await pointedAt(unset, unknown), nowhere);
+    const ownThere = await unset.api('PATCH', `/api/apps/${unknown}`, { body: { backendUrl: `/api/apps/${unknown}/backend` }, headers: { 'X-Admin-Key': unset.adminKey } });
+    assert.equal(ownThere.status, 200, ownThere.text);
+    assert.deepEqual(await pointedAt(unset, unknown), { api: `/api/apps/${unknown}/backend`, play: `/api/apps/${unknown}/backend` });
+  } finally {
+    unset.stop();
+    known.stop();
+  }
+});
+
+test('an app whose backendUrl names its own hosted backend, however it is written, is answered by that backend', skip, async () => {
+  // The rule above gives an app's frontend its own /api/apps/<slug>/backend
+  // when that is what its backendUrl names, and the backend route refused
+  // every stored backendUrl as a custom one: the one address on this site an
+  // app may name was handed to its frontend, and answered 400 there.
+  const admin = { 'X-Admin-Key': adminKey };
+  const pub = await api('POST', '/api/apps', {
+    headers: admin,
+    body: { name: 'Own Path Ledger', category: 'business', hosting: 'server', bundleBase64: Buffer.from(makePhpContainerBundle('Own Path Ledger')).toString('base64') },
+  });
+  assert.equal(pub.status, 201, JSON.stringify(pub.json));
+  const slug = pub.json.app.slug;
+  const own = `/api/apps/${slug}/backend`;
+  const cacheRoot = path.join(root, 'data', 'apps', slug, 'backend-cache');
+  // This suite's server knows its own address (siteOrigin), so the full form is this site's too.
+  for (const written of [own, `${own}/`, `${base}${own}`]) {
+    const set = await api('PATCH', `/api/apps/${slug}`, { headers: admin, body: { backendUrl: written } });
+    assert.equal(set.status, 200, set.text);
+    assert.equal(set.json.app.hosting.customBackendUrl, written, 'what was set is kept as it was set');
+    assert.equal(set.json.app.hosting.backendUrl, own);
+    fs.rmSync(cacheRoot, { recursive: true, force: true });
+    const res = await api('GET', `${own}/api/items`);
+    assert.notEqual(res.status, 400, `${written}: ${res.text}`);
+    // The bundle is extracted before the sandbox runs, whether or not the sandbox is installed here.
+    assert.ok(fs.existsSync(cacheRoot) && fs.readdirSync(cacheRoot).some((n) => /^v1-[0-9a-f]{12}$/.test(n)), `${written}: the hosted backend took the request`);
+    if (hasPhpWasm) {
+      assert.equal(res.status, 200, `${written}: ${res.text}`);
+      assert.equal(res.headers.get('x-softn-sandbox'), 'zipp-safe-sandbox');
+      assert.deepEqual(res.json, { ok: true, items: [] });
+    }
+    // And the API says where it runs as it does for an app that names no backend.
+    assert.equal(set.json.app.hosting.sandbox, 'zipp-safe-sandbox', written);
+  }
+  // A backend elsewhere is the app's to reach there, and is not served from here.
+  const elsewhere = await api('PATCH', `/api/apps/${slug}`, { headers: admin, body: { backendUrl: 'https://backend.example/api' } });
+  assert.equal(elsewhere.status, 200, elsewhere.text);
+  assert.equal(elsewhere.json.app.hosting.backendUrl, 'https://backend.example/api');
+  assert.equal((await api('GET', `${own}/api/items`)).status, 400);
+
+  // Naming its own backend is naming none, so an app with no backend to host is not hosted by it.
+  const plain = await api('POST', '/api/apps', {
+    headers: admin,
+    body: { name: 'Own Path Plain', hosting: 'server', backendUrl: 'https://backend.example/api', bundleBase64: Buffer.from(makeBundle('Own Path Plain')).toString('base64') },
+  });
+  assert.equal(plain.status, 201, JSON.stringify(plain.json));
+  assert.equal(plain.json.app.hosting.serverHosted, true, 'hosted elsewhere');
+  const plainOwn = `/api/apps/${plain.json.app.slug}/backend`;
+  const named = await api('PATCH', `/api/apps/${plain.json.app.slug}`, { headers: admin, body: { backendUrl: plainOwn } });
+  assert.equal(named.status, 200, named.text);
+  assert.deepEqual(
+    [named.json.app.hosting.mode, named.json.app.hosting.serverHosted, named.json.app.hosting.backendUrl, named.json.app.hosting.customBackendUrl],
+    ['browser', false, null, plainOwn],
+  );
+  assert.equal((await api('GET', `${plainOwn}/api/items`)).status, 404);
 });
 
 test('source endpoint exposes PHP, Rust, SQL, and streams images/audio/video safely via /source/file with Range support', skip, async () => {

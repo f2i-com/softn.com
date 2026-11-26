@@ -31,6 +31,12 @@ export function getSyncRoomKey(appId?: string): string {
  * legacy `xdb-sync-<room>` store may belong to any app that used that label.
  * Here rather than in xdb-sync.ts so that a host removing an app can name its
  * caches without loading the sync runtime.
+ *
+ * An identity and a room may each hold a colon, so a name does not always say
+ * whose it is: `xdb-sync:Notes:Pro:club` is app `Notes`'s room `Pro:club` and
+ * app `Notes:Pro`'s room `club`, one database for both. The spelling is kept,
+ * because renaming would leave every cache already made behind; removing an
+ * app takes only the names that are surely its own (sync-app-state.ts).
  */
 export function persistenceNameFor(appId: string | undefined, room: string): string {
   return appId ? `xdb-sync:${appId}:${room}` : `xdb-sync-${room}`;

@@ -130,6 +130,88 @@ describe('the ZIPP glue a realm runs', () => {
     await expect(refused.zippGlueForWorker()).rejects.toThrow(/is not the one its host named/);
   });
 
+  /**
+   * A page's document, as much of it as running a checked glue uses. The browser asks the
+   * address again for a module script element (the host's server answers again), holds the
+   * answer to the element's `integrity`, and says `load` or `error`.
+   */
+  function pageDocument() {
+    const elements: Array<Record<string, unknown>> = [];
+    const page = {
+      baseURI: 'https://site.example/hosted-runtime/',
+      createElement: (tag: string) => ({ tag, noModule: false, removed: false, remove() { this.removed = true; } }),
+      head: {
+        appendChild(script: { src: string; integrity: string; onload: () => void; onerror: () => void }) {
+          elements.push(script as unknown as Record<string, unknown>);
+          void (async () => {
+            const answer = await (await fetch(script.src)).arrayBuffer();
+            const digest = createHash('sha256').update(new Uint8Array(answer)).digest('base64');
+            if (script.integrity === `sha256-${digest}`) script.onload();
+            else script.onerror();
+          })();
+        },
+      },
+    };
+    return { page, elements };
+  }
+
+  it('in a page, is run by an element that holds the bytes run to the digest, not only the bytes checked', async () => {
+    const url = urlOf(GLUE);
+    const fetch = serve(GLUE);
+    vi.stubGlobal('fetch', fetch);
+    const { page, elements } = pageDocument();
+    vi.stubGlobal('document', page);
+    const glue = await import('../src/runtime/zipp-glue');
+    glue.configureZippGlue({ url, sha256: digestOf(GLUE) });
+    expect((await glue.loadZippGlue()).zippProfile()).toContain('host');
+    expect(elements).toHaveLength(1);
+    expect(elements[0]).toMatchObject({
+      tag: 'script',
+      type: 'module',
+      src: url,
+      crossOrigin: 'anonymous',
+      integrity: `sha256-${createHash('sha256').update(GLUE).digest('base64')}`,
+      removed: true,
+    });
+    // Asked once to check and once to run, and no more.
+    expect(fetch).toHaveBeenCalledTimes(2);
+    // A worker is given no element to run: only the address, as before.
+    expect(await glue.zippGlueForWorker()).toBe(url);
+  });
+
+  it('in a page, is not run when the address answers the named bytes to the check and others after', async () => {
+    const url = urlOf(GLUE);
+    // The host's server, or a cache before it: the named bytes once, then another script.
+    vi.stubGlobal('fetch', vi.fn().mockImplementationOnce(async () => new Response(GLUE)).mockImplementation(async () => new Response(`${GLUE}\nsendEverythingElsewhere();`)));
+    vi.stubGlobal('document', pageDocument().page);
+    const glue = await import('../src/runtime/zipp-glue');
+    glue.configureZippGlue({ url, sha256: digestOf(GLUE) });
+    await expect(glue.loadZippGlue()).rejects.toThrow(/was not run: .*not the one its host named/);
+    expect(glue.runsHostGlue()).toBe(false);
+    expect(() => glue.zippGlue()).toThrow(/before its glue loaded/);
+    // Nor is a worker told where it is: asked again, the address fails the check itself.
+    await expect(glue.zippGlueForWorker()).rejects.toThrow(/not the one its host named/);
+  });
+
+  it('in a page, leaves a glue with no digest, and a page whose scripts are not modules, to the import alone', async () => {
+    const fetch = serve(GLUE);
+    vi.stubGlobal('fetch', fetch);
+    const { page, elements } = pageDocument();
+    vi.stubGlobal('document', page);
+    let glue = await import('../src/runtime/zipp-glue');
+    glue.configureZippGlue({ url: urlOf(GLUE) });
+    expect((await glue.loadZippGlue()).zippProfile()).toContain('host');
+    expect(elements).toEqual([]);
+    expect(fetch).not.toHaveBeenCalled();
+
+    vi.resetModules();
+    vi.stubGlobal('document', { ...page, createElement: () => ({}) });
+    glue = await import('../src/runtime/zipp-glue');
+    glue.configureZippGlue({ url: urlOf(GLUE), sha256: digestOf(GLUE) });
+    expect((await glue.loadZippGlue()).zippProfile()).toContain('host');
+    expect(elements).toEqual([]);
+  });
+
   it("runs core's own when the host names none", async () => {
     vi.stubGlobal('fetch', vi.fn());
     const glue = await import('../src/runtime/zipp-glue');

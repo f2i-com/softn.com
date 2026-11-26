@@ -59,9 +59,9 @@ describe('a room’s name', () => {
     // Nothing of the name reached the page's storage.
     expect(Object.keys(localStorage).reduce((size, key) => size + key.length + (localStorage.getItem(key) ?? '').length, 0)).toBeLessThan(1024);
 
-    // A name of a name's length still starts.
+    // A name of a name's length still starts: once its secret is worked out, which takes
+    // as long as the machine is busy, so the start is waited for, not a number of milliseconds.
     controls.startSync('lobby');
-    await settle();
-    expect(started).toEqual(['lobby']);
+    await vi.waitFor(() => expect(started).toEqual(['lobby']), { timeout: 5000 });
   });
 });

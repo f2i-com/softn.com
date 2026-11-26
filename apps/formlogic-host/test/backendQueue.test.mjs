@@ -272,3 +272,22 @@ test('saves in a lane of their own are not refused while the calls are full', as
   saves.call('nativeStorage', {});
   assert.equal(saves.inFlight, 1, 'the save went out');
 });
+test('the wallet is waited for as long as the person keeps it open, and an ordinary call is not', async () => {
+  // FormLogic answers {op: "open"} when the person closes the wallet. Held to the ordinary
+  // deadline, an app was told its call had timed out while the wallet was still open, and the
+  // answer sent on closing it was dropped.
+  const posted = [];
+  const queue = createBackendQueue({ post: m => posted.push(m), maxInFlight: 4, maxQueued: 8, timeoutMs: 15, personTimeoutMs: 400 });
+  const wallet = queue.call('formlogicWallet', { op: 'open' });
+  const ordinary = queue.call('saveDraft', {});
+  assert.deepEqual(await ordinary, { error: BACKEND_TIMEOUT }, 'an ordinary call keeps its deadline');
+  let early = 'pending';
+  wallet.then(value => { early = value; });
+  await new Promise(resolve => setTimeout(resolve, 60));
+  assert.equal(early, 'pending', 'the wallet is still being waited for past the ordinary deadline');
+  assert.ok(queue.settle(posted.find(m => m.action === 'formlogicWallet').id, { closed: true, balanceCents: 250 }));
+  assert.deepEqual(await wallet, { closed: true, balanceCents: 250 }, 'its answer reaches the app');
+  // It still has an end, should FormLogic never answer.
+  const forgotten = queue.call('formlogicWallet', { op: 'open' });
+  assert.deepEqual(await forgotten, { error: BACKEND_TIMEOUT });
+});

@@ -205,9 +205,20 @@ final class Seed
             if(($row['seed_category']??$row['category'])!==$row['category'])continue;
             $curSub = is_string($row['subcategory'] ?? null) && $row['subcategory'] !== '' ? $row['subcategory'] : null;
             if($row['category']!==$cat || $curSub!==$sub || !isset($row['seed_category'])) {
+                // The folder first, as Apps::patch moves it: in the categorized layout
+                // where the folder is says what the category is. The category was
+                // written first and a move that could not be made passed over, so
+                // app.json named a category the folder was not in, the next scan took
+                // the folder's back, and the seed's own filing, recorded as the other,
+                // read as the operator's from then on. Refused, the demo stays filed
+                // where its folder is, and the next sync tries again.
                 // The key is a demo's id, and text: PHP makes a number of one that is all digits.
+                $why = Catalog::moveAppFolder((string)$slug, $cat, $sub);
+                if ($why !== null) {
+                    error_log("softn-api: demo $slug stays filed under {$row['category']}" . ($curSub !== null ? "/$curSub" : '') . ", not $cat" . ($sub !== null ? "/$sub" : '') . " as its index says: $why");
+                    continue;
+                }
                 Catalog::patch((string)$slug,['category'=>$cat,'subcategory'=>$sub,'seed_category'=>$cat,'seed_subcategory'=>$sub]);
-                Catalog::moveAppFolder((string)$slug, $cat, $sub);
             }
         }
 

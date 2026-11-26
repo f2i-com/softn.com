@@ -50,6 +50,9 @@ const MAX_HTACCESS_RULES: usize = 256;
 const MAX_HTACCESS_CONDS: usize = 64;
 const MAX_HTACCESS_DENY: usize = 64;
 const MAX_HTACCESS_PASSES: usize = 4;
+/// The longest `<Files>`, `<Files ~>` or `<FilesMatch>` pattern read, in bytes, as the Node host
+/// and the browser's reader count it. A longer one closes the directory (`ParsedHtaccess::closed`).
+const MAX_HTACCESS_FILES_PATTERN_BYTES: usize = 512;
 const MAX_RESPONSE_HEADERS: usize = 128;
 const MAX_RESPONSE_HEADER_BYTES: usize = 8192;
 const MAX_RESPONSE_BODY_BYTES: usize = 16 * 1024 * 1024;
@@ -527,6 +530,9 @@ struct HtaccessCond {
 #[derive(Clone)]
 struct HtaccessRule {
     regex: Regex,
+    /// `RewriteRule !pattern`: the rule is for a path the pattern does not match, and its
+    /// `$1`…`$9` are empty, as Apache reads it.
+    negated: bool,
     substitution: String,
     conds: Vec<HtaccessCond>,
     last: bool,
@@ -543,16 +549,83 @@ struct RedirectMatchRule {
     target: Option<String>,
 }
 
+/// The methods a `Deny from all` / `Require all denied` is for: every one, or the ones the
+/// `<Limit>` or `<LimitExcept>` it sits in says. Names are kept as Apache knows them: as
+/// written (it matches them by case), and `HEAD` as `GET` (to Apache they are one method).
+#[derive(Clone, Debug, PartialEq)]
+enum DenyMethods {
+    All,
+    Only(Vec<String>),
+    Except(Vec<String>),
+}
+
+impl DenyMethods {
+    /// The scope of a `<Limit methods>` (`except`: `<LimitExcept methods>`) header. A `<Limit>`
+    /// that names no method is one Apache refuses to load; it is read as naming them all.
+    fn from_section(except: bool, args: &str) -> Self {
+        let methods: Vec<String> = tokenize_apache_line(args).iter().map(|m| Self::apache_method(m)).collect();
+        match (except, methods.is_empty()) {
+            (true, _) => DenyMethods::Except(methods),
+            (false, true) => DenyMethods::All,
+            (false, false) => DenyMethods::Only(methods),
+        }
+    }
+
+    fn apache_method(name: &str) -> String {
+        if name == "HEAD" { "GET".to_owned() } else { name.to_owned() }
+    }
+
+    /// Whether the deny is for a request made with `method`, taken in upper case, which is
+    /// how the host goes on to serve it.
+    fn applies(&self, method: &str) -> bool {
+        let method = Self::apache_method(&method.to_ascii_uppercase());
+        match self {
+            DenyMethods::All => true,
+            DenyMethods::Only(methods) => methods.contains(&method),
+            DenyMethods::Except(methods) => !methods.contains(&method),
+        }
+    }
+}
+
 #[derive(Clone, Default)]
 struct ParsedHtaccess {
     dir_prefix: String,
     rewrite_engine: bool,
     rewrite_base: Option<String>,
     directory_index: Vec<String>,
-    deny_all: bool,
-    deny_files: Vec<Regex>,
+    /// The directory's own denies, each with the methods it is for.
+    deny_all: Vec<DenyMethods>,
+    /// The denies of `<Files>`/`<FilesMatch>` blocks, likewise.
+    deny_files: Vec<(Regex, DenyMethods)>,
     redirect_matches: Vec<RedirectMatchRule>,
     rules: Vec<HtaccessRule>,
+}
+
+impl ParsedHtaccess {
+    /// A rules file that cannot be read in full, holds more denies, rewrite rules,
+    /// RedirectMatch lines or conditions than are kept, or a `<Files>` pattern longer than is
+    /// read (`MAX_HTACCESS_FILES_PATTERN_BYTES`), or whose sections do not match up or have a
+    /// tag Apache does not read (`SectionTag::Malformed`), says who may not have what and
+    /// cannot be asked: nobody has anything under it. The Node host
+    /// (apps/softn-host-php/runtime/container-backend.mjs, `parseHtaccessFile`) reads it the
+    /// same way. One read as far as it went, or passed over, let through what its unread
+    /// part refused.
+    fn closed(dir_prefix: &str, why: &str) -> Self {
+        let dir_prefix = normalize_vfs_key(dir_prefix);
+        tracing::warn!("{dir_prefix}/.htaccess: {why}, so everything under it is refused");
+        ParsedHtaccess { dir_prefix, deny_all: vec![DenyMethods::All], ..Default::default() }
+    }
+}
+
+/// Whether a line is `Deny from all` or `Require all denied`: by its words, in any case and
+/// with any run of spaces and tabs between them, as Apache reads a directive.
+fn is_apache_deny_all(line: &str) -> bool {
+    let mut words = line.split([' ', '\t']).filter(|w| !w.is_empty());
+    let mut next = || words.next().map(str::to_ascii_lowercase).unwrap_or_default();
+    matches!(
+        (next().as_str(), next().as_str(), next().as_str()),
+        ("deny", "from", "all") | ("require", "all", "denied")
+    )
 }
 
 enum HtaccessEval {
@@ -615,9 +688,6 @@ fn compile_apache_regex(pattern: &str, nocase: bool) -> Option<Regex> {
 }
 
 fn compile_apache_glob(glob: &str) -> Option<Regex> {
-    if glob.len() > 256 {
-        return None;
-    }
     let mut pat = String::with_capacity(glob.len() * 2 + 8);
     pat.push_str("(?i)^");
     for ch in glob.chars() {
@@ -639,52 +709,76 @@ fn compile_apache_glob(glob: &str) -> Option<Regex> {
         .ok()
 }
 
-/// A `<Name args>` or `</Name>` section line of an `.htaccess`: whether it closes the section,
-/// the lower-cased name, and what sits between the name and the closing `>`.
-fn parse_apache_section_tag(line: &str) -> Option<(bool, String, &str)> {
+/// A section line of an `.htaccess`, as `parse_apache_section_tag` reads it.
+enum SectionTag<'a> {
+    /// `<Name args>` or `<Name>`: the lower-cased name, and what sits between it and the `>`.
+    Open(String, &'a str),
+    /// `</Name>`: the lower-cased name.
+    Close(String),
+    /// A line that starts as a tag does and is not one Apache reads: it answers 500 for
+    /// everything under the directory. An opening tag whose name runs into its arguments or
+    /// that does not end with its `>` (`<Files "secret.txt"`), or a closing tag that is not
+    /// `</Name>` alone (`</Files >`, `</Files`). Apache passes over words after a tag's `>`
+    /// after some tags and not others; here a tag is its whole line, and they are malformed too.
+    Malformed,
+}
+
+/// The section tag a line of an `.htaccess` is, if it starts as one does: with `<` and a
+/// letter, or with `</`. The Node host and the browser's reader read a line to the same tag.
+fn parse_apache_section_tag(line: &str) -> Option<SectionTag<'_>> {
     let rest = line.strip_prefix('<')?;
-    let (closing, rest) = match rest.strip_prefix('/') {
-        Some(after) => (true, after),
-        None => (false, rest),
-    };
+    if let Some(after) = rest.strip_prefix('/') {
+        let name_len = after.bytes().take_while(u8::is_ascii_alphabetic).count();
+        return Some(if name_len > 0 && &after[name_len..] == ">" {
+            SectionTag::Close(after[..name_len].to_ascii_lowercase())
+        } else {
+            SectionTag::Malformed
+        });
+    }
     let name_len = rest.bytes().take_while(u8::is_ascii_alphabetic).count();
     if name_len == 0 {
         return None;
     }
-    let args = rest[name_len..].trim();
-    let args = args.strip_suffix('>').unwrap_or(args).trim();
-    Some((closing, rest[..name_len].to_ascii_lowercase(), args))
+    // The name, then its `>`, or a space and the arguments and then the `>` that ends the line.
+    let after_name = &rest[name_len..];
+    let args = match after_name.strip_suffix('>') {
+        Some("") => "",
+        Some(args) if args.starts_with(char::is_whitespace) => args.trim(),
+        _ => return Some(SectionTag::Malformed),
+    };
+    Some(SectionTag::Open(rest[..name_len].to_ascii_lowercase(), args))
 }
 
-/// The matcher for a `<Files>`/`<FilesMatch>` header: `<Files name>` takes a wildcard name,
-/// `<FilesMatch regex>` and `<Files ~ regex>` a regular expression. `None` when it does not
-/// compile.
-fn compile_files_block_matcher(name: &str, args: &str) -> Option<Regex> {
+/// The pattern of a `<Files>`/`<FilesMatch>` header, unquoted, and whether it is a regular
+/// expression: `<FilesMatch regex>` and `<Files ~ regex>` hold one, `<Files name>` a wildcard
+/// name. The Node host and the browser's reader take the same pattern from a header.
+fn files_block_pattern<'a>(name: &str, args: &'a str) -> (&'a str, bool) {
     fn unquote(s: &str) -> &str {
         s.trim().trim_matches(|c| c == '"' || c == '\'')
     }
     if name == "filesmatch" {
-        return compile_apache_regex(unquote(args), true);
+        return (unquote(args), true);
     }
     match args.strip_prefix('~') {
-        Some(rest) if rest.starts_with(char::is_whitespace) => compile_apache_regex(unquote(rest), true),
-        _ => compile_apache_glob(unquote(args)),
+        Some(rest) if rest.starts_with(char::is_whitespace) => (unquote(rest), true),
+        _ => (unquote(args), false),
     }
+}
+
+/// A bundle's `.htaccess` as its rules, or, over 64 KiB, as a directory nobody may read from
+/// (`ParsedHtaccess::closed`). By the file's own size, as the Node host measures it: read as
+/// text, bytes that are not UTF-8 are longer than they were.
+fn parse_htaccess_file(bytes: &[u8], dir_prefix: &str) -> ParsedHtaccess {
+    if bytes.len() > MAX_HTACCESS_BYTES {
+        return ParsedHtaccess::closed(dir_prefix, "the file is over 64 KiB and is not read");
+    }
+    parse_htaccess(&String::from_utf8_lossy(bytes), dir_prefix)
 }
 
 fn parse_htaccess(source: &str, dir_prefix: &str) -> ParsedHtaccess {
     let mut out = ParsedHtaccess {
         dir_prefix: normalize_vfs_key(dir_prefix),
         ..Default::default()
-    };
-    let bounded_src = if source.len() > MAX_HTACCESS_BYTES {
-        let mut end = MAX_HTACCESS_BYTES;
-        while end > 0 && !source.is_char_boundary(end) {
-            end -= 1;
-        }
-        &source[..end]
-    } else {
-        source
     };
     let mut pending_conds: Vec<HtaccessCond> = Vec::new();
     // The `<Files>`/`<FilesMatch>` block being read: its matcher and whether it denies. Being
@@ -694,20 +788,55 @@ fn parse_htaccess(source: &str, dir_prefix: &str) -> ParsedHtaccess {
     // `<FilesMatch "^(?!index\.php$).*\.php$">` would then refuse every request, the entry
     // script included. Such a block denies nothing instead. What it would have named cannot be
     // worked out, and the paths the host keeps private do not depend on `.htaccess`.
-    let mut files_block: Option<(Option<Regex>, bool)> = None;
-    // How deep the line sits in sections whose condition is not evaluated here. Their lines
-    // are skipped for the same reason: a deny for some methods is not a deny for all.
+    let mut files_block: Option<(Option<Regex>, Vec<DenyMethods>)> = None;
+    // How deep the line sits in `<If>`, `<ElseIf>` and `<Else>`, whose condition is not
+    // evaluated here. Their lines are skipped: a deny for some requests is not a deny for all.
     let mut unevaluated_depth = 0usize;
+    // The `<Limit>`/`<LimitExcept>` sections the line sits in. A deny inside one is for the
+    // methods it names (it used to be dropped, and then it was for nobody). Apache does not
+    // let them nest; where they do, the deny is read as one for every method.
+    let mut limits: Vec<DenyMethods> = Vec::new();
+    // More denies than are kept (the directory's own and its blocks' together) close the
+    // directory: the ones past the count used to be dropped.
+    let too_many = |out: &ParsedHtaccess, pending: usize| out.deny_all.len() + out.deny_files.len() + pending > MAX_HTACCESS_DENY;
+    // So do more RewriteRule or RedirectMatch lines than are kept, or more RewriteCond lines
+    // before one rule. Those past the count used to be dropped too, and any of them could have
+    // refused a request (`[F]`, `RedirectMatch 403`) or kept one from a rule that would have.
+    // They are counted as they are read, compiled or not, so that the Node host, whose pattern
+    // engine compiles some patterns this one does not and the other way round, closes the
+    // directory at the same line.
+    let mut rewrite_rules_read = 0usize;
+    let mut redirect_matches_read = 0usize;
+    // The sections the line sits in, by name, the innermost last. Apache will not load a file
+    // whose sections do not match up (one closed that is not the innermost open, or one left
+    // open at the end) and answers 500 for everything under the directory. Read as far as it
+    // went, a block left open denied nothing, and what followed a stray closing tag was read
+    // as though it were outside its section: such a file refuses everything here instead. So
+    // does one with a tag Apache does not read (`</Files >`, `<Files "secret.txt"`), which was
+    // taken for the tag it looks like.
+    let mut sections: Vec<String> = Vec::new();
 
-    for raw_line in bounded_src.lines() {
-        let trimmed = raw_line.trim();
+    for raw_line in source.lines() {
+        // What JavaScript's `trim` takes off is taken off here too (a byte-order mark; and
+        // the Node host takes off U+0085, which only Rust's does), so that a line is the
+        // same line to both hosts.
+        let trimmed = raw_line.trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}');
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
-        let lower = trimmed.to_ascii_lowercase();
-        if let Some((closing, name, args)) = parse_apache_section_tag(trimmed) {
+        if let Some(tag) = parse_apache_section_tag(trimmed) {
+            let (closing, name, args) = match tag {
+                SectionTag::Open(name, args) => (false, name, args),
+                SectionTag::Close(name) => (true, name, ""),
+                SectionTag::Malformed => return ParsedHtaccess::closed(dir_prefix, "it holds a section tag Apache does not read"),
+            };
+            if !closing {
+                sections.push(name.clone());
+            } else if sections.pop().as_ref() != Some(&name) {
+                return ParsedHtaccess::closed(dir_prefix, "it closes a section that is not the one open");
+            }
             match name.as_str() {
-                "limit" | "limitexcept" | "if" | "elseif" | "else" => {
+                "if" | "elseif" | "else" => {
                     unevaluated_depth = if closing {
                         unevaluated_depth.saturating_sub(1)
                     } else {
@@ -715,20 +844,33 @@ fn parse_htaccess(source: &str, dir_prefix: &str) -> ParsedHtaccess {
                     };
                 }
                 _ if unevaluated_depth > 0 => {}
+                "limit" | "limitexcept" if closing => {
+                    limits.pop();
+                }
+                "limit" | "limitexcept" => limits.push(DenyMethods::from_section(name == "limitexcept", args)),
                 "files" | "filesmatch" if closing => match files_block.take() {
-                    Some((Some(rx), true)) => {
-                        if out.deny_files.len() < MAX_HTACCESS_DENY {
-                            out.deny_files.push(rx);
+                    Some((Some(rx), methods)) => {
+                        out.deny_files.extend(methods.into_iter().map(|methods| (rx.clone(), methods)));
+                        if too_many(&out, 0) {
+                            return ParsedHtaccess::closed(dir_prefix, "it holds more denies than are kept");
                         }
                     }
-                    Some((None, true)) => tracing::warn!(
+                    Some((None, methods)) if !methods.is_empty() => tracing::warn!(
                         "{}/.htaccess: a <Files>/<FilesMatch> pattern is not supported here, so its deny is not applied",
                         out.dir_prefix
                     ),
                     _ => {}
                 },
                 "files" | "filesmatch" => {
-                    files_block = Some((compile_files_block_matcher(&name, args), false));
+                    // A pattern over the limit is not read, and what it would have named cannot
+                    // be worked out: nobody has anything under the directory. It used to be read
+                    // as one that does not compile, which denies nothing.
+                    let (pattern, is_regex) = files_block_pattern(&name, args);
+                    if pattern.len() > MAX_HTACCESS_FILES_PATTERN_BYTES {
+                        return ParsedHtaccess::closed(dir_prefix, "it holds a <Files>/<FilesMatch> pattern over 512 bytes");
+                    }
+                    let matcher = if is_regex { compile_apache_regex(pattern, true) } else { compile_apache_glob(pattern) };
+                    files_block = Some((matcher, Vec::new()));
                 }
                 // `<IfModule>` and the like: the body applies as written.
                 _ => {}
@@ -738,15 +880,28 @@ fn parse_htaccess(source: &str, dir_prefix: &str) -> ParsedHtaccess {
         if unevaluated_depth > 0 {
             continue;
         }
-        let denies_all = lower.starts_with("deny from all") || lower.starts_with("require all denied");
-        if let Some((_, denied)) = files_block.as_mut() {
-            if denies_all {
-                *denied = true;
+        if is_apache_deny_all(trimmed) {
+            let methods = match limits.as_slice() {
+                [] => DenyMethods::All,
+                [limit] => limit.clone(),
+                _ => DenyMethods::All,
+            };
+            // Said twice (`Require all denied` and, for an older Apache, `Deny from all`) is said once.
+            let kept = match files_block.as_mut() {
+                Some((_, block_methods)) => block_methods,
+                None => &mut out.deny_all,
+            };
+            if !kept.contains(&methods) {
+                kept.push(methods);
+            }
+            let pending = files_block.as_ref().map_or(0, |(_, block_methods)| block_methods.len());
+            if too_many(&out, pending) {
+                return ParsedHtaccess::closed(dir_prefix, "it holds more denies than are kept");
             }
             continue;
         }
-        if denies_all {
-            out.deny_all = true;
+        // Nothing else is read inside a block or a method section.
+        if files_block.is_some() || !limits.is_empty() {
             continue;
         }
 
@@ -764,7 +919,11 @@ fn parse_htaccess(source: &str, dir_prefix: &str) -> ParsedHtaccess {
             "directoryindex" if tokens.len() >= 2 => {
                 out.directory_index = tokens[1..].to_vec();
             }
-            "redirectmatch" if tokens.len() >= 2 && out.redirect_matches.len() < MAX_HTACCESS_RULES => {
+            "redirectmatch" if tokens.len() >= 2 => {
+                redirect_matches_read += 1;
+                if redirect_matches_read > MAX_HTACCESS_RULES {
+                    return ParsedHtaccess::closed(dir_prefix, "it holds more RedirectMatch lines than are kept");
+                }
                 let (status, pat_idx) = match tokens[1].to_ascii_lowercase().as_str() {
                     "permanent" => (301u16, 2),
                     "temp" => (302u16, 2),
@@ -782,7 +941,10 @@ fn parse_htaccess(source: &str, dir_prefix: &str) -> ParsedHtaccess {
                     }
                 }
             }
-            "rewritecond" if tokens.len() >= 3 && pending_conds.len() < MAX_HTACCESS_CONDS => {
+            "rewritecond" if tokens.len() >= 3 => {
+                if pending_conds.len() >= MAX_HTACCESS_CONDS {
+                    return ParsedHtaccess::closed(dir_prefix, "a rewrite rule has more conditions than are kept");
+                }
                 let test_string = tokens[1].clone();
                 let mut pattern = tokens[2].clone();
                 let mut negated = false;
@@ -818,8 +980,16 @@ fn parse_htaccess(source: &str, dir_prefix: &str) -> ParsedHtaccess {
                     or_next,
                 });
             }
-            "rewriterule" if tokens.len() >= 3 && out.rules.len() < MAX_HTACCESS_RULES => {
-                let pat = &tokens[1];
+            "rewriterule" if tokens.len() >= 3 => {
+                rewrite_rules_read += 1;
+                if rewrite_rules_read > MAX_HTACCESS_RULES {
+                    return ParsedHtaccess::closed(dir_prefix, "it holds more rewrite rules than are kept");
+                }
+                // A leading `!` negates the pattern (it is not a part of it).
+                let (negated, pat) = match tokens[1].strip_prefix('!') {
+                    Some(rest) => (true, rest),
+                    None => (false, tokens[1].as_str()),
+                };
                 let substitution = tokens[2].clone();
                 let flags = tokens.get(3).map(String::as_str).unwrap_or("");
                 let inner = flags.trim_start_matches('[').trim_end_matches(']');
@@ -858,6 +1028,7 @@ fn parse_htaccess(source: &str, dir_prefix: &str) -> ParsedHtaccess {
                 if let Some(regex) = compile_apache_regex(pat, nocase) {
                     out.rules.push(HtaccessRule {
                         regex,
+                        negated,
                         substitution,
                         conds: std::mem::take(&mut pending_conds),
                         last,
@@ -872,6 +1043,9 @@ fn parse_htaccess(source: &str, dir_prefix: &str) -> ParsedHtaccess {
             }
             _ => {}
         }
+    }
+    if let Some(open) = sections.last() {
+        return ParsedHtaccess::closed(dir_prefix, &format!("its <{open}> section is not closed"));
     }
     out
 }
@@ -1011,12 +1185,17 @@ fn evaluate_htaccess_chain(
             let Some(ht) = htaccess_map.get(prefix) else {
                 continue;
             };
-            if ht.deny_all {
+            if ht.deny_all.iter().any(|methods| methods.applies(method)) {
                 return Some(HtaccessEval::Deny(403));
             }
             if !ht.deny_files.is_empty() {
+                // A `<Files>` block names the file a request is mapped to. That is the last
+                // segment, and it is also any segment before it that is a file: Apache stops
+                // there and hands the rest to it as PATH_INFO, so `/db.inc/x` is `db.inc`.
+                // The Node host tests the same names (`evaluateHtaccessChain`).
+                let denied = |name: &str| ht.deny_files.iter().any(|(rx, methods)| methods.applies(method) && rx.is_match(name));
                 if let Some(&last_seg) = segs.last() {
-                    if ht.deny_files.iter().any(|rx| rx.is_match(last_seg)) {
+                    if denied(last_seg) {
                         return Some(HtaccessEval::Deny(403));
                     }
                 }
@@ -1026,7 +1205,7 @@ fn evaluate_htaccess_chain(
                         probe.push('/');
                     }
                     probe.push_str(seg);
-                    if vfs.contains_key(&probe) && ht.deny_files.iter().any(|rx| rx.is_match(seg)) {
+                    if vfs.contains_key(&probe) && denied(seg) {
                         return Some(HtaccessEval::Deny(403));
                     }
                 }
@@ -1091,8 +1270,15 @@ fn evaluate_htaccess_chain(
             };
 
             for rule in &ht.rules {
-                let Some(caps) = rule.regex.captures(&local_path) else {
-                    continue;
+                // A rule is for a path its pattern matches, or for one it does not when it is
+                // negated, which then has no groups: its `$1`…`$9` are empty.
+                let rule_groups: Vec<String> = match rule.regex.captures(&local_path) {
+                    Some(_) if rule.negated => continue,
+                    Some(caps) => (1..caps.len())
+                        .map(|idx| caps.get(idx).map(|m| m.as_str().to_owned()).unwrap_or_default())
+                        .collect(),
+                    None if rule.negated => Vec::new(),
+                    None => continue,
                 };
                 let rel_probe = if ht.dir_prefix.is_empty() {
                     local_path.clone()
@@ -1181,9 +1367,6 @@ fn evaluate_htaccess_chain(
                     }
                     continue;
                 }
-                let rule_groups: Vec<String> = (1..caps.len())
-                    .map(|idx| caps.get(idx).map(|m| m.as_str().to_owned()).unwrap_or_default())
-                    .collect();
                 // Expand Apache server variables BEFORE substituting attacker-controlled regex
                 // backreferences so a captured URL segment containing `%{HTTP:Cookie}` is never evaluated.
                 let expanded_vars = expand_apache_vars(
@@ -2633,10 +2816,80 @@ fn strip_protected_php_overlay_paths(ov: &mut PhpVfsOverlay, backend_entry: &str
         .collect();
 }
 
+/// What a request changed in its copy of the overlay, against the overlay it started from:
+/// all a merge needs of either. It is worked out before the store's lock is taken, so that
+/// the request can let go of what it started from first (`merge_and_save_php_overlay`).
+struct PhpOverlayChanges {
+    /// Files it started with and no longer has.
+    removed: Vec<String>,
+    /// Paths it marked deleted, and marks it took off.
+    deleted: Vec<String>,
+    undeleted: Vec<String>,
+    /// Files it wrote or changed, with their bytes.
+    written: Vec<(String, Vec<u8>)>,
+    dirs_added: Vec<String>,
+    dirs_removed: Vec<String>,
+}
+
+impl PhpOverlayChanges {
+    fn between(initial: &PhpVfsOverlay, mut final_req: PhpVfsOverlay) -> Self {
+        let removed = initial.writes.keys().filter(|k| !final_req.writes.contains_key(*k)).cloned().collect();
+        let deleted = final_req.deleted.iter().filter(|d| !initial.deleted.contains(*d)).cloned().collect();
+        let undeleted = initial
+            .deleted
+            .iter()
+            .filter(|d| !final_req.deleted.contains(*d) && !final_req.writes.contains_key(*d))
+            .cloned()
+            .collect();
+        let dirs_added = final_req.dirs.iter().filter(|d| !initial.dirs.contains(*d)).cloned().collect();
+        let dirs_removed = initial.dirs.iter().filter(|d| !final_req.dirs.contains(*d)).cloned().collect();
+        let written = final_req.writes.drain().filter(|(k, v)| initial.writes.get(k) != Some(v)).collect();
+        PhpOverlayChanges { removed, deleted, undeleted, written, dirs_added, dirs_removed }
+    }
+
+    /// Onto the stored overlay, which other requests may have changed since this one began.
+    /// Deletions first to reclaim quota, then only the new and updated writes that fit
+    /// within MAX_OVERLAY_BYTES, so incoming writes can never evict existing files.
+    fn apply(self, shared: &mut PhpVfsOverlay) {
+        for k in &self.removed {
+            if let Some(old) = shared.writes.remove(k) {
+                shared.total_bytes = shared.total_bytes.saturating_sub(old.len());
+            }
+        }
+        for d in self.deleted {
+            if let Some(old) = shared.writes.remove(&d) {
+                shared.total_bytes = shared.total_bytes.saturating_sub(old.len());
+            }
+            shared.deleted.insert(d);
+        }
+        for d in &self.undeleted {
+            shared.deleted.remove(d);
+        }
+        for (k, v) in self.written {
+            let old_len = shared.writes.get(&k).map(Vec::len).unwrap_or(0);
+            let next_total = shared
+                .total_bytes
+                .saturating_sub(old_len)
+                .saturating_add(v.len());
+            if next_total <= MAX_OVERLAY_BYTES {
+                shared.deleted.remove(&k);
+                shared.writes.insert(k, v);
+                shared.total_bytes = next_total;
+            }
+        }
+        for d in self.dirs_added {
+            shared.dirs.insert(d);
+        }
+        for d in &self.dirs_removed {
+            shared.dirs.remove(d);
+        }
+    }
+}
+
 fn merge_and_save_php_overlay(
     path: &Path,
     shared_overlay: &Mutex<Arc<PhpVfsOverlay>>,
-    initial: &PhpVfsOverlay,
+    initial: Arc<PhpVfsOverlay>,
     mut final_req: PhpVfsOverlay,
     backend_entry: &str,
     last_saved: &Mutex<Vec<u8>>,
@@ -2653,9 +2906,17 @@ fn merge_and_save_php_overlay(
     {
         return;
     }
+    let changes = PhpOverlayChanges::between(&initial, final_req);
+    // The request lets go of the overlay it started from before the store is touched. That
+    // is the stored overlay itself, and while the request held it the store could not be
+    // changed in place (`Arc::get_mut` below never succeeded): every request that wrote
+    // anything copied all of it, up to 16 MiB, with the lock held.
+    drop(initial);
     let Ok(mut shared_guard) = shared_overlay.lock() else {
         return;
     };
+    // In place when no request in flight is reading this overlay. A copy when one is: that
+    // request keeps what it started from, and the store goes on to the copy.
     let mut owned_copy: Option<PhpVfsOverlay> = None;
     let shared: &mut PhpVfsOverlay = match Arc::get_mut(&mut *shared_guard) {
         Some(ov) => ov,
@@ -2664,52 +2925,7 @@ fn merge_and_save_php_overlay(
             owned_copy.as_mut().unwrap()
         }
     };
-    // Apply deletions first to reclaim quota, then only accept new/updated writes that fit
-    // within MAX_OVERLAY_BYTES so incoming writes can never alphabetically evict existing files.
-    for k in initial.writes.keys() {
-        if !final_req.writes.contains_key(k) {
-            if let Some(old) = shared.writes.remove(k) {
-                shared.total_bytes = shared.total_bytes.saturating_sub(old.len());
-            }
-        }
-    }
-    for d in &final_req.deleted {
-        if !initial.deleted.contains(d) {
-            shared.deleted.insert(d.clone());
-            if let Some(old) = shared.writes.remove(d) {
-                shared.total_bytes = shared.total_bytes.saturating_sub(old.len());
-            }
-        }
-    }
-    for d in &initial.deleted {
-        if !final_req.deleted.contains(d) && !final_req.writes.contains_key(d) {
-            shared.deleted.remove(d);
-        }
-    }
-    for (k, v) in &final_req.writes {
-        if initial.writes.get(k) != Some(v) {
-            let old_len = shared.writes.get(k).map(Vec::len).unwrap_or(0);
-            let next_total = shared
-                .total_bytes
-                .saturating_sub(old_len)
-                .saturating_add(v.len());
-            if next_total <= MAX_OVERLAY_BYTES {
-                shared.writes.insert(k.clone(), v.clone());
-                shared.total_bytes = next_total;
-                shared.deleted.remove(k);
-            }
-        }
-    }
-    for d in &final_req.dirs {
-        if !initial.dirs.contains(d) {
-            shared.dirs.insert(d.clone());
-        }
-    }
-    for d in &initial.dirs {
-        if !final_req.dirs.contains(d) {
-            shared.dirs.remove(d);
-        }
-    }
+    changes.apply(shared);
     sanitize_php_overlay(shared, backend_entry);
     save_php_overlay(path, shared, backend_entry, last_saved);
     if let Some(updated) = owned_copy {
@@ -3879,8 +4095,7 @@ impl ContainerBackendRuntime {
                 } else {
                     &path[..path.len() - "/.htaccess".len()]
                 };
-                let text = String::from_utf8_lossy(bytes);
-                htaccess_map.insert(prefix.to_owned(), parse_htaccess(&text, prefix));
+                htaccess_map.insert(prefix.to_owned(), parse_htaccess_file(bytes, prefix));
             }
         }
         let htaccess_arc = Arc::new(htaccess_map);
@@ -4047,7 +4262,7 @@ impl ContainerBackendRuntime {
                                             merge_and_save_php_overlay(
                                                 &overlay_path,
                                                 &php_overlay,
-                                                &initial_ov,
+                                                initial_ov,
                                                 final_ov,
                                                 &backend_cfg.entry,
                                                 &last_saved_overlay,
@@ -4961,7 +5176,7 @@ def handle_request(req):
             let initial = Arc::clone(&shared.lock().unwrap());
             let mut mine = clone_php_overlay(&initial);
             change(&mut mine);
-            merge_and_save_php_overlay(&path, &shared, &initial, mine, "index.php", &last_saved);
+            merge_and_save_php_overlay(&path, &shared, initial, mine, "index.php", &last_saved);
         };
         let stored_files = || {
             let now = shared.lock().unwrap();
@@ -5005,6 +5220,86 @@ def handle_request(req):
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// A request that wrote something used to copy the whole stored overlay (up to 16 MiB)
+    /// with the store's lock held, every time: the store could only be changed in place if
+    /// nothing else held it, and the request itself did, as the overlay it had started from.
+    #[test]
+    fn php_overlay_is_changed_in_place_unless_a_request_in_flight_is_reading_it() {
+        let dir = crate::test_dirs::temp_path("softn-php-overlay-inplace", "");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("php-overlay.json");
+        let mut stored = PhpVfsOverlay::default();
+        stored.writes.insert("uploads/a.bin".into(), vec![1u8; 4096]);
+        stored.dirs.insert("uploads".into());
+        stored.total_bytes = 4096;
+        let shared = Mutex::new(Arc::new(stored));
+        let last_saved = Mutex::new(Vec::new());
+        let stored_at = || Arc::as_ptr(&*shared.lock().unwrap());
+        let names = |overlay: &PhpVfsOverlay| {
+            let mut names: Vec<String> = overlay.writes.keys().cloned().collect();
+            names.sort();
+            names
+        };
+        // A request as the worker runs one: it starts from the stored overlay, changes a copy,
+        // and hands both to the merge.
+        let begin = || {
+            let initial = Arc::clone(&shared.lock().unwrap());
+            let mine = clone_php_overlay(&initial);
+            (initial, mine)
+        };
+
+        // On its own: the stored overlay is the one that was there, changed. Not a copy of it.
+        let before = stored_at();
+        let (initial, mut mine) = begin();
+        mine.writes.insert("uploads/b.bin".into(), vec![2u8; 100]);
+        mine.deleted.insert("tmp/old.txt".into());
+        mine.dirs.insert("tmp".into());
+        merge_and_save_php_overlay(&path, &shared, initial, mine, "index.php", &last_saved);
+        assert_eq!(stored_at(), before, "the stored overlay was copied to be changed");
+        {
+            let now = shared.lock().unwrap();
+            assert_eq!(names(&now), vec!["uploads/a.bin".to_string(), "uploads/b.bin".to_string()]);
+            assert_eq!(now.total_bytes, 4196);
+            assert!(now.deleted.contains("tmp/old.txt") && now.dirs.contains("tmp") && now.dirs.contains("uploads"));
+            assert_eq!(Arc::strong_count(&now), 1);
+        }
+
+        // With another request under way: that one goes on reading what it started from,
+        // whole and unchanged, and the store moves on to a copy with both requests' changes.
+        let (other_initial, mut other_mine) = begin();
+        let (initial, mut mine) = begin();
+        mine.writes.remove("uploads/a.bin");
+        mine.deleted.insert("uploads/a.bin".into());
+        mine.writes.insert("uploads/c.bin".into(), vec![3u8; 10]);
+        merge_and_save_php_overlay(&path, &shared, initial, mine, "index.php", &last_saved);
+        assert_ne!(stored_at(), before);
+        assert_eq!(names(&other_initial), vec!["uploads/a.bin".to_string(), "uploads/b.bin".to_string()]);
+        assert_eq!(other_initial.total_bytes, 4196);
+        assert!(!other_initial.deleted.contains("uploads/a.bin"));
+        assert_eq!(names(&shared.lock().unwrap()), vec!["uploads/b.bin".to_string(), "uploads/c.bin".to_string()]);
+        // The other request finishes: its own change goes in beside the first one's.
+        let before = stored_at();
+        other_mine.writes.insert("uploads/d.bin".into(), vec![4u8; 5]);
+        merge_and_save_php_overlay(&path, &shared, other_initial, other_mine, "index.php", &last_saved);
+        assert_eq!(stored_at(), before, "nothing else was reading it by then");
+        {
+            let now = shared.lock().unwrap();
+            assert_eq!(names(&now), vec!["uploads/b.bin".to_string(), "uploads/c.bin".to_string(), "uploads/d.bin".to_string()]);
+            assert_eq!(now.total_bytes, 115);
+            assert!(now.deleted.contains("uploads/a.bin"));
+        }
+        // And the file on disk is the store.
+        let reloaded = load_php_overlay(&path, "index.php");
+        assert_eq!(names(&reloaded), vec!["uploads/b.bin".to_string(), "uploads/c.bin".to_string(), "uploads/d.bin".to_string()]);
+        assert!(reloaded.deleted.contains("uploads/a.bin") && reloaded.deleted.contains("tmp/old.txt"));
+
+        // A request that changed nothing does not touch the store at all.
+        let (initial, mine) = begin();
+        merge_and_save_php_overlay(&path, &shared, initial, mine, "index.php", &last_saved);
+        assert_eq!(stored_at(), before);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     fn root_htaccess_denies(source: &str, method: &str, path: &str) -> bool {
         let mut map = HashMap::new();
         map.insert(String::new(), parse_htaccess(source, ""));
@@ -5020,8 +5315,10 @@ def handle_request(req):
     fn htaccess_deny_inside_a_section_is_not_a_deny_for_the_directory() {
         let denies = |source: &str, path: &str| root_htaccess_denies(source, "GET", path);
 
-        // A look-ahead does not compile here and Drupal's stock rule has one. Neither block
-        // may take the entry script, or anything else, with it.
+        // A look-ahead does not compile here and Drupal's stock rule has one, and `(` is no
+        // pattern. None of the blocks may take the entry script, or anything else, with it. (A
+        // pattern over 512 bytes is not read either, and closes the directory instead:
+        // the_two_hosts_close_a_directory_whose_files_pattern_is_too_long.)
         let lookahead = "<FilesMatch \"^(?!index\\.php$).*\\.php$\">\n  Require all denied\n</FilesMatch>\n";
         let drupal = concat!(
             "<FilesMatch \"\\.(engine|inc|install|make|module|profile|po|sh|.*sql|theme|twig|tpl(\\.php)?|xtmpl|yml)",
@@ -5031,16 +5328,17 @@ def handle_request(req):
             "  <IfModule !mod_authz_core.c>\n    Order allow,deny\n    Deny from all\n  </IfModule>\n",
             "</FilesMatch>\n",
         );
-        let too_long = format!("<FilesMatch \"{}\">\nDeny from all\n</FilesMatch>\n", "a".repeat(2000));
         let invalid = "<FilesMatch \"(\">\nDeny from all\n</FilesMatch>\n";
-        for source in [lookahead, drupal, too_long.as_str(), invalid] {
+        for source in [lookahead, drupal, invalid] {
             for path in ["/index.php", "/", "/assets/app.css", "/api/notes", "/aaa"] {
                 assert!(!denies(source, path), "{path} under {source}");
             }
         }
-        // A header that is not closed, or whose pattern holds a quote or a `>`, still opens a block.
+        // A header whose pattern holds a `<` or a `>` still opens a block. One that is not closed
+        // is not a header Apache reads, and closes the directory
+        // (the_two_hosts_close_a_directory_whose_section_tags_are_malformed).
         let unclosed_header = "<FilesMatch \"\\.inc$\"\nDeny from all\n</FilesMatch>\n";
-        assert!(!denies(unclosed_header, "/index.php"));
+        assert!(denies(unclosed_header, "/index.php"));
         assert!(denies(unclosed_header, "/db.inc"));
         let named = "<FilesMatch \"\\.(?<ext>bak|old)$\">\nDeny from all\n</FilesMatch>\n";
         assert!(!denies(named, "/index.php"));
@@ -5053,8 +5351,9 @@ def handle_request(req):
         let then_all = format!("{lookahead}Require all denied\n");
         assert!(denies(&then_all, "/index.php"));
 
-        // `<Files ~ "regex">` is the regular-expression form, and tags tolerate spacing.
-        let tilde = "<Files ~ \"^\\.ht|\\.bak$\">\nDeny from all\n</Files >\n";
+        // `<Files ~ "regex">` is the regular-expression form, and an opening tag may have spaces
+        // before its `>` (a closing one may not: `</Files >` closes the directory).
+        let tilde = "<Files ~ \"^\\.ht|\\.bak$\">\nDeny from all\n</Files>\n";
         assert!(denies(tilde, "/old.BAK"));
         assert!(!denies(tilde, "/index.php"));
         let quoted = "<FilesMatch '\\.(inc|tpl)$' >\nRequire all denied\n</FilesMatch>\n<Files config.php>\nRequire all denied\n</Files>\n";
@@ -5062,7 +5361,8 @@ def handle_request(req):
         assert!(denies(quoted, "/config.php"));
         assert!(!denies(quoted, "/index.php"));
 
-        // Method and expression sections are not evaluated, so their denies are for nobody.
+        // Expression sections are not evaluated, so their denies are for nobody. A method
+        // section's are for the methods it names (the_two_hosts_read_htaccess_denies_alike).
         let conditional = concat!(
             "<LimitExcept GET POST>\n  Order deny,allow\n  Deny from all\n</LimitExcept>\n",
             "<Limit PUT DELETE>\n  Require all denied\n</Limit>\n",
@@ -5072,10 +5372,13 @@ def handle_request(req):
             "<Files \"admin.php\">\n  <Limit POST>\n    Require all denied\n  </Limit>\n</Files>\n",
             "<Files \"notes.txt\">\n  Require all denied\n</Files>\n",
         );
-        for method in ["GET", "PUT"] {
-            for path in ["/index.php", "/admin.php", "/assets/app.css"] {
-                assert!(!root_htaccess_denies(conditional, method, path), "{method} {path}");
-            }
+        for path in ["/index.php", "/admin.php", "/assets/app.css"] {
+            assert!(!root_htaccess_denies(conditional, "GET", path), "GET {path}");
+            assert!(root_htaccess_denies(conditional, "PUT", path), "PUT {path}");
+        }
+        assert!(!root_htaccess_denies(conditional, "POST", "/index.php"));
+        assert!(root_htaccess_denies(conditional, "POST", "/admin.php"));
+        for method in ["GET", "POST", "PUT"] {
             assert!(root_htaccess_denies(conditional, method, "/notes.txt"));
         }
 
@@ -5094,5 +5397,543 @@ def handle_request(req):
         assert!(rewrites.rewrite_engine);
         assert_eq!(rewrites.rules.len(), 1);
         assert_eq!(rewrites.rules[0].substitution, "/b");
+    }
+
+    /// Whether a request is refused under a bundle whose root `.htaccess` is `source` and
+    /// whose other files are `files`.
+    fn htaccess_file_denies(source: &[u8], files: &[&str], method: &str, path: &str) -> bool {
+        let mut map = HashMap::new();
+        map.insert(String::new(), parse_htaccess_file(source, ""));
+        let vfs: HashMap<String, Vec<u8>> = files.iter().map(|file| (file.to_string(), Vec::new())).collect();
+        matches!(
+            evaluate_htaccess_chain(&map, path, "", method, "localhost", false, &HashMap::new(), &vfs, &HashSet::new()),
+            HtaccessEval::Deny(403)
+        )
+    }
+
+    // The same cases as "the two hosts read .htaccess denies alike" in
+    // apps/softn-host-php/tests/container-backend.test.mjs: where the two differed.
+    #[test]
+    fn the_two_hosts_read_htaccess_denies_alike() {
+        let denies = |source: &str, method: &str, path: &str| htaccess_file_denies(source.as_bytes(), &[], method, path);
+
+        // A directive is its words: in any case, with any run of spaces and tabs between.
+        // This host wanted single spaces, and took `Deny from all.example.com` for a deny.
+        for deny in ["deny  from\tall", "DENY FROM ALL", "Require\t\tall   denied", "require all DENIED", "\t Deny from all \t", "\u{feff}Deny from all"] {
+            assert!(denies(&format!("{deny}\n"), "GET", "/index.php"), "{deny:?}");
+            assert!(denies(&format!("<Files \"a.txt\">\n{deny}\n</Files>\n"), "GET", "/a.txt"), "{deny:?}");
+        }
+        for other in ["Deny from all.example.com", "Deny from allowed.example", "Require all deniedx", "Require all granted", "Denyfrom all", "# Deny from all"] {
+            assert!(!denies(&format!("{other}\n"), "GET", "/index.php"), "{other:?}");
+        }
+
+        // A rules file too large to read in full refuses everything under it. This host
+        // read its first 64 KiB and the other host none of it: each let through what the
+        // rest refused.
+        let padding = |bytes: usize| format!("#{}\n", "x".repeat(bytes - 2));
+        let too_large = format!("{}Options -Indexes\n", padding(64 * 1024));
+        for path in ["/index.php", "/assets/app.css", "/"] {
+            assert!(denies(&too_large, "GET", path), "{path}");
+        }
+        let last_block = "<Files \"z.txt\">\nDeny from all\n</Files>\n";
+        let largest = format!("{}{last_block}", padding(64 * 1024 - last_block.len()));
+        assert_eq!(largest.len(), 64 * 1024);
+        assert!(!denies(&largest, "GET", "/index.php"));
+        assert!(denies(&largest, "GET", "/z.txt"), "a file that fits is read to its end");
+        // By the file's size, not its text's: these bytes are three times as long read as text.
+        let not_utf8 = [b"Options -Indexes\n".as_slice(), &[0xff; 30 * 1024]].concat();
+        assert!(!htaccess_file_denies(&not_utf8, &[], "GET", "/index.php"));
+
+        // A `<Files>` block names the file a request is mapped to: the last segment, and a
+        // segment before it that is a file (the rest is its PATH_INFO). The other host tested
+        // only the last.
+        let inc = "<FilesMatch \"\\.inc$\">\nRequire all denied\n</FilesMatch>\n";
+        let files = ["index.php", "db.inc", "lib/db.inc"];
+        let under = |path: &str| htaccess_file_denies(inc.as_bytes(), &files, "GET", path);
+        assert!(under("/db.inc") && under("/lib/db.inc") && under("/nowhere/x.inc"));
+        assert!(under("/db.inc/anything") && under("/lib/db.inc/a/b"));
+        assert!(!under("/missing.inc/anything"), "not a file, so not what the request is mapped to");
+        assert!(!under("/index.php/anything") && !under("/lib/other"));
+
+        // A deny inside `<Limit>`/`<LimitExcept>` is for the methods the section names. Both
+        // hosts dropped it, and then it was for nobody.
+        let except = "<LimitExcept GET POST>\n  Order deny,allow\n  Deny from all\n</LimitExcept>\n";
+        for (method, refused) in [("GET", false), ("HEAD", false), ("POST", false), ("get", false), ("PUT", true), ("DELETE", true), ("PROPFIND", true)] {
+            assert_eq!(denies(except, method, "/index.php"), refused, "{method}");
+        }
+        let only = "<Limit PUT DELETE>\n  Require all denied\n</Limit>\n";
+        for (method, refused) in [("PUT", true), ("DELETE", true), ("delete", true), ("GET", false), ("POST", false)] {
+            assert_eq!(denies(only, method, "/index.php"), refused, "{method}");
+        }
+        // To Apache HEAD is GET, and a method's name is matched by case.
+        let get = "<Limit GET>\nDeny from all\n</Limit>\n";
+        assert!(denies(get, "GET", "/") && denies(get, "HEAD", "/") && !denies(get, "POST", "/"));
+        let head = "<LimitExcept HEAD>\nDeny from all\n</LimitExcept>\n";
+        assert!(!denies(head, "GET", "/") && !denies(head, "HEAD", "/") && denies(head, "POST", "/"));
+        assert!(!denies("<Limit get>\nDeny from all\n</Limit>\n", "GET", "/"));
+        assert!(denies("<LimitExcept get>\nDeny from all\n</LimitExcept>\n", "GET", "/"));
+        // Inside a block, and with the block's own deny beside it.
+        let admin = "<Files \"admin.php\">\n  <Limit POST>\n    Require all denied\n  </Limit>\n</Files>\n<Limit PUT>\nDeny from all\n</Limit>\n<Files \"x.txt\">\nDeny from all\n</Files>\n";
+        assert!(denies(admin, "POST", "/admin.php") && !denies(admin, "GET", "/admin.php") && !denies(admin, "POST", "/index.php"));
+        assert!(denies(admin, "PUT", "/index.php") && denies(admin, "GET", "/x.txt") && !denies(admin, "GET", "/index.php"));
+        // What Apache would not load is read the safe way: for every method.
+        let nested = "<Limit POST>\n<LimitExcept GET>\nDeny from all\n</LimitExcept>\n</Limit>\n";
+        assert!(denies(nested, "GET", "/") && denies(nested, "POST", "/"));
+        assert!(denies("<Limit>\nDeny from all\n</Limit>\n", "GET", "/"));
+        // A method section under an expression section is skipped with it, as before.
+        assert!(!denies("<If \"true\">\n<Limit GET>\nDeny from all\n</Limit>\n</If>\n", "GET", "/"));
+        // Nothing but a deny is read inside a method section.
+        let rewrites = parse_htaccess("RewriteEngine On\n<Limit POST>\nRewriteRule ^a$ /b [L]\n</Limit>\nRewriteRule ^c$ /d [L]\n", "");
+        assert_eq!(rewrites.rules.len(), 1);
+
+        // More denies than are kept close the directory. This host dropped the ones past
+        // the sixty-fourth; the other kept them all.
+        let blocks = |count: usize| -> String {
+            (0..count)
+                .map(|n| format!("<Files \"f{n}.txt\">\n<IfModule a>\nRequire all denied\n</IfModule>\n<IfModule !a>\nDeny from all\n</IfModule>\n</Files>\n"))
+                .collect()
+        };
+        assert!(!denies(&blocks(64), "GET", "/index.php"), "said twice in a block is one deny");
+        assert!(denies(&blocks(64), "GET", "/f63.txt"));
+        assert!(denies(&blocks(65), "GET", "/index.php"));
+        assert!(denies(&format!("{}Require all denied\n", blocks(64)), "GET", "/assets/app.css"));
+
+        // A request for a directory is under that directory's own rules, as one for a file
+        // in it is. The other host read them only for what lay below the directory.
+        let mut closed_dir = HashMap::new();
+        closed_dir.insert("admin".to_owned(), parse_htaccess_file(b"Require all denied\n", "admin"));
+        let vfs: HashMap<String, Vec<u8>> = HashMap::from([("admin/index.php".to_owned(), Vec::new())]);
+        let refused = |path: &str| {
+            matches!(
+                evaluate_htaccess_chain(&closed_dir, path, "", "GET", "localhost", false, &HashMap::new(), &vfs, &HashSet::new()),
+                HtaccessEval::Deny(403)
+            )
+        };
+        for path in ["/admin", "/admin/", "/admin/index.php", "/admin/missing"] {
+            assert!(refused(path), "{path}");
+        }
+        assert!(!refused("/") && !refused("/administrator"));
+    }
+
+    /// The status a request is refused with under a bundle whose `.htaccess` files are
+    /// `htaccess` (each a directory and its text) and whose other files are `files`, or 0 when
+    /// it is not refused. The request is its method, path, query, host and headers.
+    fn htaccess_refusal(
+        htaccess: &[(&str, &str)],
+        files: &[&str],
+        (method, path, query, host, headers): (&str, &str, &str, &str, &[(&str, &str)]),
+    ) -> u16 {
+        let map: HashMap<String, ParsedHtaccess> =
+            htaccess.iter().map(|&(dir, text)| (dir.to_owned(), parse_htaccess_file(text.as_bytes(), dir))).collect();
+        let vfs: HashMap<String, Vec<u8>> = htaccess
+            .iter()
+            .map(|&(dir, text)| (if dir.is_empty() { ".htaccess".to_owned() } else { format!("{dir}/.htaccess") }, text.as_bytes().to_vec()))
+            .chain(files.iter().map(|file| (file.to_string(), Vec::new())))
+            .collect();
+        let headers: HashMap<String, String> = headers.iter().map(|&(name, value)| (name.to_owned(), value.to_owned())).collect();
+        match evaluate_htaccess_chain(&map, path, query, method, host, false, &headers, &vfs, &build_vfs_dir_index(&vfs)) {
+            HtaccessEval::Deny(status) => status,
+            _ => 0,
+        }
+    }
+
+    // The same cases as "the two hosts refuse what RedirectMatch and RewriteRule refuse" in
+    // apps/softn-host-php/tests/container-backend.test.mjs. That host enforced neither: a
+    // request this one refused was run there.
+    #[test]
+    fn the_two_hosts_refuse_what_redirect_match_and_rewrite_rules_refuse() {
+        let files = ["index.php", "lib/db.inc", "lib/util.php"];
+        let refused = |htaccess: &[(&str, &str)], method: &str, path: &str, query: &str, host: &str, headers: &[(&str, &str)]| {
+            htaccess_refusal(htaccess, &files, (method, path, query, host, headers))
+        };
+        let get = |source: &str, path: &str, query: &str| refused(&[("", source)], "GET", path, query, "localhost", &[]);
+
+        // A RedirectMatch to a status of 400 or more refuses what it matches with that status.
+        // It matches the whole path, by case, for any method.
+        let statuses = concat!(
+            "RedirectMatch 403 ^/secret/\n",
+            "RedirectMatch 404 ^/includes/\n",
+            "RedirectMatch gone ^/old\\.php$\n",
+            "RedirectMatch 401 ^/members\n",
+            "RedirectMatch 451 ^/withheld\n",
+            "RedirectMatch 503 ^/down$\n",
+            "RedirectMatch 403 ^/Cased\n",
+        );
+        for (path, status) in [
+            ("/secret/key", 403), ("/secret", 0), ("/includes/config.php", 404), ("/old.php", 410), ("/members/list", 401),
+            ("/withheld", 451), ("/down", 503), ("/down/x", 0), ("/Cased", 403), ("/cased", 0), ("/index.php", 0),
+        ] {
+            assert_eq!(get(statuses, path, ""), status, "{path}");
+        }
+        assert_eq!(refused(&[("", statuses)], "POST", "/secret/key", "", "localhost", &[]), 403);
+        // One that sends the request elsewhere first is the answer; one without a target is passed over.
+        let order = "RedirectMatch 301 ^/moved/(.*)$ /new/$1\nRedirectMatch 403 ^/moved/\nRedirectMatch 302 ^/bare\nRedirectMatch 403 ^/bare\n";
+        assert_eq!(get(order, "/moved/x", ""), 0);
+        assert_eq!(get(order, "/bare", ""), 403);
+        // A status of 400 or more refuses with a target too; `seeother` is a redirect (303).
+        assert_eq!(get("RedirectMatch 401 ^/members /login\n", "/members/x", ""), 401);
+        assert_eq!(get("RedirectMatch seeother ^/x /y\nRedirectMatch 403 ^/x\n", "/x", ""), 0);
+        // Not read inside a block, a method section or an expression section; read inside <IfModule>.
+        let sections = concat!(
+            "<Files \"x.txt\">\nRedirectMatch 403 ^/\n</Files>\n",
+            "<Limit GET>\nRedirectMatch 403 ^/\n</Limit>\n",
+            "<If \"true\">\nRedirectMatch 403 ^/\n</If>\n",
+            "<IfModule mod_alias.c>\nRedirectMatch 404 ^/hidden/\n</IfModule>\n",
+        );
+        assert_eq!(["/x.txt", "/index.php", "/hidden/a"].map(|path| get(sections, path, "")), [0, 0, 404]);
+        // A directory's own, for the directory and what is under it, by the whole path.
+        let admin = [("admin", "RedirectMatch 403 ^/admin/?$\nRedirectMatch 404 ^/admin/private/\n")];
+        assert_eq!(
+            ["/admin", "/admin/", "/admin/private/x", "/admin/ok.php", "/private/x"].map(|path| refused(&admin, "GET", path, "", "localhost", &[])),
+            [403, 403, 404, 0, 0]
+        );
+
+        // `RewriteRule … [F]` refuses with 403 and `[G]` with 410, where the rewrite engine is
+        // on, the rules before it let the request get that far, and its conditions hold.
+        let rules = concat!(
+            "RewriteEngine On\n",
+            "RewriteRule ^index\\.php$ - [L]\n",
+            "RewriteRule ^admin/ - [F]\n",
+            "RewriteRule ^ADMIN2 - [F,NC]\n",
+            "RewriteRule ^old\\.html$ - [G]\n",
+            "RewriteCond %{REQUEST_METHOD} =POST\n",
+            "RewriteRule ^api/ - [F]\n",
+            "RewriteCond %{QUERY_STRING} (^|&)debug=\n",
+            "RewriteRule ^ - [F]\n",
+        );
+        for (path, query, status) in [
+            ("/admin/x", "", 403), ("/admin2", "", 403), ("/old.html", "", 410), ("/api/notes", "", 0),
+            ("/page", "debug=1", 403), ("/page", "a=1&debug", 0), ("/page", "", 0), ("/index.php", "debug=1", 0), ("/other", "", 0),
+        ] {
+            assert_eq!(get(rules, path, query), status, "{path}?{query}");
+        }
+        assert_eq!(refused(&[("", rules)], "POST", "/api/notes", "", "localhost", &[]), 403);
+        // With the engine off, at the end of the file or never turned on, no rule is run.
+        assert_eq!(get("RewriteEngine On\nRewriteRule ^ - [F]\nRewriteEngine Off\n", "/x", ""), 0);
+        assert_eq!(get("RewriteRule ^ - [F]\n", "/x", ""), 0);
+
+        // A request the rules rewrite is refused for where it is rewritten to: by a later rule,
+        // a <FilesMatch> or a RedirectMatch. One they send elsewhere first is not refused.
+        let rewrites = concat!(
+            "RewriteEngine On\n",
+            "RewriteRule ^go$ /elsewhere [R=301,L]\n",
+            "RewriteRule ^go$ - [F]\n",
+            "RewriteRule ^old/(.*)$ new/$1\n",
+            "RewriteRule ^new/secret - [F]\n",
+            "RewriteRule ^config$ lib/db.inc [L]\n",
+            "RewriteRule ^hide/(.*)$ /hidden/$1 [L]\n",
+            "<FilesMatch \"\\.inc$\">\nRequire all denied\n</FilesMatch>\n",
+            "RedirectMatch 404 ^/hidden/\n",
+        );
+        assert_eq!(["/go", "/old/secret", "/old/public", "/config", "/hide/a"].map(|path| get(rewrites, path, "")), [0, 403, 0, 403, 404]);
+
+        // Conditions on the bundle's files and directories, the host and the request's headers,
+        // with [OR] and [NC]. The Cookie header is never read into one.
+        let conditions = concat!(
+            "RewriteEngine On\n",
+            "RewriteCond %{REQUEST_FILENAME} !-f\n",
+            "RewriteRule \\.php$ - [F]\n",
+            "RewriteCond %{REQUEST_FILENAME} -d\n",
+            "RewriteRule ^ - [G]\n",
+            "RewriteCond %{HTTP_HOST} ^old\\. [NC,OR]\n",
+            "RewriteCond %{HTTP:X-Legacy} ^1$\n",
+            "RewriteRule ^ - [F]\n",
+            "RewriteCond %{HTTP:Cookie} session\n",
+            "RewriteRule ^ - [F]\n",
+        );
+        let asked = |path: &str, host: &str, headers: &[(&str, &str)]| refused(&[("", conditions)], "GET", path, "", host, headers);
+        assert_eq!(asked("/missing.php", "localhost", &[]), 403);
+        assert_eq!(asked("/index.php", "localhost", &[]), 0);
+        assert_eq!(asked("/lib/util.php", "localhost", &[]), 0);
+        assert_eq!(asked("/lib", "localhost", &[]), 410);
+        assert_eq!(asked("/page", "Old.example.com", &[]), 403);
+        assert_eq!(asked("/page", "localhost", &[("x-legacy", "1")]), 403);
+        assert_eq!(asked("/page", "localhost", &[("cookie", "session=abc")]), 0);
+        assert_eq!(asked("/page", "localhost", &[]), 0);
+
+        // A directory's rules are for what is under it, matched without its name.
+        let sub = [("admin", "RewriteEngine On\nRewriteRule ^secret - [F]\n")];
+        assert_eq!(
+            ["/admin/secret.txt", "/secret.txt", "/admin", "/admin/x/secret"].map(|path| refused(&sub, "GET", path, "", "localhost", &[])),
+            [403, 0, 0, 0]
+        );
+        // Not read inside a method section; a rule whose pattern does not compile is not read,
+        // and the conditions before it go with it.
+        assert_eq!(refused(&[("", "RewriteEngine On\n<Limit POST>\nRewriteRule ^ - [F]\n</Limit>\n")], "POST", "/x", "", "localhost", &[]), 0);
+        let invalid = "RewriteEngine On\nRewriteCond %{REQUEST_METHOD} =GET\nRewriteRule ( - [F]\nRewriteRule ^blocked - [F]\n";
+        assert_eq!(refused(&[("", invalid)], "POST", "/blocked", "", "localhost", &[]), 403);
+        assert_eq!(get(invalid, "/x", ""), 0);
+    }
+
+    // The same cases as "the two hosts close a directory with more rules than are kept" in
+    // apps/softn-host-php/tests/container-backend.test.mjs. This host dropped the lines past
+    // the count, and any of them could have refused a request, or kept one from a rule that
+    // would have.
+    #[test]
+    fn the_two_hosts_close_a_directory_with_more_rules_than_are_kept() {
+        let get = |source: &str, path: &str| htaccess_refusal(&[("", source)], &["index.php"], ("GET", path, "", "localhost", &[]));
+        let lines = |count: usize, line: &dyn Fn(usize) -> String| -> String { (0..count).map(|n| line(n) + "\n").collect() };
+
+        // 256 RewriteRule lines are read, the last of them too; a 257th closes the directory.
+        let rules = |count: usize| format!("RewriteEngine On\n{}RewriteRule ^admin - [F]\n", lines(count, &|n| format!("RewriteRule ^r{n}$ /x{n}")));
+        assert_eq!(get(&rules(255), "/admin"), 403);
+        assert_eq!(get(&rules(255), "/index.php"), 0);
+        for path in ["/admin", "/index.php", "/assets/app.css"] {
+            assert_eq!(get(&rules(256), path), 403, "{path}");
+        }
+        // So do 257 RedirectMatch lines.
+        let redirects = |count: usize| format!("{}RedirectMatch 403 ^/secret\n", lines(count, &|n| format!("RedirectMatch 301 ^/r{n}$ /x{n}")));
+        assert_eq!(get(&redirects(255), "/secret"), 403);
+        assert_eq!(get(&redirects(255), "/index.php"), 0);
+        assert_eq!(get(&redirects(256), "/secret"), 403);
+        assert_eq!(get(&redirects(256), "/index.php"), 403);
+        // And 65 RewriteCond lines before one rule (64 are read). The one past the count, here
+        // the last, would have kept `/public` from the pass-through and so for the [F] after it.
+        let conds = |count: usize, then: &str| {
+            let held = lines(count, &|n| format!("RewriteCond %{{HTTP_HOST}} !^nowhere{n}$"));
+            format!("RewriteEngine On\n{held}{then}RewriteRule ^public - [L]\nRewriteRule ^ - [F]\n")
+        };
+        assert_eq!(get(&conds(64, ""), "/public"), 0);
+        assert_eq!(get(&conds(64, ""), "/other"), 403);
+        assert_eq!(get(&conds(64, "RewriteCond %{HTTP_HOST} =nowhere\n"), "/public"), 403);
+        assert_eq!(get(&conds(65, ""), "/public"), 403);
+        // Lines that are not read (in an expression section) are not counted.
+        let skipped = format!("RewriteEngine On\n<If \"true\">\n{}</If>\nRewriteRule ^admin - [F]\n", lines(300, &|n| format!("RewriteRule ^r{n}$ /x{n}")));
+        assert_eq!(get(&skipped, "/admin"), 403);
+        assert_eq!(get(&skipped, "/index.php"), 0);
+    }
+
+    // The same cases as "the two hosts close a directory whose sections do not match up" in
+    // apps/softn-host-php/tests/container-backend.test.mjs. Apache will not load such a file
+    // and answers 500 for everything under it; both hosts read as far as it went, so a block
+    // left open denied nothing, and what followed a stray closing tag was read as though it
+    // were outside the section.
+    #[test]
+    fn the_two_hosts_close_a_directory_whose_sections_do_not_match_up() {
+        let get = |source: &str, path: &str| htaccess_refusal(&[("", source)], &["index.php"], ("GET", path, "", "localhost", &[]));
+        // Left open at the end of the file: a block, a method section, <IfModule>, <If>.
+        for source in [
+            "<Files \"secret.txt\">\nRequire all denied\n",
+            "<FilesMatch \"\\.inc$\">\nDeny from all\n",
+            "<Files \"a.txt\">\nRequire all denied\nRewriteEngine On\nRewriteRule ^admin - [F]\n",
+            "<Limit POST>\nRequire all denied\n",
+            "<IfModule mod_rewrite.c>\nRewriteEngine On\n",
+            "<If \"true\">\nRequire all denied\n",
+            "<IfModule a>\n<Files \"x.txt\">\nRequire all denied\n</Files>\n",
+        ] {
+            for path in ["/index.php", "/secret.txt", "/assets/app.css", "/"] {
+                assert_eq!(get(source, path), 403, "{path} under {source:?}");
+            }
+        }
+        // Closed where it is not the innermost open section, or not open at all.
+        for source in [
+            "</Files>\nOptions -Indexes\n",
+            "<Files \"a.txt\">\nRequire all denied\n</FilesMatch>\n",
+            "<IfModule a>\n<Files \"x\">\n</IfModule>\n</Files>\n",
+            "<Limit POST>\n</LimitExcept>\n",
+            "<If \"true\">\n</If>\n</If>\n",
+        ] {
+            assert_eq!(get(source, "/index.php"), 403, "{source:?}");
+        }
+        // Sections that match up are read as before, whatever the case of their names.
+        let nested = "<IfModule a>\n<Files \"x.txt\">\nRequire all denied\n</Files>\n</IfModule>\n";
+        assert_eq!([get(nested, "/x.txt"), get(nested, "/index.php")], [403, 0]);
+        let cased = "<files \"x.txt\">\nRequire all denied\n</FILES>\n";
+        assert_eq!([get(cased, "/x.txt"), get(cased, "/index.php")], [403, 0]);
+        assert_eq!(get("# <Files \"x.txt\">\nOptions -Indexes\n", "/index.php"), 0);
+    }
+
+    /// The status a request is refused with under a bundle of `index.php`, `lib/db.inc` and
+    /// `lib/util.php` whose `.htaccess` files are `htaccess`, or 0.
+    fn refusal_of(htaccess: &[(&str, &str)], method: &str, path: &str, query: &str, host: &str) -> u16 {
+        htaccess_refusal(htaccess, &["index.php", "lib/db.inc", "lib/util.php"], (method, path, query, host, &[]))
+    }
+
+    // The same cases as "the two hosts read negated rule patterns as Apache does" in
+    // apps/softn-host-php/tests/container-backend.test.mjs and in the browser's reader
+    // (packages/@softn/container/test/htaccess-and-vnav.test.ts). All three took the `!` of
+    // `RewriteRule !pattern` for part of the pattern, so `RewriteRule !^public/ - [F]` matched
+    // nothing and forbade nothing.
+    #[test]
+    fn the_two_hosts_read_negated_rule_patterns_as_apache_does() {
+        let get = |source: &str, path: &str| refusal_of(&[("", source)], "GET", path, "", "localhost");
+
+        // `RewriteRule !pattern` is for a path the pattern does not match, by case unless [NC].
+        let outside = "RewriteEngine On\nRewriteRule !^public/ - [F]\n";
+        assert_eq!(
+            ["/public/app.css", "/public/", "/index.php", "/public", "/", "/x/public/a", "/PUBLIC/a"].map(|path| get(outside, path)),
+            [0, 0, 403, 403, 403, 403, 403]
+        );
+        assert_eq!(["/PUBLIC/a", "/Other"].map(|path| get("RewriteEngine On\nRewriteRule !^public/ - [F,NC]\n", path)), [0, 403]);
+        assert_eq!(["/keep.html", "/x"].map(|path| get("RewriteEngine On\nRewriteRule !^keep\\.html$ - [G]\n", path)), [0, 410]);
+        // An empty pattern matches every path, so its negation none.
+        assert_eq!(get("RewriteEngine On\nRewriteRule ! - [F]\n", "/x"), 0);
+        // A directory's, for what is under it, matched without its name.
+        let admin = [("admin", "RewriteEngine On\nRewriteRule !^login\\.php$ - [F]\n")];
+        assert_eq!(
+            ["/admin/login.php", "/admin/users", "/admin", "/index.php"].map(|path| refusal_of(&admin, "GET", path, "", "localhost")),
+            [0, 403, 403, 0]
+        );
+        // Its conditions must hold, as for any rule.
+        let posted = [("", "RewriteEngine On\nRewriteCond %{REQUEST_METHOD} =POST\nRewriteRule !^api/ - [F]\n")];
+        assert_eq!(
+            [("POST", "/x"), ("POST", "/api/notes"), ("GET", "/x")].map(|(method, path)| refusal_of(&posted, method, path, "", "localhost")),
+            [403, 0, 0]
+        );
+        // `$1`…`$9` are empty, as the pattern matched nothing: `/x` is rewritten to `/gone/`.
+        let groups = "RewriteEngine On\nRewriteRule !^(public)/(.*)$ /gone/$2 [L]\nRedirectMatch 410 ^/gone/$\n";
+        assert_eq!(["/x", "/public/a"].map(|path| get(groups, path)), [410, 0]);
+    }
+
+    // The same cases as "the two hosts read negated conditions and RedirectMatch as Apache does"
+    // in apps/softn-host-php/tests/container-backend.test.mjs and in the browser's reader. All
+    // three read these so already.
+    #[test]
+    fn the_two_hosts_read_negated_conditions_and_redirect_match_as_apache_does() {
+        let get = |source: &str, path: &str| refusal_of(&[("", source)], "GET", path, "", "localhost");
+
+        // RedirectMatch has no negated form: a leading `!` is part of its pattern, as Apache
+        // reads it, so `!^/public/` matches nothing.
+        let redirects = "RedirectMatch 403 !^/public/\nRedirectMatch 404 !private\n";
+        assert_eq!(["/x", "/public/a", "/private", "/a!private"].map(|path| get(redirects, path)), [0, 0, 0, 404]);
+
+        // `RewriteCond … !CondPattern` holds where the pattern does not: a pattern, `=text` (by
+        // case unless [NC]) or a file test, alone or in an [OR] run.
+        let conds = [("", "RewriteEngine On\nRewriteCond %{REQUEST_URI} !^/public/\nRewriteCond %{HTTP_HOST} !=static.example [NC]\nRewriteRule ^ - [F]\n")];
+        assert_eq!(
+            [("/public/x", "localhost"), ("/other", "localhost"), ("/other", "STATIC.example"), ("/other", "static.example.com")]
+                .map(|(path, host)| refusal_of(&conds, "GET", path, "", host)),
+            [0, 403, 0, 403]
+        );
+        assert_eq!(["/lib", "/lib.txt"].map(|path| get("RewriteEngine On\nRewriteCond %{REQUEST_FILENAME} !-d\nRewriteRule ^lib - [F]\n", path)), [0, 403]);
+        let either = [("", "RewriteEngine On\nRewriteCond %{HTTP_HOST} ^admin\\. [OR]\nRewriteCond %{QUERY_STRING} !(^|&)token=\nRewriteRule ^panel - [F]\n")];
+        assert_eq!(
+            [("", "localhost"), ("token=1", "localhost"), ("token=1", "admin.example")].map(|(query, host)| refusal_of(&either, "GET", "/panel", query, host)),
+            [403, 0, 403]
+        );
+        // A negated condition gives `%1`…`%9` nothing, even where its pattern matched: `%1` here
+        // is the first condition's `secret`, not the second's `public`.
+        let backrefs = [(
+            "",
+            concat!(
+                "RewriteEngine On\n",
+                "RewriteCond %{QUERY_STRING} ^to=([a-z]+)$\n",
+                "RewriteCond %{HTTP_HOST} !^(public)\\. [OR]\n",
+                "RewriteCond %{REQUEST_METHOD} =GET\n",
+                "RewriteRule ^go$ /%1 [L]\n",
+                "RewriteRule ^secret$ - [F]\n",
+            ),
+        )];
+        assert_eq!(
+            [("to=secret", "public.example"), ("to=secret", "localhost"), ("to=public", "public.example")]
+                .map(|(query, host)| refusal_of(&backrefs, "GET", "/go", query, host)),
+            [403, 403, 0]
+        );
+    }
+
+    // The same cases as "the two hosts close a directory whose section tags are malformed" in
+    // apps/softn-host-php/tests/container-backend.test.mjs and in the browser's reader. Apache
+    // will not load a file with a section tag like these and answers 500 for everything under
+    // the directory; all three readers took `</Files >` and `<Files "secret.txt"` for the tags
+    // they look like.
+    #[test]
+    fn the_two_hosts_close_a_directory_whose_section_tags_are_malformed() {
+        let get = |source: &str, path: &str| htaccess_refusal(&[("", source)], &["index.php"], ("GET", path, "", "localhost", &[]));
+        let malformed = [
+            // An opening tag without its `>`, one with a `>` among its arguments and none at the
+            // end, one whose name runs into its argument, and one in a section not evaluated.
+            "<Files \"secret.txt\"\nRequire all denied\n</Files>\n",
+            "<FilesMatch \"\\.inc$\"\nDeny from all\n</FilesMatch>\n",
+            "<IfModule mod_rewrite.c\nRewriteEngine On\n</IfModule>\n",
+            "<IfVersion >= 2.4\n</IfVersion>\n",
+            "<Files\"secret.txt\">\nRequire all denied\n</Files>\n",
+            "<If \"true\">\n<Files \"secret.txt\"\n</Files>\n</If>\n",
+            // A closing tag that is not `</Name>`: a space before its `>`, no `>`, a space after its `<`.
+            "<Files \"secret.txt\">\nRequire all denied\n</Files >\n",
+            "<Files \"secret.txt\">\nRequire all denied\n</Files\n",
+            "<IfModule a>\n</IfModule >\n",
+            "</ Files>\nOptions -Indexes\n",
+            // Words after a tag's `>`. Apache passes over them after some tags and not others;
+            // here a tag is its whole line.
+            "<Files \"secret.txt\"> # private\nRequire all denied\n</Files>\n",
+            "<Files \"secret.txt\">\nRequire all denied\n</Files> # private\n",
+        ];
+        let read_anyway: Vec<&str> = malformed
+            .into_iter()
+            .filter(|source| ["/index.php", "/secret.txt", "/assets/app.css", "/"].iter().any(|path| get(source, path) != 403))
+            .collect();
+        assert!(read_anyway.is_empty(), "not refused everything under: {read_anyway:#?}");
+        // Spaces before an opening tag's `>`, a tab after its name, a `>` among its arguments or
+        // in its pattern, and a name with its `>` alone, are tags Apache reads, and so are they here.
+        for source in [
+            "<Files \"secret.txt\" >\nRequire all denied\n</Files>\n",
+            "<Files\t\"secret.txt\">\nRequire all denied\n</Files>\n",
+            "<IfVersion >= 2.4>\n<Files \"secret.txt\">\nRequire all denied\n</Files>\n</IfVersion>\n",
+            "<FilesMatch \"^secret>?\\.txt$\">\nRequire all denied\n</FilesMatch>\n",
+            "<If \"true\">\n</If>\n<Else>\nRequire all denied\n</Else>\n<Files \"secret.txt\">\nRequire all denied\n</Files>\n",
+        ] {
+            assert_eq!([get(source, "/secret.txt"), get(source, "/index.php")], [403, 0], "{source:?}");
+        }
+    }
+
+    // The same cases as "the two hosts close a directory whose <Files> pattern is too long" in
+    // apps/softn-host-php/tests/container-backend.test.mjs and in the browser's reader. A
+    // `<FilesMatch>` or `<Files ~>` pattern was held to 1024 bytes here, 256 characters on the
+    // Node host and 512 in the browser, and a `<Files>` name to 256 bytes here and characters
+    // there, and one past the limit denied nothing.
+    #[test]
+    fn the_two_hosts_close_a_directory_whose_files_pattern_is_too_long() {
+        let get = |source: &str, path: &str| htaccess_refusal(&[("", source)], &["index.php"], ("GET", path, "", "localhost", &[]));
+        let regex_of = |padding: &str| format!("^secret\\.txt$|^{padding}$");
+        let files_match = |pattern: &str| format!("<FilesMatch \"{pattern}\">\nRequire all denied\n</FilesMatch>\n");
+        let tilde = |pattern: &str| format!("<Files ~ \"{pattern}\">\nRequire all denied\n</Files>\n");
+        let files = |name: &str| format!("<Files \"{name}\">\nRequire all denied\n</Files>\n");
+        // 512 bytes, in ASCII and in two-byte characters, and a byte more.
+        let (fits, fits_short) = (regex_of(&"a".repeat(496)), regex_of(&"é".repeat(248)));
+        let (over, over_short) = (regex_of(&"a".repeat(497)), regex_of(&format!("a{}", "é".repeat(248))));
+        let (name, name_short) = (format!("{}.txt", "a".repeat(508)), format!("{}.txt", "é".repeat(254)));
+        let (long_name, long_name_short) = (format!("{}.txt", "a".repeat(509)), format!("a{}.txt", "é".repeat(254)));
+        assert_eq!(
+            [&fits, &fits_short, &over, &over_short, &name, &name_short, &long_name, &long_name_short].map(|p| (p.len(), p.chars().count())),
+            [(512, 512), (512, 264), (513, 513), (513, 265), (512, 512), (512, 258), (513, 513), (513, 259)]
+        );
+
+        // A pattern of 512 bytes is read: it names what it names, and nothing else.
+        let read = [
+            ("<FilesMatch> of 512 bytes", files_match(&fits), "/secret.txt".to_owned()),
+            ("<FilesMatch> of 512 bytes in 264 characters", files_match(&fits_short), "/secret.txt".to_owned()),
+            ("<Files ~> of 512 bytes", tilde(&fits), "/secret.txt".to_owned()),
+            ("<Files ~> of 512 bytes in 264 characters", tilde(&fits_short), "/secret.txt".to_owned()),
+            ("<Files> of 512 bytes", files(&name), format!("/{name}")),
+            ("<Files> of 512 bytes in 258 characters", files(&name_short), format!("/{name_short}")),
+        ];
+        let misread: Vec<&str> = read
+            .iter()
+            .filter(|(_, source, named)| [get(source, named), get(source, "/index.php")] != [403, 0])
+            .map(|(label, ..)| *label)
+            .collect();
+
+        // One a byte longer, or far longer, refuses everything under the directory.
+        let closing = [
+            ("<FilesMatch> of 513 bytes", files_match(&over)),
+            ("<FilesMatch> of 513 bytes in 265 characters", files_match(&over_short)),
+            ("<FilesMatch> of 2000 bytes", files_match(&"a".repeat(2000))),
+            ("<Files ~> of 513 bytes", tilde(&over)),
+            ("<Files ~> of 513 bytes in 265 characters", tilde(&over_short)),
+            ("<Files> of 513 bytes", files(&long_name)),
+            ("<Files> of 513 bytes in 259 characters", files(&long_name_short)),
+        ];
+        let read_anyway: Vec<&str> = closing
+            .iter()
+            .filter(|(_, source)| ["/index.php", "/secret.txt", "/assets/app.css", "/"].iter().any(|path| get(source, path) != 403))
+            .map(|(label, _)| *label)
+            .collect();
+        assert!(
+            misread.is_empty() && read_anyway.is_empty(),
+            "not read as written: {misread:?}; not refused everything under: {read_anyway:?}"
+        );
+
+        // Not read in a section that is not evaluated, and so not held to the limit.
+        assert_eq!(get(&format!("<If \"true\">\n{}</If>\n", files_match(&"a".repeat(2000))), "/index.php"), 0);
     }
 }
