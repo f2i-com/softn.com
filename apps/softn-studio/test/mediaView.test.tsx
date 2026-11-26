@@ -53,14 +53,14 @@ describe('MediaView', () => {
     ['assets/cover.png', 'img', 'image/png'],
     ['assets/theme.mp3', 'audio', 'audio/mpeg'],
     ['assets/clip.webm', 'video', 'video/webm'],
-    ['assets/guide.pdf', 'object', 'application/pdf'],
+    ['assets/guide.pdf', 'iframe', 'application/pdf'],
   ])('shows %s in a <%s>, from a blob typed %s', (path, element, mime) => {
     act(() => root.render(<MediaView path={path} content={bytes} />));
     const node = container.querySelector(`.st-media-stage ${element}`);
     expect(node).toBeTruthy();
     expect(created).toHaveLength(1);
     expect(created[0].blob.type).toBe(mime);
-    expect(node?.getAttribute(element === 'object' ? 'data' : 'src')).toBe(created[0].url);
+    expect(node?.getAttribute('src')).toBe(created[0].url);
     if (element === 'audio' || element === 'video') expect(node?.hasAttribute('controls')).toBe(true);
     expect(container.querySelector('.st-media-name')?.textContent).toBe(path.split('/').pop());
     expect(container.textContent).toContain('4 B');

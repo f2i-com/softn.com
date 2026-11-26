@@ -76,16 +76,32 @@ for (const required of REQUIRED) {
 const php = spawnSync('php', ['-v'], { encoding: 'utf8' });
 if (php.status !== 0) fail('php is not on PATH. The topology is served through PHP, as a host serves it.');
 
+const FETCH_BAD_PORTS = new Set([
+  1719, 1720, 1723, 2049, 3659, 4045, 4190, 5060, 5061,
+  6000, 6566, 6665, 6666, 6667, 6668, 6669, 6697, 10080,
+]);
+
 async function freePort() {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.unref();
-    server.on('error', reject);
-    server.listen(0, host, () => {
-      const { port } = server.address();
-      server.close(() => resolve(port));
-    });
-  });
+  const held = [];
+  try {
+    for (let i = 0; i < 32; i++) {
+      const probe = net.createServer();
+      probe.unref();
+      await new Promise((resolve, reject) => {
+        probe.once('error', reject);
+        probe.listen(0, host, resolve);
+      });
+      const { port } = probe.address();
+      if (!FETCH_BAD_PORTS.has(port)) {
+        await new Promise((resolve) => probe.close(resolve));
+        return port;
+      }
+      held.push(probe);
+    }
+    throw new Error('could not allocate a fetch-safe ephemeral port');
+  } finally {
+    await Promise.all(held.map((p) => new Promise((resolve) => p.close(resolve))));
+  }
 }
 
 const port = requestedPort > 0 ? requestedPort : await freePort();

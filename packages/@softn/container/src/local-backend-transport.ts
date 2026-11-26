@@ -48,7 +48,20 @@ const HEX_TABLE: readonly string[] = Array.from({ length: 256 }, (_, i) => i.toS
 
 let cachedSqliteIdbPromise: Promise<IDBDatabase | null> | null = null;
 let cachedSqliteIdbGlobal: IDBFactory | null = null;
-const coalescedBlobWrites = new Map<string, { inFlight: boolean; pending?: Uint8Array | string; explicitStorage?: Storage }>();
+const coalescedBlobWrites = new Map<
+  string,
+  { inFlight: boolean; pending?: Uint8Array | string; explicitStorage?: Storage; done: Promise<void> }
+>();
+
+async function drainCoalescedWritesForPrefix(storagePrefix: string, cancelPending = false): Promise<void> {
+  const waiters: Promise<void>[] = [];
+  for (const [key, slot] of coalescedBlobWrites) {
+    if (!key.startsWith(storagePrefix)) continue;
+    if (cancelPending) slot.pending = undefined;
+    waiters.push(slot.done);
+  }
+  if (waiters.length > 0) await Promise.all(waiters);
+}
 
 function openSqliteIdbFresh(version = SQLITE_IDB_VERSION, retried = false): Promise<IDBDatabase | null> {
   if (typeof indexedDB === 'undefined') return Promise.resolve(null);
@@ -162,6 +175,7 @@ async function loadPersistedBlobs(
   rustOverlay?: string;
   cookies?: string;
 }> {
+  await drainCoalescedWritesForPrefix(storagePrefix, false);
   const dbs: Record<string, Uint8Array> = Object.create(null);
   let phpOverlay: string | undefined;
   let rustOverlay: string | undefined;
@@ -224,6 +238,7 @@ async function loadPersistedBlobs(
 }
 
 export async function clearBackendPersistedBlobs(storagePrefix: string, explicitStorage?: Storage): Promise<void> {
+  await drainCoalescedWritesForPrefix(storagePrefix, true);
   if (!explicitStorage) {
     const idb = await openSqliteIdb();
     if (idb) {
@@ -302,26 +317,32 @@ async function writePersistedBlobOnce(key: string, value: Uint8Array | string, e
 }
 
 function savePersistedBlob(key: string, value: Uint8Array | string, explicitStorage?: Storage): Promise<void> {
-  let slot = coalescedBlobWrites.get(key);
+  const slot = coalescedBlobWrites.get(key);
   if (slot) {
     slot.pending = value;
     slot.explicitStorage = explicitStorage;
-    return Promise.resolve();
+    return slot.done;
   }
-  slot = { inFlight: true, pending: value, explicitStorage };
-  coalescedBlobWrites.set(key, slot);
-  return (async () => {
+  const entry: { inFlight: boolean; pending?: Uint8Array | string; explicitStorage?: Storage; done: Promise<void> } = {
+    inFlight: true,
+    pending: value,
+    explicitStorage,
+    done: Promise.resolve(),
+  };
+  coalescedBlobWrites.set(key, entry);
+  entry.done = (async () => {
     try {
-      while (slot.pending !== undefined) {
-        const nextVal = slot.pending;
-        const nextStore = slot.explicitStorage;
-        slot.pending = undefined;
+      while (entry.pending !== undefined) {
+        const nextVal = entry.pending;
+        const nextStore = entry.explicitStorage;
+        entry.pending = undefined;
         await writePersistedBlobOnce(key, nextVal, nextStore);
       }
     } finally {
-      coalescedBlobWrites.delete(key);
+      if (coalescedBlobWrites.get(key) === entry) coalescedBlobWrites.delete(key);
     }
   })();
+  return entry.done;
 }
 
 export interface LocalBackendTransportOptions {
@@ -374,7 +395,9 @@ export class LocalBackendTransport implements BackendTransport {
   private resolveReady!: () => void;
   private rejectReady!: (err: Error) => void;
   private isReady = false;
+  private disposing = false;
   private disposed = false;
+  private disposeTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(options: LocalBackendTransportOptions) {
     this.storagePrefix = options.storagePrefix;
@@ -393,12 +416,14 @@ export class LocalBackendTransport implements BackendTransport {
       this.resolveReady = resolve;
       this.rejectReady = reject;
     });
+    // Prevent spurious unhandled rejections if disposed before any caller awaits `this.ready`.
+    this.ready.catch(() => {});
 
     void this.boot(options, useWorker);
   }
 
   private post(msg: HostToBackendMsg): void {
-    if (this.disposed) return;
+    if (this.disposed || this.disposing) return;
     if (this.worker) {
       this.worker.postMessage(msg);
     } else if (this.inlineSession) {
@@ -444,7 +469,7 @@ export class LocalBackendTransport implements BackendTransport {
         useWorker ? Promise.resolve(null) : import('./backend-runtime').then((m) => m.BackendWorkerSession),
       ]);
 
-      if (this.disposed || workerFailed) return;
+      if (this.disposed || this.disposing || workerFailed) return;
       this.persistedDbSizes.clear();
       for (const [dbKey, bytes] of Object.entries(persisted.dbs)) {
         if (bytes instanceof Uint8Array) this.persistedDbSizes.set(dbKey, bytes.byteLength);
@@ -480,8 +505,33 @@ export class LocalBackendTransport implements BackendTransport {
     }
   }
 
+  private finishWorkerDispose(): void {
+    if (this.disposeTimer !== null) {
+      clearTimeout(this.disposeTimer);
+      this.disposeTimer = null;
+    }
+    this.disposed = true;
+    this.rejectAllPending(new Error('LocalBackendTransport disposed'));
+    try {
+      this.worker?.terminate();
+    } catch {
+      // ignore
+    }
+    this.worker = null;
+  }
+
   private handleBackendMessage(msg: BackendToHostMsg): void {
     if (this.disposed) return;
+    if (this.disposing) {
+      if (msg.type === 'disposed') {
+        this.finishWorkerDispose();
+        return;
+      }
+      // Still accept final SQLite/overlay persistence flushes emitted during graceful worker dispose.
+      if (msg.type !== 'sqlite-persist' && msg.type !== 'php-overlay-persist' && msg.type !== 'rust-overlay-persist') {
+        return;
+      }
+    }
     switch (msg.type) {
       case 'ready':
         this.isReady = true;
@@ -571,7 +621,7 @@ export class LocalBackendTransport implements BackendTransport {
 
   async fetch(req: BackendHttpRequest): Promise<BackendHttpResponse> {
     await this.ready;
-    if (this.disposed) throw new Error('LocalBackendTransport is disposed');
+    if (this.disposed || this.disposing) throw new Error('LocalBackendTransport is disposed');
     const method = (req.method || 'GET').toUpperCase();
     if (!ALLOWED_BACKEND_METHODS.has(method)) {
       throw new Error(`Disallowed HTTP method: ${method}`);
@@ -669,7 +719,7 @@ export class LocalBackendTransport implements BackendTransport {
     seedJson: string | Record<string, unknown>
   ): Promise<Record<string, unknown>> {
     await this.ready;
-    if (this.disposed) throw new Error('LocalBackendTransport is disposed');
+    if (this.disposed || this.disposing) throw new Error('LocalBackendTransport is disposed');
     const reqId = this.nextReqId++;
     const payload = typeof seedJson === 'string' ? seedJson : JSON.stringify(seedJson);
     return new Promise<Record<string, unknown>>((resolve, reject) => {
@@ -680,7 +730,7 @@ export class LocalBackendTransport implements BackendTransport {
 
   async exportDatabase(dbName: string): Promise<Uint8Array | null> {
     await this.ready;
-    if (this.disposed) return null;
+    if (this.disposed || this.disposing) return null;
     const reqId = this.nextReqId++;
     return new Promise<Uint8Array | null>((resolve, reject) => {
       this.registerPendingRpc(reqId, (v) => resolve(v instanceof Uint8Array ? v : null), reject);
@@ -693,7 +743,7 @@ export class LocalBackendTransport implements BackendTransport {
     args: unknown[]
   ): Promise<unknown> {
     await this.ready;
-    if (this.disposed) throw new Error('LocalBackendTransport is disposed');
+    if (this.disposed || this.disposing) throw new Error('LocalBackendTransport is disposed');
     const reqId = this.nextReqId++;
     return new Promise<unknown>((resolve, reject) => {
       this.registerPendingRpc(reqId, resolve, reject);
@@ -719,7 +769,14 @@ export class LocalBackendTransport implements BackendTransport {
     this.wsHandlers.set(wsId, onEvent);
 
     const openNow = () => {
-      if (this.disposed || closed) return;
+      if (this.disposed || this.disposing || closed) {
+        if (!closed) {
+          closed = true;
+          this.wsHandlers.delete(wsId);
+          onEvent({ type: 'close', code: 1001, reason: 'LocalBackendTransport disposed', wasClean: false });
+        }
+        return;
+      }
       this.post({
         type: 'ws-open',
         wsId,
@@ -743,7 +800,7 @@ export class LocalBackendTransport implements BackendTransport {
 
     return {
       send: (data: string | Uint8Array) => {
-        if (this.disposed || closed) return;
+        if (this.disposed || this.disposing || closed) return;
         if (typeof data === 'string') {
           this.post({ type: 'ws-send', wsId, data, binary: false });
         } else {
@@ -762,7 +819,7 @@ export class LocalBackendTransport implements BackendTransport {
         if (closed) return;
         closed = true;
         this.wsHandlers.delete(wsId);
-        if (!this.disposed) {
+        if (!this.disposed && !this.disposing) {
           this.post({ type: 'ws-close', wsId, code: code ?? 1000, reason: reason ?? '' });
         }
       },
@@ -786,28 +843,37 @@ export class LocalBackendTransport implements BackendTransport {
 
   /** Request immediate flush of any debounced SQLite / VFS overlay writes to IndexedDB. */
   flush(): void {
-    if (this.disposed) return;
+    if (this.disposed || this.disposing) return;
     this.post({ type: 'flush' });
   }
 
   dispose(): void {
-    if (this.disposed) return;
+    if (this.disposed || this.disposing) return;
+    const disposeErr = new Error('LocalBackendTransport disposed');
     // Flush inline session BEFORE marking disposed so final sqlite-persist messages save cleanly.
     try {
       this.inlineSession?.dispose();
     } catch {
       // ignore
     }
-    this.disposed = true;
-    try {
-      this.worker?.postMessage({ type: 'dispose' } satisfies HostToBackendMsg);
-      this.worker?.terminate();
-    } catch {
-      // ignore
-    }
-    this.worker = null;
     this.inlineSession = null;
+    this.disposing = true;
+    if (!this.isReady) {
+      this.rejectReady(disposeErr);
+    }
     this.cookieJar.clear();
-    this.rejectAllPending(new Error('LocalBackendTransport disposed'));
+    this.rejectAllPending(disposeErr);
+    if (this.worker) {
+      // Give the backend worker a brief window to flush debounced SQLite/VFS writes
+      // and reply with `{ type: 'disposed' }` before forcefully terminating it.
+      try {
+        this.worker.postMessage({ type: 'dispose' } satisfies HostToBackendMsg);
+        this.disposeTimer = setTimeout(() => this.finishWorkerDispose(), 500);
+      } catch {
+        this.finishWorkerDispose();
+      }
+    } else {
+      this.disposed = true;
+    }
   }
 }

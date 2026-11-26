@@ -129,7 +129,11 @@ export function resolveVfsPath(input: string, basePath = 'index.html'): string |
   }
 
   let combined: string;
-  if (pathname.startsWith('/')) {
+  if (raw.startsWith('?')) {
+    // Query-only relative link (`?tab=2`) resolves against the current document path itself,
+    // matching WHATWG URL resolution (`new URL('?tab=2', baseUrl)`).
+    combined = basePath.replace(/\\/g, '/').replace(/^\/+/, '');
+  } else if (pathname.startsWith('/')) {
     combined = pathname.slice(1);
   } else {
     const cleanBase = basePath.replace(/\\/g, '/').replace(/^\/+/, '');

@@ -580,7 +580,7 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
   } : undefined;
 
   useEffect(() => {
-    if (isV2Container || files.size === 0) return;
+    if (isV2Container || !hasFiles) return;
     let mounted = true;
     const loadRenderer = async () => {
       try {
@@ -610,7 +610,7 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
     return () => {
       mounted = false;
     };
-  }, [rendererRetry, isV2Container, files.size]);
+  }, [rendererRetry, isV2Container, hasFiles]);
 
   // The preview-data reset policy (see previewDataKey in lib/previewProject.ts):
   // the disposable XDB collections are reseeded from source only when an .xdb
@@ -643,7 +643,7 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
   // page is drawn once it is there.
   const [previewStore, setPreviewStore] = useState<ReturnType<typeof createEphemeralXDBScope> | null>(null);
   useEffect(() => {
-    if (isV2Container || files.size === 0) {
+    if (isV2Container || !hasFiles) {
       setPreviewStore(null);
       return;
     }
@@ -655,7 +655,7 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
       forgetPreviewScriptStorage(store.appId);
       setPreviewStore((current) => (current === store ? null : current));
     };
-  }, [previewAppId, isV2Container, files.size]);
+  }, [previewAppId, isV2Container, hasFiles]);
 
   useEffect(() => {
     if (!previewStore) return;
@@ -721,6 +721,7 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
   }, [previewStoreHasEmbeddedBackend, previewAppId, backendFilesKey, refreshKey, previewDataResets]);
 
   useEffect(() => {
+    uiBackendBridge?.activate();
     return () => {
       uiBackendBridge?.dispose();
     };
@@ -1283,23 +1284,35 @@ export const VisualCanvas: React.FC<VisualCanvasProps> = ({ onStartBrief, onShow
     }
 
     if (htmlPreview !== null) {
+      // Static-only sandboxed preview for standalone asset HTML files: parse with DOMParser
+      // (defeating entity/attribute-splitting bypasses like `http-equiv="&#114;efresh"`), strip
+      // active/navigation/prefetch tags (`meta[http-equiv]`, `base`, `link`, `script`, `iframe`,
+      // `object`, `embed`), and insert a strict no-egress CSP `<meta>` at the start of `<head>`.
+      let hardenedHtmlPreview: string;
+      if (typeof DOMParser === 'function') {
+        const doc = new DOMParser().parseFromString(htmlPreview, 'text/html');
+        doc.querySelectorAll('meta[http-equiv], base, link, script, iframe, object, embed').forEach((el) => el.remove());
+        const cspMeta = doc.createElement('meta');
+        cspMeta.setAttribute('http-equiv', 'Content-Security-Policy');
+        cspMeta.setAttribute(
+          'content',
+          "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:;"
+        );
+        doc.head.insertBefore(cspMeta, doc.head.firstChild);
+        hardenedHtmlPreview = '<!DOCTYPE html>' + doc.documentElement.outerHTML;
+      } else {
+        hardenedHtmlPreview =
+          '<!DOCTYPE html><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; img-src data:; font-src data:;" />';
+      }
       return (
         <>
           {showCode && codeView}
           <iframe
-          key={refreshKey}
-          srcDoc={htmlPreview}
-          style={showCode ? { ...styles.iframe, display: 'none' } : styles.iframe}
-          // allow-scripts WITHOUT allow-same-origin. Together the two cancel the
-          // sandbox out: the document would have this origin, so previewed HTML
-          // could read localStorage — where the model API key is kept — and
-          // reach back into the parent document. The HTML being previewed is a
-          // model's output or an imported bundle, so it is not ours to trust.
-          // Its scripts run with an opaque origin, where Studio's own policy
-          // lets them: a built Studio's CSP, which the frame's document
-          // inherits, runs no inline script.
-          sandbox="allow-scripts"
-          title="App Preview"
+            key={refreshKey}
+            srcDoc={hardenedHtmlPreview}
+            style={showCode ? { ...styles.iframe, display: 'none' } : styles.iframe}
+            sandbox=""
+            title="App Preview"
           />
         </>
       );

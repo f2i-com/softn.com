@@ -8,6 +8,7 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { createHash, createHmac } from 'node:crypto';
 import http from 'node:http';
+import net from 'node:net';
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -89,12 +90,54 @@ let server: ChildProcess | undefined;
 let origin: string;
 let cookie = '';
 
+const FETCH_BAD_PORTS = new Set([
+  1719, 1720, 1723, 2049, 3659, 4045, 4190, 5060, 5061,
+  6000, 6566, 6665, 6666, 6667, 6668, 6669, 6697, 10080,
+]);
+
+async function freePort(): Promise<number> {
+  const held: net.Server[] = [];
+  try {
+    for (let i = 0; i < 32; i++) {
+      const probe = net.createServer();
+      await new Promise<void>((resolve, reject) => {
+        probe.once('error', reject);
+        probe.listen(0, '127.0.0.1', () => resolve());
+      });
+      const addr = probe.address();
+      const port = typeof addr === 'object' && addr ? addr.port : 0;
+      if (port > 0 && !FETCH_BAD_PORTS.has(port)) {
+        await new Promise<void>((resolve) => probe.close(() => resolve()));
+        return port;
+      }
+      held.push(probe);
+    }
+    throw new Error('could not allocate a fetch-safe ephemeral port');
+  } finally {
+    await Promise.all(held.map((p) => new Promise<void>((resolve) => p.close(() => resolve()))));
+  }
+}
+
+function stopChild(child: ChildProcess | undefined): Promise<void> {
+  if (!child || child.exitCode !== null || child.killed) return Promise.resolve();
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, 2000);
+    child.once('exit', () => {
+      clearTimeout(timer);
+      resolve();
+    });
+    child.kill();
+  });
+}
+
 async function start(): Promise<void> {
   for (let attempt = 0; attempt < 8; attempt++) {
-    const port = 20000 + Math.floor(Math.random() * 20000);
+    const port = await freePort();
     const child = spawn(php, [...FRESH, '-S', `127.0.0.1:${port}`, '-t', join(root, 'webroot'), previewRouter], {
       stdio: ['ignore', 'ignore', 'pipe'],
     });
+    // Always drain stderr so php -S access logs never fill the OS pipe buffer and deadlock.
+    child.stderr?.resume();
     let exited = false;
     child.on('exit', () => (exited = true));
     const deadline = Date.now() + 8000;
@@ -103,7 +146,7 @@ async function start(): Promise<void> {
         const response = await fetch(`http://127.0.0.1:${port}/index.php`, {
           headers: { 'Sec-Fetch-Mode': 'navigate' },
         });
-        if (response.status > 0) {
+        if (response.status > 0 && !exited && child.exitCode === null) {
           server = child;
           origin = `http://127.0.0.1:${port}`;
           return;
@@ -112,7 +155,7 @@ async function start(): Promise<void> {
         await new Promise((r) => setTimeout(r, 100));
       }
     }
-    child.kill();
+    await stopChild(child);
   }
   throw Error('PHP built-in server did not start');
 }
@@ -153,9 +196,9 @@ describe.skipIf(!available)('softn-serve over php -S', () => {
     );
     await start();
   });
-  afterAll(() => {
-    server?.kill();
-    rmSync(root, { recursive: true, force: true });
+  afterAll(async () => {
+    await stopChild(server);
+    rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   });
 
   it('serves the preview worker with the isolation policy of its parent page', async () => {
@@ -866,22 +909,25 @@ describe.skipIf(!available)('softn-serve over php -S', () => {
    */
   async function serve(args: string[]): Promise<{ origin: string; stop: () => void }> {
     for (let attempt = 0; attempt < 8; attempt++) {
-      const port = 20000 + Math.floor(Math.random() * 20000);
+      const port = await freePort();
       const child = spawn(php, [...args, ...FRESH, '-S', `127.0.0.1:${port}`, '-t', join(root, 'webroot')], {
         stdio: ['ignore', 'ignore', 'pipe'],
       });
+      child.stderr?.resume();
       let exited = false;
       child.on('exit', () => (exited = true));
       const deadline = Date.now() + 8000;
       while (Date.now() < deadline && !exited) {
         try {
           await fetch(`http://127.0.0.1:${port}/no-such-page`);
-          return { origin: `http://127.0.0.1:${port}`, stop: () => child.kill() };
+          if (!exited && child.exitCode === null) {
+            return { origin: `http://127.0.0.1:${port}`, stop: () => child.kill() };
+          }
         } catch {
           await new Promise((r) => setTimeout(r, 100));
         }
       }
-      child.kill();
+      await stopChild(child);
     }
     throw Error('PHP built-in server did not start');
   }

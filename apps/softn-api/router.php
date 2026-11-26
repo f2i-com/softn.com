@@ -120,7 +120,9 @@ if ($real !== false && $rootReal !== false && ($real === $rootReal || str_starts
             header('Content-Type: ' . $types[$ext]);
             header('Cross-Origin-Opener-Policy: same-origin');
             header('Cross-Origin-Embedder-Policy: credentialless');
-            if (preg_match('#^/shared/(?:assets/|container-runtime/[0-9a-f]{12}/)#', $path) === 1
+            if (preg_match('#^/shared/assets/core-runtime/#', $path) === 1) {
+                header('Cache-Control: public, max-age=3600');
+            } elseif (preg_match('#^/shared/container-runtime/[0-9a-f]{12}/#', $path) === 1
                 || preg_match('#-(?:[A-Za-z0-9_-]{8}|[0-9a-f]{12})\.(?:css|js|mjs|wasm|woff2?|ttf|png|jpe?g|gif|webp|svg)$#', $path) === 1) {
                 header('Cache-Control: public, max-age=31536000, immutable');
             }

@@ -950,7 +950,7 @@ class DeviceBridge(
             "haptics" -> if (declaredManifestPermissions.contains(Manifest.permission.VIBRATE)) "granted" else "denied"
             "net" -> if (declaredManifestPermissions.contains(Manifest.permission.INTERNET)) "granted" else "denied"
             "files", "accel", "sensors", "accelerometer", "gyroscope", "magnetometer",
-            "clipboard-read", "clipboard-write" -> "granted"
+            "clipboard", "clipboard-read", "clipboard-write" -> "granted"
             else -> "denied"
         }
     }
@@ -1352,6 +1352,10 @@ class DeviceBridge(
                 if (!gattPendingConnects.remove(deviceId, connectOp)) return
                 mainHandler.removeCallbacks(connectOp.timeout)
                 if (status != BluetoothGatt.GATT_SUCCESS) {
+                    activeGatts.remove(deviceId, g)
+                    gattAllowedServices.remove(g)
+                    try { g.disconnect() } catch (_: Throwable) {}
+                    try { g.close() } catch (_: Throwable) {}
                     fail(connectOp.gen, connectOp.reqId, "GATT service discovery failed (status $status)")
                     return
                 }

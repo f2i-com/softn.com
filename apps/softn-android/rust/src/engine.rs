@@ -668,12 +668,63 @@ struct VfsNetProvider {
     host_allows_net: bool,
 }
 
+fn contains_ascii_icase(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return false;
+    }
+    haystack.windows(needle.len()).any(|w| w.eq_ignore_ascii_case(needle))
+}
+
+fn looks_like_svg(url: &str, bytes: &[u8]) -> bool {
+    let url_lower = url.to_ascii_lowercase();
+    let path_part = url_lower.split(['?', '#']).next().unwrap_or("");
+    if path_part.ends_with(".svg") || path_part.ends_with(".svgz") || url_lower.starts_with("data:image/svg+xml") {
+        return true;
+    }
+    // Skip genuine raster image formats and font binaries in O(1).
+    if image::guess_format(bytes).is_ok() {
+        return false;
+    }
+    if bytes.len() >= 4
+        && (bytes.starts_with(b"wOFF")
+            || bytes.starts_with(b"wOF2")
+            || bytes.starts_with(b"OTTO")
+            || bytes.starts_with(&[0x00, 0x01, 0x00, 0x00]))
+    {
+        return false;
+    }
+    // Scan the full bounded payload (byte-level, immune to UTF-8 slicing across multi-byte
+    // boundaries, leading XML comments, or >512-byte XML prologs).
+    let scan = &bytes[..bytes.len().min(crate::canvas2d::MAX_SVG_INPUT_BYTES)];
+    contains_ascii_icase(scan, b"<svg")
+        || contains_ascii_icase(scan, b"<?xml")
+        || contains_ascii_icase(scan, b"<!doctype")
+        || contains_ascii_icase(scan, b"<!entity")
+}
+
+fn deliver_sanitized_bytes(url_str: &str, bytes: Vec<u8>, handler: Box<dyn NetHandler>) {
+    // Reject gzip-compressed payloads (e.g. `.svgz` or disguised gzipped SVG that `usvg`
+    // would natively decompress without going through `sanitize_svg_for_raster`).
+    if bytes.starts_with(&[0x1f, 0x8b]) {
+        return;
+    }
+    let payload = if looks_like_svg(url_str, &bytes) {
+        match crate::canvas2d::sanitize_svg_for_raster(&bytes) {
+            Some(clean) => clean,
+            None => return,
+        }
+    } else {
+        bytes
+    };
+    handler.bytes(url_str.to_string(), Bytes::from(payload));
+}
+
 impl NetProvider for VfsNetProvider {
     fn fetch(&self, _doc_id: usize, request: Request, handler: Box<dyn NetHandler>) {
         let url_str = request.url.as_str();
         if url_str.starts_with("blob:") {
             if let Some(bytes) = self.blobs.lookup_bytes(url_str) {
-                handler.bytes(url_str.to_string(), Bytes::from(bytes));
+                deliver_sanitized_bytes(url_str, bytes, handler);
             }
             return;
         }
@@ -682,7 +733,7 @@ impl NetProvider for VfsNetProvider {
                 if let Ok(parsed) = data_url::DataUrl::process(url_str) {
                     if let Ok((body, _)) = parsed.decode_to_vec() {
                         if body.len() <= MAX_DATA_URL_BYTES {
-                            handler.bytes(url_str.to_string(), Bytes::from(body));
+                            deliver_sanitized_bytes(url_str, body, handler);
                         }
                     }
                 }
@@ -691,14 +742,14 @@ impl NetProvider for VfsNetProvider {
         }
         if let Some(rel) = strip_virtual_origin(url_str) {
             if let Some((_, _, bytes)) = self.bundle.read_public_asset(rel) {
-                handler.bytes(url_str.to_string(), Bytes::from(bytes));
+                deliver_sanitized_bytes(url_str, bytes, handler);
             }
             return;
         }
         if self.host_allows_net && self.bundle.check_net_url(url_str).is_ok() {
             let revalidate = match self.http_cache.lookup(url_str) {
                 CacheLookup::Fresh(entry) => {
-                    handler.bytes(url_str.to_string(), Bytes::from(entry.body.as_ref().clone()));
+                    deliver_sanitized_bytes(url_str, entry.body.as_ref().clone(), handler);
                     return;
                 }
                 CacheLookup::Revalidate(entry) => Some(entry),
@@ -728,14 +779,14 @@ impl NetProvider for VfsNetProvider {
                 if status == 304 {
                     if let Some(prev) = revalidate {
                         let refreshed = self.http_cache.revalidate_304(url_str, prev, &resp_hdrs);
-                        handler.bytes(url_str.to_string(), Bytes::from(refreshed.body.as_ref().clone()));
+                        deliver_sanitized_bytes(url_str, refreshed.body.as_ref().clone(), handler);
                         return;
                     }
                 }
                 if final_url == url_str && !sent_cookie {
                     self.http_cache.store(url_str, status, &resp_hdrs, bytes.clone());
                 }
-                handler.bytes(url_str.to_string(), Bytes::from(bytes));
+                deliver_sanitized_bytes(url_str, bytes, handler);
             }
         }
     }

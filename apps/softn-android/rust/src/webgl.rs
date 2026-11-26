@@ -242,6 +242,7 @@ struct Context {
     vram_bytes: usize,
     buffer_bytes: HashMap<glow::Buffer, usize>,
     renderbuffer_bytes: HashMap<glow::Renderbuffer, usize>,
+    texture_bytes: HashMap<(glow::Texture, u32, i32), usize>,
     /// The canvas: multisampled (`samples` > 0) when antialiased, and then
     /// resolved into `resolve` to be read.
     fbo: glow::Framebuffer,
@@ -269,6 +270,16 @@ struct Context {
     state: PageState,
 }
 
+#[derive(Clone, Copy)]
+struct VertexAttribBinding {
+    buffer: Option<glow::Buffer>,
+    size: i32,
+    ty: u32,
+    stride: i32,
+    offset: i32,
+    divisor: u32,
+}
+
 struct PageState {
     draw_fb: Option<glow::Framebuffer>,
     read_fb: Option<glow::Framebuffer>,
@@ -276,8 +287,13 @@ struct PageState {
     array_buffer: Option<glow::Buffer>,
     current_vao: u32,
     vao_element_buffers: HashMap<u32, Option<glow::Buffer>>,
+    vao_enabled_attribs: HashMap<u32, std::collections::HashSet<u32>>,
+    vao_attribs: HashMap<u32, HashMap<u32, VertexAttribBinding>>,
+    active_texture_unit: u32,
+    bound_textures: HashMap<(u32, u32), glow::Texture>,
     pack_buffer: Option<glow::Buffer>,
     unpack_buffer: Option<glow::Buffer>,
+    other_buffers: HashMap<u32, glow::Buffer>,
     /// `pixelStorei` values other than WebGL's own flags.
     pixel_store: HashMap<u32, i32>,
     scissor_test: bool,
@@ -298,8 +314,13 @@ impl PageState {
             array_buffer: None,
             current_vao: 0,
             vao_element_buffers: HashMap::new(),
+            vao_enabled_attribs: HashMap::new(),
+            vao_attribs: HashMap::new(),
+            active_texture_unit: 0,
+            bound_textures: HashMap::new(),
             pack_buffer: None,
             unpack_buffer: None,
+            other_buffers: HashMap::new(),
             pixel_store: HashMap::new(),
             scissor_test: false,
             clear_color: [0.0; 4],
@@ -410,6 +431,7 @@ impl Host {
                     vram_bytes: 0,
                     buffer_bytes: HashMap::new(),
                     renderbuffer_bytes: HashMap::new(),
+                    texture_bytes: HashMap::new(),
                     fbo,
                     color,
                     depth,
@@ -738,17 +760,22 @@ impl Context {
             gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, s.draw_fb);
             gl.bind_framebuffer(glow::READ_FRAMEBUFFER, s.read_fb);
             gl.bind_renderbuffer(glow::RENDERBUFFER, s.renderbuffer);
-            gl.bind_buffer(glow::PIXEL_PACK_BUFFER, s.pack_buffer);
-            gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, s.unpack_buffer);
-            for name in [
-                glow::PACK_ALIGNMENT,
-                glow::UNPACK_ALIGNMENT,
-                glow::PACK_ROW_LENGTH,
-                glow::UNPACK_ROW_LENGTH,
-                glow::PACK_SKIP_ROWS,
-                glow::PACK_SKIP_PIXELS,
-            ] {
+            if self.supports_pbo {
+                gl.bind_buffer(glow::PIXEL_PACK_BUFFER, s.pack_buffer);
+                gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, s.unpack_buffer);
+            }
+            for name in [glow::PACK_ALIGNMENT, glow::UNPACK_ALIGNMENT] {
                 gl.pixel_store_i32(name, s.pixel_store(name));
+            }
+            if self.supports_pbo {
+                for name in [
+                    glow::PACK_ROW_LENGTH,
+                    glow::UNPACK_ROW_LENGTH,
+                    glow::PACK_SKIP_ROWS,
+                    glow::PACK_SKIP_PIXELS,
+                ] {
+                    gl.pixel_store_i32(name, s.pixel_store(name));
+                }
             }
             if s.scissor_test {
                 gl.enable(glow::SCISSOR_TEST);
@@ -961,14 +988,58 @@ impl Context {
         Ok(())
     }
 
+    fn is_valid_buffer_target(&self, target: u32) -> bool {
+        match target {
+            glow::ARRAY_BUFFER | glow::ELEMENT_ARRAY_BUFFER => true,
+            glow::PIXEL_PACK_BUFFER
+            | glow::PIXEL_UNPACK_BUFFER
+            | glow::UNIFORM_BUFFER
+            | glow::TRANSFORM_FEEDBACK_BUFFER
+            | glow::COPY_READ_BUFFER
+            | glow::COPY_WRITE_BUFFER => self.supports_pbo,
+            _ => false,
+        }
+    }
+
     fn bound_buffer_for(&self, target: u32) -> Option<glow::Buffer> {
         match target {
             glow::ARRAY_BUFFER => self.state.array_buffer,
             glow::ELEMENT_ARRAY_BUFFER => self.state.current_element_buffer(),
             glow::PIXEL_PACK_BUFFER => self.state.pack_buffer,
             glow::PIXEL_UNPACK_BUFFER => self.state.unpack_buffer,
+            glow::UNIFORM_BUFFER
+            | glow::TRANSFORM_FEEDBACK_BUFFER
+            | glow::COPY_READ_BUFFER
+            | glow::COPY_WRITE_BUFFER => self.state.other_buffers.get(&target).copied(),
             _ => None,
         }
+    }
+
+    fn check_pbo_bounds(
+        &self,
+        pack: bool,
+        offset: u32,
+        w: i32,
+        h: i32,
+        d: i32,
+        format: u32,
+        ty: u32,
+    ) -> Result<(), String> {
+        let pbo = if pack { self.state.pack_buffer } else { self.state.unpack_buffer }
+            .ok_or_else(|| "InvalidOperationError: PBO operation requires a bound PBO".to_string())?;
+        let need = self
+            .image_bytes(w, h, d, format, ty, pack)
+            .ok_or_else(|| format!("InvalidOperationError: PBO format {format:#x}, type {ty:#x}, {w}x{h}x{d}"))?;
+        let buf_len = self.buffer_bytes.get(&pbo).copied().unwrap_or(0);
+        let end = (offset as usize)
+            .checked_add(need)
+            .ok_or_else(|| "InvalidOperationError: PBO byte offset overflow".to_string())?;
+        if end > buf_len {
+            return Err(format!(
+                "InvalidOperationError: PBO range ({end} B) exceeds bound buffer size ({buf_len} B)"
+            ));
+        }
+        Ok(())
     }
 
     fn check_3d_texels(w: i32, h: i32, d: i32) -> Result<usize, String> {
@@ -981,6 +1052,149 @@ impl Context {
         Ok((texels as usize).saturating_mul(4))
     }
 
+    fn tex_bind_target(target: u32) -> u32 {
+        if (glow::TEXTURE_CUBE_MAP_POSITIVE_X..=glow::TEXTURE_CUBE_MAP_NEGATIVE_Z).contains(&target) {
+            glow::TEXTURE_CUBE_MAP
+        } else {
+            target
+        }
+    }
+
+    fn track_texture_vram(&mut self, target: u32, level: i32, est_bytes: usize, reset_all_levels: bool) -> Result<(), String> {
+        let bind_target = Self::tex_bind_target(target);
+        if let Some(&tex) = self.state.bound_textures.get(&(self.state.active_texture_unit, bind_target)) {
+            if reset_all_levels {
+                let old: usize = self
+                    .texture_bytes
+                    .iter()
+                    .filter(|(&(t, _, _), _)| t == tex)
+                    .map(|(_, &sz)| sz)
+                    .fold(0usize, usize::saturating_add);
+                self.track_vram_delta(old, est_bytes)?;
+                self.texture_bytes.retain(|&(t, _, _), _| t != tex);
+                self.texture_bytes.insert((tex, bind_target, 0), est_bytes);
+            } else {
+                let key = (tex, target, level);
+                let old = self.texture_bytes.get(&key).copied().unwrap_or(0);
+                self.track_vram_delta(old, est_bytes)?;
+                self.texture_bytes.insert(key, est_bytes);
+            }
+            Ok(())
+        } else {
+            self.track_vram_delta(0, est_bytes)
+        }
+    }
+
+    fn attrib_element_bytes(size: i32, ty: u32) -> Option<usize> {
+        if !(1..=4).contains(&size) {
+            return None;
+        }
+        if ty == glow::INT_2_10_10_10_REV || ty == glow::UNSIGNED_INT_2_10_10_10_REV {
+            return if size == 4 { Some(4) } else { None };
+        }
+        let comp = match ty {
+            glow::BYTE | glow::UNSIGNED_BYTE => 1usize,
+            glow::SHORT | glow::UNSIGNED_SHORT | glow::HALF_FLOAT => 2usize,
+            glow::INT | glow::UNSIGNED_INT | glow::FLOAT => 4usize,
+            _ => return None,
+        };
+        Some((size as usize) * comp)
+    }
+
+    fn validate_draw_attribs(
+        &self,
+        first: i32,
+        count: i32,
+        instances: Option<i32>,
+        indexed_elem: Option<(u32, i32)>,
+    ) -> Result<(), String> {
+        if count == 0 || instances == Some(0) {
+            return Ok(());
+        }
+        if let Some((index_type, index_offset)) = indexed_elem {
+            let elem_buf = self
+                .state
+                .current_element_buffer()
+                .ok_or_else(|| "InvalidOperationError: drawElements requires a bound ELEMENT_ARRAY_BUFFER".to_string())?;
+            let index_bytes: u64 = match index_type {
+                glow::UNSIGNED_BYTE => 1,
+                glow::UNSIGNED_SHORT => 2,
+                glow::UNSIGNED_INT => 4,
+                _ => return Err(format!("InvalidEnumError: invalid drawElements index type {index_type:#x}")),
+            };
+            if (index_offset as u64) % index_bytes != 0 {
+                return Err("InvalidOperationError: drawElements offset must be aligned to index type size".into());
+            }
+            let elem_size = self.buffer_bytes.get(&elem_buf).copied().unwrap_or(0) as u64;
+            let needed = (index_offset as u64)
+                .checked_add((count as u64).saturating_mul(index_bytes))
+                .ok_or_else(|| "InvalidValueError: drawElements range overflow".to_string())?;
+            if needed > elem_size {
+                return Err("InvalidOperationError: drawElements index range exceeds ELEMENT_ARRAY_BUFFER size".into());
+            }
+        }
+        let Some(enabled) = self.state.vao_enabled_attribs.get(&self.state.current_vao) else {
+            return Ok(());
+        };
+        let bindings = self.state.vao_attribs.get(&self.state.current_vao);
+        for &idx in enabled {
+            let Some(b) = bindings.and_then(|m| m.get(&idx)) else {
+                return Err(format!(
+                    "InvalidOperationError: enabled vertex attribute {idx} has no ARRAY_BUFFER pointer"
+                ));
+            };
+            let Some(buf) = b.buffer else {
+                return Err(format!(
+                    "InvalidOperationError: enabled vertex attribute {idx} references a deleted or unbound ARRAY_BUFFER"
+                ));
+            };
+            let Some(&buf_len) = self.buffer_bytes.get(&buf) else {
+                return Err(format!(
+                    "InvalidOperationError: enabled vertex attribute {idx} has no allocated ARRAY_BUFFER storage"
+                ));
+            };
+            let elem_bytes = Self::attrib_element_bytes(b.size, b.ty)
+                .ok_or_else(|| format!("InvalidOperationError: invalid vertex attribute {idx} format"))?
+                as u64;
+            let stride = if b.stride == 0 { elem_bytes } else { b.stride as u64 };
+            let max_idx: u64 = if b.divisor > 0 {
+                match instances {
+                    Some(inst) if inst > 0 => ((inst - 1) as u64) / (b.divisor as u64),
+                    _ => 0,
+                }
+            } else if indexed_elem.is_some() {
+                0
+            } else {
+                (first as u64).saturating_add((count - 1) as u64)
+            };
+            let needed = (b.offset as u64)
+                .checked_add(max_idx.saturating_mul(stride))
+                .and_then(|v| v.checked_add(elem_bytes))
+                .ok_or_else(|| "InvalidOperationError: vertex attribute offset overflow".to_string())?;
+            if needed > buf_len as u64 {
+                return Err(format!(
+                    "InvalidOperationError: vertex attribute {idx} range ({needed} B) exceeds ARRAY_BUFFER size ({buf_len} B)"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    unsafe fn detach_and_delete_texture(&mut self, t: glow::Texture) {
+        self.state.bound_textures.retain(|_, v| *v != t);
+        let mut freed = 0usize;
+        self.texture_bytes.retain(|&(tex, _, _), &mut sz| {
+            if tex == t {
+                freed = freed.saturating_add(sz);
+                false
+            } else {
+                true
+            }
+        });
+        self.vram_bytes = self.vram_bytes.saturating_sub(freed);
+        unsafe { self.gl.delete_texture(t) };
+    }
+
     unsafe fn detach_and_delete_buffer(&mut self, b: glow::Buffer) {
         if self.state.array_buffer == Some(b) {
             self.state.array_buffer = None;
@@ -991,9 +1205,17 @@ impl Context {
         if self.state.unpack_buffer == Some(b) {
             self.state.unpack_buffer = None;
         }
+        self.state.other_buffers.retain(|_, v| *v != b);
         for slot in self.state.vao_element_buffers.values_mut() {
             if *slot == Some(b) {
                 *slot = None;
+            }
+        }
+        for attribs in self.state.vao_attribs.values_mut() {
+            for binding in attribs.values_mut() {
+                if binding.buffer == Some(b) {
+                    binding.buffer = None;
+                }
             }
         }
         if let Some(old_sz) = self.buffer_bytes.remove(&b) {
@@ -1070,10 +1292,8 @@ impl Context {
                 }
                 "bindBuffer" => {
                     let target = u(1);
-                    if !self.supports_pbo
-                        && matches!(target, glow::PIXEL_PACK_BUFFER | glow::PIXEL_UNPACK_BUFFER)
-                    {
-                        return Err("InvalidEnumError: PBO targets require OpenGL ES 3+".into());
+                    if !self.is_valid_buffer_target(target) {
+                        return Err(format!("InvalidEnumError: unsupported buffer target {target:#x}"));
                     }
                     let b = self.buffers.get(&u(2)).copied();
                     match target {
@@ -1085,7 +1305,13 @@ impl Context {
                         }
                         glow::PIXEL_PACK_BUFFER => self.state.pack_buffer = b,
                         glow::PIXEL_UNPACK_BUFFER => self.state.unpack_buffer = b,
-                        _ => {}
+                        _ => {
+                            if let Some(buf) = b {
+                                self.state.other_buffers.insert(target, buf);
+                            } else {
+                                self.state.other_buffers.remove(&target);
+                            }
+                        }
                     }
                     self.gl.bind_buffer(target, b);
                 }
@@ -1095,25 +1321,33 @@ impl Context {
                 }
                 "bufferData" => {
                     let target = u(1);
-                    let slice = bytes(u(2) as usize, u(3) as usize)?;
-                    if let Some(b) = self.bound_buffer_for(target) {
-                        let old_sz = self.buffer_bytes.get(&b).copied().unwrap_or(0);
-                        self.track_vram_delta(old_sz, slice.len())?;
-                        self.buffer_bytes.insert(b, slice.len());
+                    if !self.is_valid_buffer_target(target) {
+                        return Err(format!("InvalidEnumError: unsupported bufferData target {target:#x}"));
                     }
+                    let Some(b) = self.bound_buffer_for(target) else {
+                        return Err("InvalidOperationError: bufferData requires a bound buffer".into());
+                    };
+                    let slice = bytes(u(2) as usize, u(3) as usize)?;
+                    let old_sz = self.buffer_bytes.get(&b).copied().unwrap_or(0);
+                    self.track_vram_delta(old_sz, slice.len())?;
+                    self.buffer_bytes.insert(b, slice.len());
                     self.gl.buffer_data_u8_slice(target, slice, u(4));
                 }
                 "bufferSize" => {
                     let target = u(1);
+                    if !self.is_valid_buffer_target(target) {
+                        return Err(format!("InvalidEnumError: unsupported bufferSize target {target:#x}"));
+                    }
+                    let Some(b) = self.bound_buffer_for(target) else {
+                        return Err("InvalidOperationError: bufferSize requires a bound buffer".into());
+                    };
                     let sz = int(2);
                     if sz < 0 || (sz as usize) > MAX_READ_BYTES {
                         return Err("InvalidValueError: bufferSize out of bounds".into());
                     }
-                    if let Some(b) = self.bound_buffer_for(target) {
-                        let old_sz = self.buffer_bytes.get(&b).copied().unwrap_or(0);
-                        self.track_vram_delta(old_sz, sz as usize)?;
-                        self.buffer_bytes.insert(b, sz as usize);
-                    }
+                    let old_sz = self.buffer_bytes.get(&b).copied().unwrap_or(0);
+                    self.track_vram_delta(old_sz, sz as usize)?;
+                    self.buffer_bytes.insert(b, sz as usize);
                     self.gl.buffer_data_size(target, sz, u(3));
                 }
                 "bufferSubData" => self.gl.buffer_sub_data_u8_slice(u(1), int(2), bytes(u(3) as usize, u(4) as usize)?),
@@ -1321,27 +1555,46 @@ impl Context {
                         None => "null".into(),
                     };
                 }
-                "enableVertexAttribArray" => self.gl.enable_vertex_attrib_array(u(1)),
-                "disableVertexAttribArray" => self.gl.disable_vertex_attrib_array(u(1)),
+                "enableVertexAttribArray" => {
+                    let idx = u(1);
+                    if idx >= 64 {
+                        return Err("InvalidValueError: vertex attribute index out of range".into());
+                    }
+                    self.state.vao_enabled_attribs.entry(self.state.current_vao).or_default().insert(idx);
+                    self.gl.enable_vertex_attrib_array(idx);
+                }
+                "disableVertexAttribArray" => {
+                    let idx = u(1);
+                    if let Some(set) = self.state.vao_enabled_attribs.get_mut(&self.state.current_vao) {
+                        set.remove(&idx);
+                    }
+                    self.gl.disable_vertex_attrib_array(idx);
+                }
                 "vertexAttribPointer" => {
-                    if self.state.array_buffer.is_none() {
+                    let Some(buf) = self.state.array_buffer else {
                         return Err("InvalidOperationError: vertexAttribPointer requires a bound ARRAY_BUFFER".into());
+                    };
+                    let (idx, size, ty, stride, offset) = (u(1), int(2), u(3), int(5), int(6));
+                    if idx >= 64 || Self::attrib_element_bytes(size, ty).is_none() || stride < 0 || offset < 0 {
+                        return Err("InvalidValueError: invalid vertexAttribPointer arguments".into());
                     }
-                    let (stride, offset) = (int(5), int(6));
-                    if stride < 0 || offset < 0 {
-                        return Err("InvalidValueError: negative stride or offset".into());
-                    }
-                    self.gl.vertex_attrib_pointer_f32(u(1), int(2), u(3), flag(4), stride, offset);
+                    let attribs = self.state.vao_attribs.entry(self.state.current_vao).or_default();
+                    let divisor = attribs.get(&idx).map(|b| b.divisor).unwrap_or(0);
+                    attribs.insert(idx, VertexAttribBinding { buffer: Some(buf), size, ty, stride, offset, divisor });
+                    self.gl.vertex_attrib_pointer_f32(idx, size, ty, flag(4), stride, offset);
                 }
                 "vertexAttribIPointer" => {
-                    if self.state.array_buffer.is_none() {
+                    let Some(buf) = self.state.array_buffer else {
                         return Err("InvalidOperationError: vertexAttribIPointer requires a bound ARRAY_BUFFER".into());
+                    };
+                    let (idx, size, ty, stride, offset) = (u(1), int(2), u(3), int(4), int(5));
+                    if idx >= 64 || Self::attrib_element_bytes(size, ty).is_none() || stride < 0 || offset < 0 {
+                        return Err("InvalidValueError: invalid vertexAttribIPointer arguments".into());
                     }
-                    let (stride, offset) = (int(4), int(5));
-                    if stride < 0 || offset < 0 {
-                        return Err("InvalidValueError: negative stride or offset".into());
-                    }
-                    self.gl.vertex_attrib_pointer_i32(u(1), int(2), u(3), stride, offset);
+                    let attribs = self.state.vao_attribs.entry(self.state.current_vao).or_default();
+                    let divisor = attribs.get(&idx).map(|b| b.divisor).unwrap_or(0);
+                    attribs.insert(idx, VertexAttribBinding { buffer: Some(buf), size, ty, stride, offset, divisor });
+                    self.gl.vertex_attrib_pointer_i32(idx, size, ty, stride, offset);
                 }
                 "vertexAttrib" => self.gl.vertex_attrib_4_f32(u(1), f(2), f(3), f(4), f(5)),
                 "vertexAttribI" => {
@@ -1351,7 +1604,19 @@ impl Context {
                         self.gl.vertex_attrib_4_i32(u(1), int(2), int(3), int(4), int(5));
                     }
                 }
-                "vertexAttribDivisor" => self.gl.vertex_attrib_divisor(u(1), u(2)),
+                "vertexAttribDivisor" => {
+                    let (idx, divisor) = (u(1), u(2));
+                    if idx >= 64 {
+                        return Err("InvalidValueError: vertex attribute index out of range".into());
+                    }
+                    let attribs = self.state.vao_attribs.entry(self.state.current_vao).or_default();
+                    if let Some(binding) = attribs.get_mut(&idx) {
+                        binding.divisor = divisor;
+                    } else {
+                        attribs.insert(idx, VertexAttribBinding { buffer: None, size: 4, ty: glow::FLOAT, stride: 0, offset: 0, divisor });
+                    }
+                    self.gl.vertex_attrib_divisor(idx, divisor);
+                }
                 "uniform" => {
                     // The values are bytes beside the batch, of the kind's type.
                     let (program, name, kind, transpose) = (u(1), text_str(2), text_str(3), flag(6));
@@ -1444,12 +1709,26 @@ impl Context {
                     }
                     let t = self.gl.create_texture()?;
                     if let Some(old) = self.textures.insert(id, t) {
-                        self.gl.delete_texture(old);
+                        self.detach_and_delete_texture(old);
                     }
                 }
-                "deleteTexture" => { if let Some(t) = self.textures.remove(&u(1)) { self.gl.delete_texture(t); } }
-                "bindTexture" => self.gl.bind_texture(u(1), self.textures.get(&u(2)).copied()),
-                "activeTexture" => self.gl.active_texture(u(1)),
+                "deleteTexture" => { if let Some(t) = self.textures.remove(&u(1)) { self.detach_and_delete_texture(t); } }
+                "bindTexture" => {
+                    let target = u(1);
+                    let tex = self.textures.get(&u(2)).copied();
+                    let key = (self.state.active_texture_unit, Self::tex_bind_target(target));
+                    if let Some(t) = tex {
+                        self.state.bound_textures.insert(key, t);
+                    } else {
+                        self.state.bound_textures.remove(&key);
+                    }
+                    self.gl.bind_texture(target, tex);
+                }
+                "activeTexture" => {
+                    let unit = u(1);
+                    self.state.active_texture_unit = unit.saturating_sub(glow::TEXTURE0);
+                    self.gl.active_texture(unit);
+                }
                 "texParameteri" => self.gl.tex_parameter_i32(u(1), u(2), int(3)),
                 "texParameterf" => self.gl.tex_parameter_f32(u(1), u(2), f(3)),
                 "pixelStorei" => match u(1) {
@@ -1485,14 +1764,18 @@ impl Context {
                 },
                 "generateMipmap" => self.gl.generate_mipmap(u(1)),
                 "texStorage2D" => {
-                    let (levels, w, h) = (int(2), int(4), int(5));
+                    let (target, levels, w, h) = (u(1), int(2), int(4), int(5));
                     if !(1..=16).contains(&levels) || !(0..=MAX_WEBGL_DIM).contains(&w) || !(0..=MAX_WEBGL_DIM).contains(&h) {
                         return Err("InvalidValueError: texStorage2D dimensions out of range".into());
                     }
-                    self.gl.tex_storage_2d(u(1), levels, u(3), w, h);
+                    let faces: usize = if Self::tex_bind_target(target) == glow::TEXTURE_CUBE_MAP { 6 } else { 1 };
+                    let base_est = (w as usize).saturating_mul(h as usize).saturating_mul(4).saturating_mul(faces);
+                    let est = if levels > 1 { base_est.saturating_add(base_est / 3) } else { base_est };
+                    self.track_texture_vram(target, 0, est, true)?;
+                    self.gl.tex_storage_2d(target, levels, u(3), w, h);
                 }
                 "texStorage3D" => {
-                    let (levels, w, h, d) = (int(2), int(4), int(5), int(6));
+                    let (target, levels, w, h, d) = (u(1), int(2), int(4), int(5), int(6));
                     if !(1..=16).contains(&levels)
                         || !(0..=MAX_WEBGL_DIM).contains(&w)
                         || !(0..=MAX_WEBGL_DIM).contains(&h)
@@ -1501,8 +1784,8 @@ impl Context {
                         return Err("InvalidValueError: texStorage3D dimensions out of range".into());
                     }
                     let est = Self::check_3d_texels(w, h, d)?;
-                    self.track_vram_delta(0, est)?;
-                    self.gl.tex_storage_3d(u(1), levels, u(3), w, h, d);
+                    self.track_texture_vram(target, 0, est, true)?;
+                    self.gl.tex_storage_3d(target, levels, u(3), w, h, d);
                 }
                 "texImage2D" => {
                     let (target, level, internal, w, h, format, ty) = (u(1), int(2), int(3), int(4), int(5), u(6), u(7));
@@ -1519,6 +1802,8 @@ impl Context {
                         self.check_upload(page.len(), w, h, 1, format, ty)?;
                         Some(self.unpack_bytes(page, w, h, format, ty)?)
                     };
+                    let est = (w as usize).saturating_mul(h as usize).saturating_mul(4);
+                    self.track_texture_vram(target, level, est, false)?;
                     if self.supports_pbo && self.state.unpack_buffer.is_some() {
                         self.gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, None);
                     }
@@ -1534,16 +1819,20 @@ impl Context {
                     if !self.supports_pbo || self.state.unpack_buffer.is_none() {
                         return Err("InvalidOperationError: texImage2DPbo requires a bound PIXEL_UNPACK_BUFFER".into());
                     }
-                    let (level, w, h) = (int(2), int(4), int(5));
+                    let (target, level, w, h, format, ty, offset) = (u(1), int(2), int(4), int(5), u(6), u(7), u(8));
                     if !(0..=16).contains(&level) || !(0..=MAX_WEBGL_DIM).contains(&w) || !(0..=MAX_WEBGL_DIM).contains(&h) {
                         return Err("InvalidValueError: texImage2DPbo dimensions out of range".into());
                     }
-                    let pixels = glow::PixelUnpackData::BufferOffset(u(8));
-                    self.gl.tex_image_2d(u(1), level, int(3), w, h, 0, u(6), u(7), pixels);
+                    self.check_pbo_bounds(false, offset, w, h, 1, format, ty)?;
+                    let est = (w as usize).saturating_mul(h as usize).saturating_mul(4);
+                    self.track_texture_vram(target, level, est, false)?;
+                    let pixels = glow::PixelUnpackData::BufferOffset(offset);
+                    self.gl.tex_image_2d(target, level, int(3), w, h, 0, format, ty, pixels);
                 }
                 "texImage2DUrl" => {
                     let (target, level, internal, url) = (u(1), int(2), int(3), text(6));
                     let (w, h, rgba) = self.decode_image(&url)?;
+                    self.track_texture_vram(target, level, rgba.len(), false)?;
                     self.with_tight_unpack(|gl| {
                         let pixels = glow::PixelUnpackData::Slice(Some(&rgba));
                         gl.tex_image_2d(target, level, internal, w, h, 0, glow::RGBA, glow::UNSIGNED_BYTE, pixels);
@@ -1569,8 +1858,13 @@ impl Context {
                     if !self.supports_pbo || self.state.unpack_buffer.is_none() {
                         return Err("InvalidOperationError: texSubImage2DPbo requires a bound PIXEL_UNPACK_BUFFER".into());
                     }
-                    let pixels = glow::PixelUnpackData::BufferOffset(u(9));
-                    self.gl.tex_sub_image_2d(u(1), int(2), int(3), int(4), int(5), int(6), u(7), u(8), pixels);
+                    let (target, level, x, y, w, h, format, ty, offset) = (u(1), int(2), int(3), int(4), int(5), int(6), u(7), u(8), u(9));
+                    if !(0..=16).contains(&level) || !(0..=MAX_WEBGL_DIM).contains(&w) || !(0..=MAX_WEBGL_DIM).contains(&h) {
+                        return Err("InvalidValueError: texSubImage2DPbo dimensions out of range".into());
+                    }
+                    self.check_pbo_bounds(false, offset, w, h, 1, format, ty)?;
+                    let pixels = glow::PixelUnpackData::BufferOffset(offset);
+                    self.gl.tex_sub_image_2d(target, level, x, y, w, h, format, ty, pixels);
                 }
                 "texSubImage2DUrl" => {
                     let (target, level, x, y, url) = (u(1), int(2), int(3), int(4), text(7));
@@ -1595,7 +1889,7 @@ impl Context {
                     if let Some(data) = data {
                         self.check_upload(data.len(), w, h, d, format, ty)?;
                     }
-                    self.track_vram_delta(0, est)?;
+                    self.track_texture_vram(target, level, est, false)?;
                     if self.supports_pbo && self.state.unpack_buffer.is_some() {
                         self.gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, None);
                     }
@@ -1608,7 +1902,7 @@ impl Context {
                     if !self.supports_pbo || self.state.unpack_buffer.is_none() {
                         return Err("InvalidOperationError: texImage3DPbo requires a bound PIXEL_UNPACK_BUFFER".into());
                     }
-                    let (level, w, h, d) = (int(2), int(4), int(5), int(6));
+                    let (target, level, w, h, d, format, ty, offset) = (u(1), int(2), int(4), int(5), int(6), u(7), u(8), u(9));
                     if !(0..=16).contains(&level)
                         || !(0..=MAX_WEBGL_DIM).contains(&w)
                         || !(0..=MAX_WEBGL_DIM).contains(&h)
@@ -1617,9 +1911,10 @@ impl Context {
                         return Err("InvalidValueError: texImage3DPbo dimensions out of range".into());
                     }
                     let est = Self::check_3d_texels(w, h, d)?;
-                    self.track_vram_delta(0, est)?;
-                    let pixels = glow::PixelUnpackData::BufferOffset(u(9));
-                    self.gl.tex_image_3d(u(1), level, int(3), w, h, d, 0, u(7), u(8), pixels);
+                    self.check_pbo_bounds(false, offset, w, h, d, format, ty)?;
+                    self.track_texture_vram(target, level, est, false)?;
+                    let pixels = glow::PixelUnpackData::BufferOffset(offset);
+                    self.gl.tex_image_3d(target, level, int(3), w, h, d, 0, format, ty, pixels);
                 }
                 "texSubImage3D" => {
                     let (w, h, d) = (int(6), int(7), int(8));
@@ -1642,13 +1937,19 @@ impl Context {
                     if !self.supports_pbo || self.state.unpack_buffer.is_none() {
                         return Err("InvalidOperationError: texSubImage3DPbo requires a bound PIXEL_UNPACK_BUFFER".into());
                     }
-                    let (w, h, d) = (int(6), int(7), int(8));
-                    if !(0..=MAX_WEBGL_DIM).contains(&w) || !(0..=MAX_WEBGL_DIM).contains(&h) || !(0..=2048).contains(&d) {
+                    let (target, level, x, y, z, w, h, d, format, ty, offset) =
+                        (u(1), int(2), int(3), int(4), int(5), int(6), int(7), int(8), u(9), u(10), u(11));
+                    if !(0..=16).contains(&level)
+                        || !(0..=MAX_WEBGL_DIM).contains(&w)
+                        || !(0..=MAX_WEBGL_DIM).contains(&h)
+                        || !(0..=2048).contains(&d)
+                    {
                         return Err("InvalidValueError: texSubImage3DPbo dimensions out of range".into());
                     }
                     let _ = Self::check_3d_texels(w, h, d)?;
-                    let pixels = glow::PixelUnpackData::BufferOffset(u(11));
-                    self.gl.tex_sub_image_3d(u(1), int(2), int(3), int(4), int(5), w, h, d, u(9), u(10), pixels);
+                    self.check_pbo_bounds(false, offset, w, h, d, format, ty)?;
+                    let pixels = glow::PixelUnpackData::BufferOffset(offset);
+                    self.gl.tex_sub_image_3d(target, level, x, y, z, w, h, d, format, ty, pixels);
                 }
                 "copyTexImage2D" => {
                     let resolved = self.begin_resolved_read();
@@ -1790,6 +2091,8 @@ impl Context {
                     let v = self.gl.create_vertex_array()?;
                     if let Some(old) = self.vaos.insert(id, v) {
                         self.state.vao_element_buffers.remove(&id);
+                        self.state.vao_enabled_attribs.remove(&id);
+                        self.state.vao_attribs.remove(&id);
                         if self.state.current_vao == id {
                             self.state.current_vao = 0;
                             self.gl.bind_vertex_array(None);
@@ -1800,6 +2103,8 @@ impl Context {
                 "deleteVertexArray" => {
                     let id = u(1);
                     self.state.vao_element_buffers.remove(&id);
+                    self.state.vao_enabled_attribs.remove(&id);
+                    self.state.vao_attribs.remove(&id);
                     if self.state.current_vao == id {
                         self.state.current_vao = 0;
                     }
@@ -1965,17 +2270,16 @@ impl Context {
                     if first < 0 || count < 0 || count > MAX_DRAW_VERTICES {
                         return Err("InvalidValueError: drawArrays first or count out of range".into());
                     }
+                    self.validate_draw_attribs(first, count, None, None)?;
                     self.gl.draw_arrays(u(1), first, count);
                 }
                 "drawElements" => {
-                    if self.state.current_element_buffer().is_none() {
-                        return Err("InvalidOperationError: drawElements requires a bound ELEMENT_ARRAY_BUFFER".into());
-                    }
-                    let (count, offset) = (int(2), int(4));
+                    let (count, index_type, offset) = (int(2), u(3), int(4));
                     if count < 0 || offset < 0 || count > MAX_DRAW_VERTICES {
                         return Err("InvalidValueError: drawElements count or offset out of range".into());
                     }
-                    self.gl.draw_elements(u(1), count, u(3), offset);
+                    self.validate_draw_attribs(0, count, None, Some((index_type, offset)))?;
+                    self.gl.draw_elements(u(1), count, index_type, offset);
                 }
                 "drawArraysInstanced" => {
                     let (first, count, instances) = (int(2), int(3), int(4));
@@ -1988,13 +2292,11 @@ impl Context {
                     {
                         return Err("InvalidValueError: drawArraysInstanced argument out of range".into());
                     }
+                    self.validate_draw_attribs(first, count, Some(instances), None)?;
                     self.gl.draw_arrays_instanced(u(1), first, count, instances);
                 }
                 "drawElementsInstanced" => {
-                    if self.state.current_element_buffer().is_none() {
-                        return Err("InvalidOperationError: drawElementsInstanced requires a bound ELEMENT_ARRAY_BUFFER".into());
-                    }
-                    let (count, offset, instances) = (int(2), int(4), int(5));
+                    let (count, index_type, offset, instances) = (int(2), u(3), int(4), int(5));
                     if count < 0
                         || offset < 0
                         || instances < 0
@@ -2004,7 +2306,8 @@ impl Context {
                     {
                         return Err("InvalidValueError: drawElementsInstanced argument out of range".into());
                     }
-                    self.gl.draw_elements_instanced(u(1), count, u(3), offset, instances);
+                    self.validate_draw_attribs(0, count, Some(instances), Some((index_type, offset)))?;
+                    self.gl.draw_elements_instanced(u(1), count, index_type, offset, instances);
                 }
                 "readPixels" => {
                     let (x, y, w, h, format, ty) = (int(1), int(2), int(3), int(4), u(5), u(6));
@@ -2014,7 +2317,16 @@ impl Context {
                             self.end_resolved_read(resolved);
                             return Err("InvalidOperationError: readPixels PBO requires a bound PIXEL_PACK_BUFFER".into());
                         }
-                        let pixels = glow::PixelPackData::BufferOffset(u(7));
+                        if !(0..=MAX_WEBGL_DIM).contains(&w) || !(0..=MAX_WEBGL_DIM).contains(&h) {
+                            self.end_resolved_read(resolved);
+                            return Err("InvalidValueError: readPixels PBO dimensions out of range".into());
+                        }
+                        let offset = u(7);
+                        if let Err(err) = self.check_pbo_bounds(true, offset, w, h, 1, format, ty) {
+                            self.end_resolved_read(resolved);
+                            return Err(err);
+                        }
+                        let pixels = glow::PixelPackData::BufferOffset(offset);
                         self.gl.read_pixels(x, y, w, h, format, ty, pixels);
                     } else {
                         let len = self
@@ -2056,11 +2368,15 @@ impl Context {
                     let mut rgba = vec![0u8; rgba_len];
                     let gl = &self.gl;
                     gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(source));
-                    gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
+                    if self.supports_pbo {
+                        gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
+                    }
                     gl.pixel_store_i32(glow::PACK_ALIGNMENT, 1);
-                    gl.pixel_store_i32(glow::PACK_ROW_LENGTH, 0);
-                    gl.pixel_store_i32(glow::PACK_SKIP_ROWS, 0);
-                    gl.pixel_store_i32(glow::PACK_SKIP_PIXELS, 0);
+                    if self.supports_pbo {
+                        gl.pixel_store_i32(glow::PACK_ROW_LENGTH, 0);
+                        gl.pixel_store_i32(glow::PACK_SKIP_ROWS, 0);
+                        gl.pixel_store_i32(glow::PACK_SKIP_PIXELS, 0);
+                    }
                     gl.read_pixels(0, 0, self.width, self.height, glow::RGBA, glow::UNSIGNED_BYTE, glow::PixelPackData::Slice(Some(&mut rgba)));
                     self.restore_state();
                     flip_rows(&mut rgba, self.width as usize * 4, self.height as usize);

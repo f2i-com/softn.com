@@ -926,6 +926,9 @@ function composePages(
         console.warn('[SoftN] Skipping circular UI import:', resolvedPath);
         continue;
       }
+      if (stack.size >= 32) {
+        throw new Error(`UI import nesting depth exceeded maximum (32) at ${resolvedPath}`);
+      }
 
       stack.add(resolvedPath);
       const inlined = inlineImports(componentContent, resolvedPath, stack, cache, false);

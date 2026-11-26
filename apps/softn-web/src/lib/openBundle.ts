@@ -487,7 +487,7 @@ export async function openBundle(host: OpenBundleHost, request: OpenBundleReques
     const cachedRecord = await cacheApp(data, {
       name: manifest.name, version: manifest.version, description: manifest.description,
       format: containerCheck.isWebContainer ? 'web' : 'classic',
-    }, icon, directorySlug, requested, request.fromLink);
+    }, icon, directorySlug, requested, request.fromLink, request.backendUrl);
 
     if (cachedAppId) {
       await updateLastOpened(cachedAppId);

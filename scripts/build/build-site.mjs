@@ -177,50 +177,6 @@ ErrorDocument 404 /index.html
   AddOutputFilterByType DEFLATE application/manifest+json application/wasm image/svg+xml
 </IfModule>
 
-# Prefer the .br/.gz twins the build wrote. Brotli at the quality used here is
-# far too slow to run per request, so the win only exists if the file is already
-# on disk: the engine alone is 7.3MB raw, 2.4MB gzipped and 1.8MB brotlied.
-# mod_deflate above still covers anything without a twin.
-#
-# AddEncoding, not a Header in a FilesMatch. The first version of this set
-# Content-Encoding from <FilesMatch "\.br$"> after the rewrite had already
-# chosen the file, and those sections are merged from the ORIGINAL request, so
-# on a real host the swap happened and the header did not: browsers were handed
-# brotli bytes labelled as JavaScript and reported "Invalid or unexpected
-# token". AddEncoding is the mechanism Apache provides for exactly this — it
-# reads the trailing .br/.gz as an encoding and takes the content type from the
-# extension underneath, so app.js.br serves as application/javascript with
-# Content-Encoding: br, and no per-type rules are needed at all.
-#
-# RemoveType as well, or the extension underneath does not decide the type: the
-# last extension that has one does. .br has none, but nearly every host gives
-# .gz one (application/gzip in Debian's, Ubuntu's and Red Hat's mime.types,
-# application/x-gzip in Apache's own httpd.conf), so app.js.gz went out as
-# application/gzip. A browser refuses that as a script or a wasm module, and
-# saves the page itself as a file; a browser asks for brotli only over HTTPS,
-# so the whole site failed to load for everyone visiting over plain HTTP.
-#
-# Both modules are required. Without mod_mime nothing labels the encoding, and
-# serving a compressed body unlabelled is worse than not compressing, so the
-# rewrite is nested inside it rather than left to run alone.
-<IfModule mod_mime.c>
-  RemoveType .br .gz
-  AddEncoding br .br
-  AddEncoding gzip .gz
-
-<IfModule mod_rewrite.c>
-  RewriteEngine On
-
-  RewriteCond %{HTTP:Accept-Encoding} br
-  RewriteCond %{REQUEST_FILENAME}\.br -f
-  RewriteRule ^(.*)$ $1.br [QSA,L]
-
-  RewriteCond %{HTTP:Accept-Encoding} gzip
-  RewriteCond %{REQUEST_FILENAME}\.gz -f
-  RewriteRule ^(.*)$ $1.gz [QSA,L]
-</IfModule>
-</IfModule>
-
 <IfModule mod_headers.c>
   # Caches must not hand a brotli body to a client that did not ask for one.
   # The same optional twin suffix as the cache rules above, for the same reason.
@@ -248,7 +204,7 @@ ErrorDocument 404 /index.html
   # file. Only a real one: /web/app/~Notes.zip is an app's address.
   RewriteRule (?:^|/)\.(?!well-known(?:/|$)) - [R=404,L]
   RewriteCond %{REQUEST_FILENAME} -f
-  RewriteRule (?:(?:^|/)config\.json|\.(?:bak|old|orig|save|sql(?:\.gz)?|sqlite3?(?:-wal|-shm)?|db|tar|tar\.gz|tgz|zip))$ - [R=404,L,NC]
+  RewriteRule (?:(?:^|/)config\.json|\.(?:bak|old|orig|save|sql|sqlite3?(?:-wal|-shm)?|db|tar|tar\.gz|tgz|zip))(?:\.(?:br|gz))?$ - [R=404,L,NC]
 
   # Directory, publish and app pages come through the API so <meta> tags,
   # JSON-LD and pre-rendered semantic HTML reach browsers, unfurlers and crawlers
@@ -267,6 +223,7 @@ ErrorDocument 404 /index.html
   # at; the directory of apps is.
   RewriteRule ^play/?$ /apps [R=302,L]
   RewriteRule ^play/index\.html$ /apps [R=301,L]
+  RewriteRule ^play/index\.html\.(?:br|gz)$ /apps [R=301,L]
   RewriteCond %{REQUEST_FILENAME} !-f
   RewriteRule ^play/(?!assets(?:/|$))[^/]+(?:/.*)?$ api/index.php [L]
 
@@ -276,6 +233,38 @@ ErrorDocument 404 /index.html
   # /softn-files/ is a page of links to the bundles under /demos/; a bundle
   # linked at its old address there is found where it is.
   RewriteRule ^softn-files/([^/]+\.softn)$ /demos/$1 [R=301,L]
+</IfModule>
+
+# Prefer the .br/.gz twins the build wrote, AFTER all security refusals, API
+# rewrites, and redirects above so a precompressed twin can never bypass them.
+# Brotli at the quality used here is far too slow to run per request, so the win
+# only exists if the file is already on disk: the engine alone is 7.3MB raw,
+# 2.4MB gzipped and 1.8MB brotlied. mod_deflate above still covers anything
+# without a twin.
+#
+# AddEncoding (with RemoveType .br .gz) labels the encoding and takes the
+# content type from the extension underneath. Both modules are required: without
+# mod_mime nothing labels the encoding, so the twin rewrite is nested inside it.
+<IfModule mod_mime.c>
+  RemoveType .br .gz
+  AddEncoding br .br
+  AddEncoding gzip .gz
+
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+
+  RewriteCond %{HTTP:Accept-Encoding} br
+  RewriteCond %{REQUEST_FILENAME}\.br -f
+  RewriteRule ^(.*)$ $1.br [QSA,L]
+
+  RewriteCond %{HTTP:Accept-Encoding} gzip
+  RewriteCond %{REQUEST_FILENAME}\.gz -f
+  RewriteRule ^(.*)$ $1.gz [QSA,L]
+</IfModule>
+</IfModule>
+
+<IfModule mod_rewrite.c>
+  RewriteEngine On
 
   # Real files and directories always win.
   RewriteCond %{REQUEST_FILENAME} -f [OR]
@@ -401,7 +390,7 @@ server {
 
     # What a copy of data/ or a backup leaves in this folder, config.json with
     # the admin key above all. The site ships no such file.
-    location ~* (?:/config\.json|\.(?:bak|old|orig|save|sql(?:\.gz)?|sqlite3?(?:-wal|-shm)?|db|tar|tar\.gz|tgz|zip))$ { return 404; }
+    location ~* (?:/config\.json|\.(?:bak|old|orig|save|sql|sqlite3?(?:-wal|-shm)?|db|tar|tar\.gz|tgz|zip))(?:\.(?:br|gz))?$ { return 404; }
 
     # An app's page goes through the API so its <meta> tags, JSON-LD and
     # pre-rendered HTML are its own.
@@ -427,6 +416,7 @@ server {
     location = /play { return 302 /apps; }
     location = /play/ { return 302 /apps; }
     location = /play/index.html { return 301 /apps; }
+    location ~ ^/play/index\.html\.(?:br|gz)$ { return 301 /apps; }
     location = /docs { return 301 /docs/; }
     location ~ ^/play/(?!assets(?:/|$))[^/]+(?:/.*)?$ {
         try_files $uri @softn_play;

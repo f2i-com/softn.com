@@ -33,6 +33,8 @@ export class ReactiveEffect {
   private _fn: () => void;
   private _deps: Set<Set<ReactiveEffect>> = new Set();
   private _active = true;
+  /** Optional synchronous invalidation hook (used by `createComputed` for glitch-free batch/diamond updates). */
+  _onInvalidate?: () => void;
 
   constructor(fn: () => void) {
     this._fn = fn;
@@ -42,7 +44,7 @@ export class ReactiveEffect {
    * Run the effect and track dependencies
    */
   run(): void {
-    if (!this._active) return;
+    if (!this._active || effectStack.includes(this)) return;
 
     // Clean up old dependencies
     this.cleanup();
@@ -107,9 +109,13 @@ export function createSignal<T>(initialValue: T): [Getter<T>, Setter<T>] {
   const setter: Setter<T> = (newValue: T) => {
     if (!Object.is(value, newValue)) {
       value = newValue;
-      // Notify subscribers
+      // Notify subscribers (respecting batch(); mark computed dirty synchronously first)
       for (const effect of [...subscribers]) {
-        effect.run();
+        if (effect._onInvalidate) {
+          effect._onInvalidate();
+        } else {
+          scheduleEffect(effect);
+        }
       }
     }
   };
@@ -125,14 +131,22 @@ export function createComputed<T>(fn: () => T): Getter<T> {
   let dirty = true;
   const subscribers = new Set<ReactiveEffect>();
 
-  const effect = new ReactiveEffect(() => {
-    value = fn();
-    dirty = false;
-    // Notify subscribers of this computed
+  const invalidate = (): void => {
+    if (dirty) return;
+    dirty = true;
     for (const subscriber of [...subscribers]) {
-      subscriber.run();
+      if (subscriber._onInvalidate) {
+        subscriber._onInvalidate();
+      } else if (!effectStack.includes(subscriber)) {
+        scheduleEffect(subscriber);
+      }
     }
+  };
+
+  const effect = new ReactiveEffect(() => {
+    invalidate();
   });
+  effect._onInvalidate = invalidate;
 
   return () => {
     // Track dependency on this computed
@@ -141,7 +155,16 @@ export function createComputed<T>(fn: () => T): Getter<T> {
     }
 
     if (dirty) {
-      effect.run();
+      effect.cleanup();
+      effectStack.push(effect);
+      setActiveEffect(effect);
+      try {
+        value = fn();
+        dirty = false;
+      } finally {
+        effectStack.pop();
+        setActiveEffect(effectStack[effectStack.length - 1] ?? null);
+      }
     }
 
     return value;
@@ -164,18 +187,41 @@ export function createEffect(fn: () => void): () => void {
 let batchDepth = 0;
 const pendingEffects = new Set<ReactiveEffect>();
 
+function scheduleEffect(effect: ReactiveEffect): void {
+  if (batchDepth > 0) {
+    pendingEffects.add(effect);
+  } else {
+    effect.run();
+  }
+}
+
+const MAX_BATCH_FLUSH_ITERATIONS = 1000;
+
 export function batch(fn: () => void): void {
   batchDepth++;
+  let overflowed = false;
   try {
     fn();
   } finally {
     batchDepth--;
     if (batchDepth === 0) {
-      for (const effect of [...pendingEffects]) {
-        pendingEffects.delete(effect);
-        effect.run();
+      let iterations = 0;
+      while (pendingEffects.size > 0) {
+        if (++iterations > MAX_BATCH_FLUSH_ITERATIONS) {
+          pendingEffects.clear();
+          overflowed = true;
+          break;
+        }
+        const queued = [...pendingEffects];
+        pendingEffects.clear();
+        for (const effect of queued) {
+          effect.run();
+        }
       }
     }
+  }
+  if (overflowed) {
+    throw new Error('Maximum reactive batch update depth exceeded (cyclic signal updates)');
   }
 }
 

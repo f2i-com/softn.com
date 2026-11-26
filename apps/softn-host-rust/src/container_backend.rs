@@ -549,6 +549,7 @@ struct ParsedHtaccess {
     rewrite_engine: bool,
     rewrite_base: Option<String>,
     directory_index: Vec<String>,
+    deny_all: bool,
     deny_files: Vec<Regex>,
     redirect_matches: Vec<RedirectMatchRule>,
     rules: Vec<HtaccessRule>,
@@ -613,6 +614,31 @@ fn compile_apache_regex(pattern: &str, nocase: bool) -> Option<Regex> {
         .ok()
 }
 
+fn compile_apache_glob(glob: &str) -> Option<Regex> {
+    if glob.len() > 256 {
+        return None;
+    }
+    let mut pat = String::with_capacity(glob.len() * 2 + 8);
+    pat.push_str("(?i)^");
+    for ch in glob.chars() {
+        match ch {
+            '*' => pat.push_str(".*"),
+            '?' => pat.push('.'),
+            '.' | '+' | '^' | '$' | '{' | '}' | '(' | ')' | '|' | '[' | ']' | '\\' => {
+                pat.push('\\');
+                pat.push(ch);
+            }
+            _ => pat.push(ch),
+        }
+    }
+    pat.push('$');
+    RegexBuilder::new(&pat)
+        .size_limit(256 * 1024)
+        .dfa_size_limit(256 * 1024)
+        .build()
+        .ok()
+}
+
 fn parse_htaccess(source: &str, dir_prefix: &str) -> ParsedHtaccess {
     let mut out = ParsedHtaccess {
         dir_prefix: normalize_vfs_key(dir_prefix),
@@ -628,8 +654,8 @@ fn parse_htaccess(source: &str, dir_prefix: &str) -> ParsedHtaccess {
         source
     };
     let mut pending_conds: Vec<HtaccessCond> = Vec::new();
-    let mut in_files_match: Option<Regex> = None;
-    let mut files_match_denied = false;
+    let mut in_files_block: Option<Regex> = None;
+    let mut files_block_denied = false;
 
     for raw_line in bounded_src.lines() {
         let trimmed = raw_line.trim();
@@ -641,29 +667,42 @@ fn parse_htaccess(source: &str, dir_prefix: &str) -> ParsedHtaccess {
             let inner = trimmed[11..trimmed.len() - 1]
                 .trim()
                 .trim_matches(|c| c == '"' || c == '\'');
-            in_files_match = compile_apache_regex(inner, true);
-            files_match_denied = false;
+            in_files_block = compile_apache_regex(inner, true);
+            files_block_denied = false;
             continue;
         }
-        if lower == "</filesmatch>" {
-            if let Some(rx) = in_files_match.take() {
-                if files_match_denied && out.deny_files.len() < MAX_HTACCESS_DENY {
+        if lower.starts_with("<files")
+            && trimmed.ends_with('>')
+            && trimmed.as_bytes().get(6).is_some_and(|b| b.is_ascii_whitespace())
+        {
+            let inner = trimmed[6..trimmed.len() - 1]
+                .trim()
+                .trim_matches(|c| c == '"' || c == '\'');
+            in_files_block = compile_apache_glob(inner);
+            files_block_denied = false;
+            continue;
+        }
+        if lower == "</filesmatch>" || lower == "</files>" {
+            if let Some(rx) = in_files_block.take() {
+                if files_block_denied && out.deny_files.len() < MAX_HTACCESS_DENY {
                     out.deny_files.push(rx);
                 }
             }
-            files_match_denied = false;
+            files_block_denied = false;
             continue;
         }
-        if in_files_match.is_some() {
+        if in_files_block.is_some() {
             if lower.starts_with("deny from all") || lower.starts_with("require all denied") {
-                files_match_denied = true;
+                files_block_denied = true;
             }
+            continue;
+        }
+        if lower.starts_with("deny from all") || lower.starts_with("require all denied") {
+            out.deny_all = true;
             continue;
         }
         if lower.starts_with("<ifmodule")
             || lower.starts_with("</ifmodule")
-            || lower.starts_with("<files")
-            || lower.starts_with("</files")
             || lower.starts_with("<directory")
             || lower.starts_with("</directory")
         {
@@ -931,6 +970,9 @@ fn evaluate_htaccess_chain(
             let Some(ht) = htaccess_map.get(prefix) else {
                 continue;
             };
+            if ht.deny_all {
+                return Some(HtaccessEval::Deny(403));
+            }
             if !ht.deny_files.is_empty() {
                 if let Some(&last_seg) = segs.last() {
                     if ht.deny_files.iter().any(|rx| rx.is_match(last_seg)) {
@@ -1402,35 +1444,47 @@ impl SqlStorageConfig {
                 }
                 AuthAction::Pragma { pragma_name, pragma_value } => {
                     let lower = pragma_name.to_ascii_lowercase();
-                    let allowed_read = matches!(
+                    let is_introspection = matches!(
                         lower.as_str(),
                         "table_info"
                             | "table_xinfo"
                             | "index_list"
                             | "index_info"
                             | "foreign_key_list"
-                            | "foreign_keys"
-                            | "user_version"
-                            | "application_id"
-                            | "schema_version"
-                            | "busy_timeout"
-                            | "encoding"
-                            | "integrity_check"
-                            | "quick_check"
-                            | "page_count"
-                            | "page_size"
-                            | "freelist_count"
                     );
+                    let is_writable = matches!(
+                        lower.as_str(),
+                        "foreign_keys" | "user_version" | "application_id"
+                    );
+                    let allowed_read = is_introspection
+                        || is_writable
+                        || matches!(
+                            lower.as_str(),
+                            "schema_version"
+                                | "busy_timeout"
+                                | "encoding"
+                                | "integrity_check"
+                                | "quick_check"
+                                | "page_count"
+                                | "page_size"
+                                | "freelist_count"
+                        );
                     if !allowed_read {
                         return Authorization::Deny;
                     }
-                    if pragma_value.is_some()
-                        && !matches!(
-                            lower.as_str(),
-                            "foreign_keys" | "user_version" | "application_id"
-                        )
-                    {
-                        return Authorization::Deny;
+                    if let Some(val) = pragma_value {
+                        if is_introspection {
+                            // SQLite passes the target table/index name as pragma_value for
+                            // read-only schema introspection pragmas; block reserved tables.
+                            let val_lower = val.to_ascii_lowercase();
+                            if val.starts_with('_') || val_lower.starts_with("sqlite_") {
+                                return Authorization::Deny;
+                            }
+                            return Authorization::Allow;
+                        }
+                        if !is_writable {
+                            return Authorization::Deny;
+                        }
                     }
                     Authorization::Allow
                 }
@@ -1481,13 +1535,9 @@ impl SqlStorageConfig {
                     .map(|b| String::from_utf8_lossy(b).into_owned())
                     .unwrap_or_else(|| seed_sql.clone());
                 if !sql_text.trim().is_empty() {
-                    let sql_lower = sql_text.to_ascii_lowercase();
-                    let has_rename = sql_lower.contains("rename");
-                    let has_explicit_tx = sql_lower.contains("begin")
-                        || sql_lower.contains("commit")
-                        || sql_lower.contains("rollback")
-                        || sql_lower.contains("savepoint")
-                        || sql_lower.contains("end");
+                    let analysis = analyze_sql_keywords(&sql_text);
+                    let has_rename = analysis.has_rename;
+                    let has_explicit_tx = analysis.has_tx_control;
                     if has_rename && has_explicit_tx {
                         drop(conn);
                         if !db_existed_before {
@@ -1684,6 +1734,164 @@ fn reserved_sqlite_objects(conn: &Connection) -> HashSet<String> {
         }
     }
     set
+}
+
+struct SqlKeywordAnalysis {
+    may_mutate_schema: bool,
+    has_rename: bool,
+    has_tx_control: bool,
+}
+
+/// Tokenize SQL outside comments and quoted literals/identifiers so keyword
+/// checks never false-positive on column/table names (e.g. `end_time`, `pending`),
+/// string literals, `CASE ... END`, or `CREATE TRIGGER ... BEGIN ... END`.
+fn analyze_sql_keywords(sql: &str) -> SqlKeywordAnalysis {
+    let bytes = sql.as_bytes();
+    let mut i = 0usize;
+    let mut may_mutate_schema = false;
+    let mut has_rename = false;
+    let mut has_tx_control = false;
+    let mut at_stmt_start = true;
+    let mut stmt_is_create = false;
+    let mut in_trigger_header = false;
+    let mut trigger_depth = 0usize;
+    let mut case_depth = 0usize;
+
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'\'' {
+            at_stmt_start = false;
+            i += 1;
+            while i < bytes.len() {
+                if bytes[i] == b'\'' {
+                    if i + 1 < bytes.len() && bytes[i + 1] == b'\'' {
+                        i += 2;
+                        continue;
+                    }
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+        if b == b'"' || b == b'`' {
+            let q = b;
+            at_stmt_start = false;
+            i += 1;
+            while i < bytes.len() {
+                if bytes[i] == q {
+                    if i + 1 < bytes.len() && bytes[i + 1] == q {
+                        i += 2;
+                        continue;
+                    }
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+        if b == b'[' {
+            at_stmt_start = false;
+            i += 1;
+            while i < bytes.len() && bytes[i] != b']' {
+                i += 1;
+            }
+            if i < bytes.len() {
+                i += 1;
+            }
+            continue;
+        }
+        if b == b'-' && i + 1 < bytes.len() && bytes[i + 1] == b'-' {
+            i += 2;
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if b == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
+            i += 2;
+            while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                i += 1;
+            }
+            i = (i + 2).min(bytes.len());
+            continue;
+        }
+        if b == b';' {
+            at_stmt_start = true;
+            stmt_is_create = false;
+            if trigger_depth == 0 {
+                in_trigger_header = false;
+            }
+            i += 1;
+            continue;
+        }
+        if b.is_ascii_alphabetic() || b == b'_' {
+            let start = i;
+            i += 1;
+            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                i += 1;
+            }
+            let kw = std::str::from_utf8(&bytes[start..i]).unwrap_or("").to_ascii_lowercase();
+            let keep_create_flag = matches!(kw.as_str(), "create" | "temp" | "temporary");
+            match kw.as_str() {
+                "alter" => may_mutate_schema = true,
+                "create" => {
+                    may_mutate_schema = true;
+                    if at_stmt_start {
+                        stmt_is_create = true;
+                    }
+                }
+                "trigger" if stmt_is_create => {
+                    in_trigger_header = true;
+                }
+                "rename" => {
+                    may_mutate_schema = true;
+                    has_rename = true;
+                }
+                "savepoint" | "release" | "commit" | "rollback" => {
+                    has_tx_control = true;
+                }
+                "case" => {
+                    case_depth += 1;
+                }
+                "begin" => {
+                    if in_trigger_header {
+                        in_trigger_header = false;
+                        trigger_depth += 1;
+                    } else if at_stmt_start && trigger_depth == 0 {
+                        has_tx_control = true;
+                    }
+                }
+                "end" => {
+                    if case_depth > 0 {
+                        case_depth -= 1;
+                    } else if trigger_depth > 0 {
+                        trigger_depth -= 1;
+                    } else if at_stmt_start {
+                        has_tx_control = true;
+                    }
+                }
+                _ => {}
+            }
+            if !keep_create_flag {
+                stmt_is_create = false;
+            }
+            at_stmt_start = false;
+            continue;
+        }
+        if !b.is_ascii_whitespace() {
+            at_stmt_start = false;
+        }
+        i += 1;
+    }
+
+    SqlKeywordAnalysis {
+        may_mutate_schema,
+        has_rename,
+        has_tx_control,
+    }
 }
 
 fn has_multiple_statements(sql: &str) -> bool {
@@ -2023,12 +2231,15 @@ impl RequestSqlBridge {
                         if !dst.exists() && self.count_db_files() >= MAX_CONTAINER_DATABASES {
                             return json!({ "error": format!("database file limit exceeded (max {MAX_CONTAINER_DATABASES})"), "code": 18, "unique": false }).to_string();
                         }
+                        if !src.exists() {
+                            return json!({ "error": "source database does not exist", "code": 14, "unique": false }).to_string();
+                        }
                         if src == dst {
                             let bytes = fs::metadata(&src).map(|m| m.len()).unwrap_or(0);
                             return json!({ "bytes": bytes }).to_string();
                         }
-                        // Flush WAL journal on source DB before copying.
-                        if let Ok(ckpt) = Connection::open(&src) {
+                        // Flush WAL journal on source DB before copying (never create missing src).
+                        if let Ok(ckpt) = Connection::open_with_flags(&src, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE) {
                             let _ = ckpt.execute_batch("PRAGMA busy_timeout=3000; PRAGMA wal_checkpoint(TRUNCATE);");
                         }
                         match fs::copy(&src, &dst) {
@@ -2134,19 +2345,11 @@ impl RequestSqlBridge {
         params_raw: &str,
     ) -> Result<Value, String> {
         static DDL_SP_SEQ: AtomicU64 = AtomicU64::new(1);
-        let lower = sql.to_ascii_lowercase();
-        let may_mutate_schema = lower.contains("alter") || lower.contains("create") || lower.contains("rename");
+        let analysis = analyze_sql_keywords(sql);
+        let may_mutate_schema = analysis.may_mutate_schema;
         let no_params = params_raw.is_empty() || params_raw == "[]" || params_raw == "{}" || params_raw == "null";
         let is_multi = no_params && has_multiple_statements(sql);
-        if may_mutate_schema
-            && is_multi
-            && (lower.contains("savepoint")
-                || lower.contains("release")
-                || lower.contains("commit")
-                || lower.contains("rollback")
-                || lower.contains("begin")
-                || lower.contains("end"))
-        {
+        if may_mutate_schema && is_multi && analysis.has_tx_control {
             return Err("Cannot mix transaction/savepoint control with multi-statement DDL".into());
         }
         let reserved_before = if may_mutate_schema {
@@ -3063,7 +3266,17 @@ fn execute_script_backend_request(
 
     let mut headers_obj = serde_json::Map::new();
     for (k, v) in &req.headers {
-        headers_obj.insert(k.to_ascii_lowercase(), Value::String(v.clone()));
+        let lower = k.to_ascii_lowercase();
+        let sep = if lower == "cookie" { "; " } else { ", " };
+        match headers_obj.get_mut(&lower) {
+            Some(Value::String(existing)) => {
+                existing.push_str(sep);
+                existing.push_str(v);
+            }
+            _ => {
+                headers_obj.insert(lower, Value::String(v.clone()));
+            }
+        }
     }
     let req_json = json!({
         "method": req.method.to_ascii_uppercase(),
@@ -3334,7 +3547,17 @@ impl WarmRustWorker {
         };
         let mut headers_obj = serde_json::Map::new();
         for (k, v) in &req.headers {
-            headers_obj.insert(k.to_ascii_lowercase(), Value::String(v.clone()));
+            let lower = k.to_ascii_lowercase();
+            let sep = if lower == "cookie" { "; " } else { ", " };
+            match headers_obj.get_mut(&lower) {
+                Some(Value::String(existing)) => {
+                    existing.push_str(sep);
+                    existing.push_str(v);
+                }
+                _ => {
+                    headers_obj.insert(lower, Value::String(v.clone()));
+                }
+            }
         }
         let req_json = json!({
             "method": req.method.to_ascii_uppercase(),
@@ -3692,15 +3915,30 @@ impl ContainerBackendRuntime {
                 deadline_ms: Arc::clone(&deadline_ms),
             });
 
+            let global_slot = match crate::runtime::reserve_global_worker_slot() {
+                Ok(slot) => slot,
+                Err(why) => {
+                    if idx == 0 {
+                        startup_err = Some(format!("Failed to allocate container backend worker slot: {why}"));
+                    }
+                    break;
+                }
+            };
             let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<(), String>>();
             let spawn_res = thread::Builder::new()
                 .name(format!("zipp-container-{}-{idx}", runtime_kind.as_str()))
                 .stack_size(16 * 1024 * 1024)
                 .spawn(move || {
+                    let _global_slot = global_slot;
                     let mut rust_worker: Option<WarmRustWorker> = if runtime_kind == BackendRuntimeKind::Rust {
                         abort.store(false, Ordering::SeqCst);
                         deadline_ms.store(mono_ms() + WALL_TIME_MS, Ordering::SeqCst);
-                        let booted = WarmRustWorker::boot(&backend_cfg, &vfs, &sql_cfg, Arc::clone(&abort));
+                        let booted = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            WarmRustWorker::boot(&backend_cfg, &vfs, &sql_cfg, Arc::clone(&abort))
+                        })) {
+                            Ok(res) => res,
+                            Err(_) => Err("Rust backend panicked during startup".to_owned()),
+                        };
                         deadline_ms.store(0, Ordering::SeqCst);
                         match booted {
                             Ok(w) => {
@@ -3813,7 +4051,13 @@ impl ContainerBackendRuntime {
                             rust_worker = None;
                             abort.store(false, Ordering::SeqCst);
                             deadline_ms.store(mono_ms() + WALL_TIME_MS, Ordering::SeqCst);
-                            match WarmRustWorker::boot(&backend_cfg, &vfs, &sql_cfg, Arc::clone(&abort)) {
+                            let rebuilt = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                WarmRustWorker::boot(&backend_cfg, &vfs, &sql_cfg, Arc::clone(&abort))
+                            })) {
+                                Ok(res) => res,
+                                Err(_) => Err("Rust backend panicked during rebuild".to_owned()),
+                            };
+                            match rebuilt {
                                 Ok(w) => {
                                     rust_worker = Some(w);
                                     tracing::info!("Rebuilt warm Rust container worker after error/limit");

@@ -43,7 +43,7 @@ const MAX_CANVASES: usize = 64;
 const MAX_GRADIENTS: usize = 4096;
 const MAX_PATTERNS: usize = 1024;
 const MAX_PATTERN_CACHE_BYTES: usize = 64 * 1024 * 1024;
-const MAX_SVG_INPUT_BYTES: usize = 8 * 1024 * 1024;
+pub(crate) const MAX_SVG_INPUT_BYTES: usize = 8 * 1024 * 1024;
 const MAX_SVG_EMBEDDED_IMAGES: usize = 8;
 const MAX_SVG_DECODED_IMAGE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_SVG_IMAGE_DIM: u32 = 4096;
@@ -382,11 +382,113 @@ pub(crate) fn reset_all() {
 }
 
 /// Sanitize untrusted SVG bytes before handing them to `zipp_renderer::rasterize_svg` / `svg_size`.
+/// Sanitize CSS text (inside `<style>` blocks or presentation/style attributes):
+/// neutralizes CSS backslash escapes and XML entity intros, strips comments and
+/// `@import` rules, and replaces any non-`#` `url(...)` with `none`.
+fn sanitize_svg_css_urls(css: &str) -> String {
+    // First pass: strip CSS comments `/*...*/` and neutralize `\` (CSS hex/ident escapes
+    // such as `\75rl(`) and `&` (XML entity smuggling such as `&#117;rl(`) so split/escaped
+    // tokens cannot evade the second-pass `@import` / `url(` matcher.
+    let raw_bytes = css.as_bytes();
+    let raw_len = raw_bytes.len();
+    let mut flat = String::with_capacity(raw_len);
+    let mut p = 0usize;
+    while p < raw_len {
+        if raw_bytes[p] == b'/' && p + 1 < raw_len && raw_bytes[p + 1] == b'*' {
+            p += 2;
+            while p + 1 < raw_len && !(raw_bytes[p] == b'*' && raw_bytes[p + 1] == b'/') {
+                p += 1;
+            }
+            p = (p + 2).min(raw_len);
+            flat.push(' ');
+            continue;
+        }
+        if raw_bytes[p] == b'\\' || raw_bytes[p] == b'&' {
+            flat.push('_');
+            p += 1;
+            continue;
+        }
+        let ch = css[p..].chars().next().unwrap();
+        flat.push(ch);
+        p += ch.len_utf8();
+    }
+
+    let bytes = flat.as_bytes();
+    let len = bytes.len();
+    let mut out = String::with_capacity(len);
+    let mut i = 0usize;
+    while i < len {
+        // Strip `@import ...;` rules.
+        if bytes[i] == b'@' && i + 7 <= len && bytes[i + 1..i + 7].eq_ignore_ascii_case(b"import") {
+            let mut j = i + 7;
+            while j < len && bytes[j] != b';' && bytes[j] != b'}' {
+                j += 1;
+            }
+            i = if j < len && bytes[j] == b';' { j + 1 } else { j };
+            continue;
+        }
+        // Replace non-`#` `url(...)` calls with `none`.
+        if (bytes[i] == b'u' || bytes[i] == b'U')
+            && i + 4 <= len
+            && bytes[i..i + 4].eq_ignore_ascii_case(b"url(")
+            && (i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_' || bytes[i - 1] == b'-'))
+        {
+            let inner_start = i + 4;
+            if let Some(rel_close) = flat[inner_start..].find(')') {
+                let inner = flat[inner_start..inner_start + rel_close]
+                    .trim()
+                    .trim_matches(|c| c == '"' || c == '\'')
+                    .trim();
+                if inner.starts_with('#') && !inner.contains('&') && !inner.contains('\\') {
+                    out.push_str(&flat[i..inner_start + rel_close + 1]);
+                } else {
+                    out.push_str("none");
+                }
+                i = inner_start + rel_close + 1;
+                continue;
+            } else {
+                out.push_str("none");
+                break;
+            }
+        }
+        let ch = flat[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
+fn is_svg_css_attr(attr_local: &str) -> bool {
+    matches!(
+        attr_local.to_ascii_lowercase().as_str(),
+        "style"
+            | "fill"
+            | "stroke"
+            | "filter"
+            | "clip-path"
+            | "mask"
+            | "marker"
+            | "marker-start"
+            | "marker-mid"
+            | "marker-end"
+            | "cursor"
+            | "background"
+            | "background-image"
+            | "content"
+            | "list-style"
+            | "list-style-image"
+    )
+}
+
+/// Sanitize SVG bytes before passing them to `usvg` / `zipp_renderer`.
 ///
 /// `usvg::Options::default()` resolves local filesystem paths in `<image href="...">` and
-/// decodes unbounded embedded `data:` images. This sanitizer strips DTD/ENTITY declarations,
-/// strips all non-`#` `href`/`xlink:href` references except bounded raster `data:image/*;base64`
-/// images (capped at 8 images / 32 MiB total decoded pixels), and strips non-`#` CSS `url(...)`.
+/// decodes unbounded embedded `data:` images. Uses a proper XML-aware state machine that
+/// strips XML comments and non-XML processing instructions, rejects DTD/ENTITY declarations
+/// and malformed/unclosed tags or quotes, validates `href`/`*:href` strictly inside parsed
+/// tag attributes (allowing only `#id` fragments or bounded raster `data:image/*;base64`
+/// images capped at 8 images / 32 MiB decoded pixels), and strips external CSS `url(...)` /
+/// `@import` in both `<style>` blocks and attributes.
 pub(crate) fn sanitize_svg_for_raster(raw: &[u8]) -> Option<Vec<u8>> {
     if raw.is_empty() || raw.len() > MAX_SVG_INPUT_BYTES {
         return None;
@@ -403,6 +505,8 @@ pub(crate) fn sanitize_svg_for_raster(raw: &[u8]) -> Option<Vec<u8>> {
     let mut i = 0usize;
     let mut img_count = 0usize;
     let mut img_decoded_bytes = 0usize;
+    let mut in_style = false;
+    let mut style_buf = String::new();
 
     let validate_data_image = |val: &str, count: &mut usize, total_bytes: &mut usize| -> bool {
         let trimmed = val.trim();
@@ -456,70 +560,192 @@ pub(crate) fn sanitize_svg_for_raster(raw: &[u8]) -> Option<Vec<u8>> {
     };
 
     while i < len {
-        // Match `href` / `xlink:href` / `<prefix>:href` attributes (case-insensitive)
-        if (bytes[i] == b'h' || bytes[i] == b'H')
-            && i + 4 <= len
-            && bytes[i..i + 4].eq_ignore_ascii_case(b"href")
-            && (i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_' || bytes[i - 1] == b'-'))
-        {
-            let mut j = i + 4;
-            while j < len && bytes[j].is_ascii_whitespace() {
-                j += 1;
+        if bytes[i] != b'<' {
+            let start = i;
+            while i < len && bytes[i] != b'<' {
+                i += 1;
             }
-            if j < len && bytes[j] == b'=' {
-                j += 1;
-                while j < len && bytes[j].is_ascii_whitespace() {
-                    j += 1;
-                }
-                if j < len && (bytes[j] == b'"' || bytes[j] == b'\'') {
-                    let quote = bytes[j];
-                    let val_start = j + 1;
-                    let mut val_end = val_start;
-                    while val_end < len && bytes[val_end] != quote {
-                        val_end += 1;
-                    }
-                    let val = &text[val_start..val_end];
-                    let trimmed = val.trim();
-                    let keep = (trimmed.starts_with('#') && !trimmed.contains('&'))
-                        || validate_data_image(trimmed, &mut img_count, &mut img_decoded_bytes);
-                    out.push_str(&text[i..val_start]);
-                    if keep {
-                        out.push_str(val);
-                    }
-                    if val_end < len {
-                        out.push(quote as char);
-                        i = val_end + 1;
-                    } else {
-                        i = val_end;
-                    }
-                    continue;
-                }
+            let chunk = &text[start..i];
+            if in_style {
+                style_buf.push_str(chunk);
+            } else {
+                out.push_str(chunk);
             }
+            continue;
         }
-        // Strip non-fragment CSS `url(...)` references
-        if (bytes[i] == b'u' || bytes[i] == b'U')
-            && i + 4 <= len
-            && bytes[i..i + 4].eq_ignore_ascii_case(b"url(")
-            && (i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_' || bytes[i - 1] == b'-'))
-        {
-            let inner_start = i + 4;
-            if let Some(rel_close) = text[inner_start..].find(')') {
-                let inner = text[inner_start..inner_start + rel_close]
-                    .trim()
-                    .trim_matches(|c| c == '"' || c == '\'')
-                    .trim();
-                if inner.starts_with('#') && !inner.contains('&') {
-                    out.push_str(&text[i..inner_start + rel_close + 1]);
-                } else {
-                    out.push_str("none");
+
+        // XML Comment: strip completely so comments can never create parser-differential quotes
+        // or split CSS tokens (`u<!-- -->rl(...)`) across `<style>` chunks.
+        if text[i..].starts_with("<!--") {
+            let Some(rel_end) = text[i + 4..].find("-->") else {
+                return None;
+            };
+            i = i + 4 + rel_end + 3;
+            continue;
+        }
+
+        // CDATA section: accumulate into `style_buf` inside `<style>` so `u<![CDATA[]]>rl(`
+        // is sanitized as one combined CSS stream on `</style>`.
+        if text[i..].starts_with("<![CDATA[") {
+            let Some(rel_end) = text[i + 9..].find("]]>") else {
+                return None;
+            };
+            let body = &text[i + 9..i + 9 + rel_end];
+            if in_style {
+                style_buf.push_str(body);
+            } else {
+                out.push_str(&text[i..i + 9 + rel_end + 3]);
+            }
+            i = i + 9 + rel_end + 3;
+            continue;
+        }
+
+        // Reject any other `<!...>` declaration (DOCTYPE, ENTITY, ATTLIST, etc.).
+        if text[i..].starts_with("<!") {
+            return None;
+        }
+
+        // Processing instruction `<?...?>`: keep only `<?xml ...?>`, drop `<?xml-stylesheet ...?>` etc.
+        if text[i..].starts_with("<?") {
+            let Some(rel_end) = text[i + 2..].find("?>") else {
+                return None;
+            };
+            let pi = &text[i..i + 2 + rel_end + 2];
+            if pi.len() >= 6
+                && pi.as_bytes()[..5].eq_ignore_ascii_case(b"<?xml")
+                && pi.as_bytes()[5].is_ascii_whitespace()
+            {
+                out.push_str(pi);
+            }
+            i = i + 2 + rel_end + 2;
+            continue;
+        }
+
+        // Closing tag `</name>`
+        if text[i..].starts_with("</") {
+            let Some(rel_end) = text[i + 2..].find('>') else {
+                return None;
+            };
+            let tag_raw = text[i + 2..i + 2 + rel_end].trim();
+            let local = tag_raw.rsplit(':').next().unwrap_or(tag_raw);
+            if local.eq_ignore_ascii_case("style") && in_style {
+                let sanitized_css = sanitize_svg_css_urls(&style_buf).replace("]]>", "");
+                style_buf.clear();
+                if !sanitized_css.is_empty() {
+                    out.push_str("<![CDATA[");
+                    out.push_str(&sanitized_css);
+                    out.push_str("]]>");
                 }
-                i = inner_start + rel_close + 1;
+                in_style = false;
+            }
+            out.push_str(&text[i..i + 2 + rel_end + 1]);
+            i = i + 2 + rel_end + 1;
+            continue;
+        }
+
+        // Opening or self-closing tag `<name ...>`
+        let tag_open_start = i;
+        i += 1;
+        let name_start = i;
+        while i < len && !bytes[i].is_ascii_whitespace() && bytes[i] != b'>' && bytes[i] != b'/' {
+            i += 1;
+        }
+        if i == name_start || i >= len {
+            return None;
+        }
+        let tag_name = &text[name_start..i];
+        let tag_local = tag_name.rsplit(':').next().unwrap_or(tag_name);
+        out.push_str(&text[tag_open_start..i]);
+
+        let mut self_closing = false;
+        loop {
+            let ws_start = i;
+            while i < len && bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            out.push_str(&text[ws_start..i]);
+            if i >= len {
+                return None;
+            }
+            if bytes[i] == b'>' {
+                out.push('>');
+                i += 1;
+                break;
+            }
+            if bytes[i] == b'/' && i + 1 < len && bytes[i + 1] == b'>' {
+                out.push_str("/>");
+                i += 2;
+                self_closing = true;
+                break;
+            }
+
+            // Parse attribute name
+            let attr_start = i;
+            while i < len && !bytes[i].is_ascii_whitespace() && bytes[i] != b'=' && bytes[i] != b'>' && bytes[i] != b'/' {
+                i += 1;
+            }
+            if i == attr_start {
+                return None;
+            }
+            let attr_name = &text[attr_start..i];
+            let attr_local = attr_name.rsplit(':').next().unwrap_or(attr_name);
+            let pre_eq = i;
+            while i < len && bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            if i >= len || bytes[i] != b'=' {
+                // Boolean/valueless attribute (invalid in strict XML, fail closed if unexpected)
+                out.push_str(&text[attr_start..pre_eq]);
                 continue;
             }
+            i += 1; // '='
+            while i < len && bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            if i >= len || (bytes[i] != b'"' && bytes[i] != b'\'') {
+                return None;
+            }
+            let quote = bytes[i];
+            let val_start = i + 1;
+            let mut val_end = val_start;
+            while val_end < len && bytes[val_end] != quote {
+                val_end += 1;
+            }
+            if val_end >= len {
+                return None;
+            }
+            let val = &text[val_start..val_end];
+            out.push_str(attr_name);
+            out.push('=');
+            out.push(quote as char);
+            if attr_local.eq_ignore_ascii_case("href") {
+                let trimmed = val.trim();
+                let keep = (trimmed.starts_with('#') && !trimmed.contains('&'))
+                    || validate_data_image(trimmed, &mut img_count, &mut img_decoded_bytes);
+                if keep {
+                    out.push_str(val);
+                }
+            } else if is_svg_css_attr(attr_local)
+                || val.to_ascii_lowercase().contains("url(")
+                || val.to_ascii_lowercase().contains("@import")
+                || val.contains("&#")
+            {
+                out.push_str(&sanitize_svg_css_urls(val));
+            } else {
+                out.push_str(val);
+            }
+            out.push(quote as char);
+            i = val_end + 1;
         }
-        let ch = text[i..].chars().next().unwrap();
-        out.push(ch);
-        i += ch.len_utf8();
+
+        if tag_local.eq_ignore_ascii_case("style") && !self_closing {
+            in_style = true;
+            style_buf.clear();
+        }
+    }
+    if in_style {
+        // Unclosed `<style>` tag: reject malformed SVG.
+        return None;
     }
     Some(out.into_bytes())
 }

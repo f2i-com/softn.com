@@ -61,6 +61,22 @@ export function isSafeUrl(value: string, allowSvgData = false): boolean {
 }
 
 /**
+ * Validate every candidate URL in a comma-separated `srcset` attribute so a
+ * scheme-less first candidate cannot smuggle a dangerous scheme in candidate #2+.
+ */
+export function isSafeSrcSet(value: string, allowSvgData = false): boolean {
+  if (typeof value !== 'string') return false;
+  let sawCandidate = false;
+  for (const part of value.split(',')) {
+    const url = part.trim().split(/\s+/)[0] ?? '';
+    if (!url) continue;
+    sawCandidate = true;
+    if (!isSafeUrl(url, allowSvgData)) return false;
+  }
+  return sawCandidate;
+}
+
+/**
  * Whether a URL makes the browser talk to a host other than the one serving
  * the page — the question `isSafeUrl` does not ask.
  *
@@ -257,7 +273,9 @@ export function stripCssComments(css: string, replacement = ' '): string {
   let i = 0;
   while (i < css.length) {
     const c = css.charCodeAt(i);
-    if (c === 47 /* / */ && css.charCodeAt(i + 1) === 42 /* * */) {
+    if (c === 92 /* \ */) {
+      i = Math.min(css.length, i + 2);
+    } else if (c === 47 /* / */ && css.charCodeAt(i + 1) === 42 /* * */) {
       out += css.slice(kept, i) + replacement;
       const end = css.indexOf('*/', i + 2);
       i = end === -1 ? css.length : end + 2;
@@ -283,6 +301,10 @@ export function removeCssImports(css: string, note: string): string {
   let i = 0;
   while (i < css.length) {
     const c = css.charCodeAt(i);
+    if (c === 92 /* \ */) {
+      i = Math.min(css.length, i + 2);
+      continue;
+    }
     if (c === 34 || c === 39) {
       i = endOfCssString(css, i);
       continue;
@@ -292,7 +314,7 @@ export function removeCssImports(css: string, note: string): string {
       let j = i + 7;
       while (j < css.length && css[j] !== ';') {
         const d = css.charCodeAt(j);
-        j = d === 34 || d === 39 ? endOfCssString(css, j) : j + 1;
+        j = d === 92 ? Math.min(css.length, j + 2) : d === 34 || d === 39 ? endOfCssString(css, j) : j + 1;
       }
       i = Math.min(css.length, j + 1);
       kept = i;
@@ -719,7 +741,8 @@ function sanitizeFragment(markup: string, allowed: Set<string>, judge?: MarkupUr
           continue;
         }
         const allowSvgData = (tag === 'img' && name === 'src') || (tag === 'image' && (name === 'href' || name === 'xlink:href'));
-        if (!isSafeUrl(attr.value, allowSvgData)) {
+        const safeUrl = name === 'srcset' ? isSafeSrcSet(attr.value, false) : isSafeUrl(attr.value, allowSvgData);
+        if (!safeUrl) {
           node.removeAttribute(attr.name);
           continue;
         }
@@ -790,10 +813,12 @@ function sanitizeFragment(markup: string, allowed: Set<string>, judge?: MarkupUr
       const allowSvgData =
         (tag === 'img' && original === 'src') ||
         (tag === 'image' && (original === 'href' || original === 'xlink:href'));
+      const safeWithheld =
+        original === 'srcset' ? isSafeSrcSet(attr.value, false) : isSafeUrl(attr.value, allowSvgData);
       if (
         !URL_ATTRIBUTES.has(original) ||
         (tag === 'use' && (original === 'href' || original === 'xlink:href')) ||
-        !isSafeUrl(attr.value, allowSvgData)
+        !safeWithheld
       ) {
         node.removeAttribute(attr.name);
         continue;

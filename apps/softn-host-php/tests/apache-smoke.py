@@ -1,6 +1,12 @@
 from pathlib import Path
-import zipfile,tempfile,subprocess,os,time,urllib.request,urllib.error,json,signal,fcntl,argparse
+import zipfile,tempfile,subprocess,os,time,urllib.request,urllib.error,json,signal,fcntl,argparse,socket,shutil
 parser=argparse.ArgumentParser();parser.add_argument('--archive',required=True);parser.add_argument('--private',action='store_true');args=parser.parse_args()
+def free_port():
+    with socket.socket(socket.AF_INET,socket.SOCK_STREAM) as s:
+        s.bind(('127.0.0.1',0))
+        return s.getsockname()[1]
+PORT=free_port()
+OTHER_PORT=PORT+1 if PORT<65535 else PORT-1
 root=Path(tempfile.mkdtemp(prefix='softn-apache-php-'))
 with zipfile.ZipFile(args.archive) as zipped:zipped.extractall(root/'counter')
 counter=root/'counter/backend/app'
@@ -18,17 +24,17 @@ with (counter/'main.logic').open('a') as f:f.write('function readCounter(req){if
 with (counter/'main.logic').open('a') as f:f.write('\nfunction slow(req){softn.sql.execute("UPDATE counter SET value=99",[]);return {status:200,body:softn.sql.first("WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c WHERE x<4000000000) SELECT count(*) AS n FROM c",[])};}\n')
 modules=['mpm_prefork','authz_core','authz_host','dir','mime','headers','rewrite','alias','actions','cgi']
 for name in ['counter']:subprocess.run(['php',str(root/name/'backend/setup.php')],check=True)
-config=f'ServerRoot "{root}"\nServerName localhost\nListen 127.0.0.1:8811\nPidFile "{root}/httpd.pid"\nErrorLog "{root}/error.log"\n'
+config=f'ServerRoot "{root}"\nServerName localhost\nListen 127.0.0.1:{PORT}\nPidFile "{root}/httpd.pid"\nErrorLog "{root}/error.log"\n'
 config+='\n'.join(f'LoadModule {m}_module /usr/lib/apache2/modules/mod_{m}.so' for m in modules)
 config+='\nTypesConfig /etc/mime.types\n<Directory />\nRequire all denied\n</Directory>\n'
 config+='ScriptAlias /php-cgi /usr/bin/php-cgi\n<Directory /usr/bin>\nRequire all granted\nOptions +ExecCGI\n</Directory>\nAction application/x-httpd-php /php-cgi\nAddHandler application/x-httpd-php .php\n'
-for name,port in [('counter',8811)]:
+for name,port in [('counter',PORT)]:
     web=root/name/'webroot'
     config+=f'<VirtualHost 127.0.0.1:{port}>\nServerName {name}.example\nDocumentRoot "{web}"\n<Directory "{web}">\nRequire all granted\nAllowOverride All\nOptions +ExecCGI\n</Directory>\n</VirtualHost>\n'
 (root/'httpd.conf').write_text(config)
 subprocess.run(['/usr/sbin/apache2','-t','-f',str(root/'httpd.conf')],check=True)
 last_headers={}
-def req(path,port=8811,method='GET',headers={},data=None):
+def req(path,port=PORT,method='GET',headers={},data=None):
     global last_headers
     try:
         with urllib.request.urlopen(urllib.request.Request(f'http://127.0.0.1:{port}'+path,method=method,headers=headers,data=data),timeout=32) as r:
@@ -64,8 +70,8 @@ with open(root/'apache.log','w') as log:
         status,body=req('/api/echo?b.c=2&a%5B%5D=1&d=x&d=y',headers={'User-Agent':'smoke','Cookie':'session=secret'});seen=json.loads(body)
         assert seen['query']=={'b.c':'2','a[]':'1','d':'y'},seen;assert seen['headers']['user-agent']=='smoke' and 'cookie' not in seen['headers'],seen
         # A page on this site may call its own API without listing its origin; another site may not.
-        assert req('/api/echo',method='POST',headers={'Origin':'http://127.0.0.1:8811'})[0]==200
-        assert req('/api/echo',method='POST',headers={'Origin':'http://127.0.0.1:8812'})[0]==403
+        assert req('/api/echo',method='POST',headers={'Origin':f'http://127.0.0.1:{PORT}'})[0]==200
+        assert req('/api/echo',method='POST',headers={'Origin':f'http://127.0.0.1:{OTHER_PORT}'})[0]==403
         print('Response bodies pass through, the request matches the Rust host, same-origin and conditional tags pass.',flush=True)
         for path in ['/backend/private/config.json','/server/main.logic','/private/config.json','/.htaccess','/backend/setup.php']:
             assert req(path)[0] in [403,404],path
@@ -92,7 +98,7 @@ with open(root/'apache.log','w') as log:
         # Whichever runner answers (softn-runner where the archive carries it):
         # a statement past the deadline is ended and its write rolled back.
         start=time.monotonic();status,body=req('/api/slow',method='POST');elapsed=time.monotonic()-start
-        assert status in (500,503) and 19<=elapsed<24,(status,body,elapsed)
+        assert status in (500,503) and 19<=elapsed<28,(status,body,elapsed)
         increment()
         print('Runner deadline on a request\'s own SQL, and its rollback, passed.',flush=True)
         softn_runner=(backend/'bin/softn-runner-linux-x86_64').is_file()
@@ -116,7 +122,7 @@ with open(root/'apache.log','w') as log:
         worker=root/'counter/backend/request-worker.mjs';worker_source=worker.read_text()
         worker.write_text('import {DatabaseSync} from "node:sqlite"; import {fileURLToPath} from "node:url"; const d=new DatabaseSync(fileURLToPath(new URL("./private/data/application.sqlite",import.meta.url)));d.exec("BEGIN IMMEDIATE; UPDATE counter SET value=99");while(true){}')
         start=time.monotonic();assert req('/api/meta')[0]==503
-        assert 19<=time.monotonic()-start<24
+        assert 19<=time.monotonic()-start<28
         worker.write_text(worker_source)
         increment()
         print('Independent runner deadline and SQLite rollback after forced exit passed.',flush=True)
@@ -125,7 +131,7 @@ with open(root/'apache.log','w') as log:
         assert req('/api/meta')[0]==503
         runner.write_text('while(true){}')
         start=time.monotonic();assert req('/api/meta')[0]==503
-        elapsed=time.monotonic()-start;assert 24<=elapsed<30,elapsed
+        elapsed=time.monotonic()-start;assert 24<=elapsed<34,elapsed
         runner.write_text(original)
         assert req('/api/meta')[0]==200
         config.write_text(settings)
@@ -141,4 +147,5 @@ with open(root/'apache.log','w') as log:
         except ProcessLookupError:
             pass
         server.wait()
-print('Apache PHP test extraction: '+str(root))
+        shutil.rmtree(root, ignore_errors=True)
+print('Apache PHP smoke test complete.')

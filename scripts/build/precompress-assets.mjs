@@ -24,12 +24,19 @@ function collect(root) {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) {
-        // PHP is executed, not served, and the data directory is the API's own.
-        if (dir === root && (entry.name === 'api' || entry.name === 'data')) continue;
+        // PHP is executed, not served; data/ is the API's own; .vite/ is build metadata.
+        if ((dir === root && (entry.name === 'api' || entry.name === 'data')) || entry.name === '.vite') continue;
         visit(full);
         continue;
       }
       if (!entry.isFile() || !COMPRESSIBLE.has(path.extname(entry.name).toLowerCase())) continue;
+      // Skip build-internal files and the internal PHP play shell template (redirected by Apache/Nginx).
+      const rel = path.relative(root, full).replace(/\\/g, '/');
+      if (entry.name === '.softn-docs-build.json' || rel === 'play/index.html') {
+        fs.rmSync(full + '.br', { force: true });
+        fs.rmSync(full + '.gz', { force: true });
+        continue;
+      }
       const source = fs.readFileSync(full);
       if (source.length < MIN_COMPRESS_BYTES) {
         fs.rmSync(full + '.br', { force: true });

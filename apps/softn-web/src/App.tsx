@@ -930,6 +930,7 @@ function App(): React.ReactElement {
         fileName: `${app.name}.softn`,
         cachedAppId: app.id,
         directorySlug: app.directorySlug,
+        ...(app.backendUrl ? { backendUrl: app.backendUrl } : {}),
         isForeground: () => load.isForeground(),
       }).finally(() => openingCachedRef.current.delete(app.id));
     },

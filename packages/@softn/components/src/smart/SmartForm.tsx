@@ -233,8 +233,14 @@ const validators: Record<string, (value: unknown, config: FieldConfig) => string
     return null;
   },
   pattern: (value, config) => {
-    if (config.pattern && value && !new RegExp(config.pattern).test(String(value))) {
-      return 'Invalid format';
+    if (config.pattern && value) {
+      try {
+        if (!new RegExp(config.pattern).test(String(value))) {
+          return 'Invalid format';
+        }
+      } catch {
+        return null;
+      }
     }
     return null;
   },
@@ -345,6 +351,8 @@ export function SmartForm({
     setSeededFrom(initialData);
     setFormData(seedForm(initialData));
   }
+  const formDataRef = useRef(formData);
+  formDataRef.current = formData;
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [touched, setTouched] = useState<Record<string, boolean>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -456,11 +464,10 @@ export function SmartForm({
   // Handle field change
   const handleChange = useCallback(
     (name: string, value: unknown) => {
-      setFormData((prev) => {
-        const next = { ...prev, [name]: value };
-        onChange?.(next);
-        return next;
-      });
+      const next = { ...formDataRef.current, [name]: value };
+      formDataRef.current = next;
+      setFormData(next);
+      onChange?.(next);
       // The next record is being written: the last one's "Saved" is done.
       hideSavedNote();
 

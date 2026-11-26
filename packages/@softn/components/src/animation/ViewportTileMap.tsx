@@ -14,11 +14,19 @@ export const ViewportTileMap=React.memo(function ViewportTileMap(props:SizedTile
  const {mapWidth,mapHeight,tileSize=32,scale=1,src,className,style}=props;
  React.useEffect(()=>{
   let live=true;image.current=null;dirty.current=true;setReady(false);
-  if(!src||!isSafeUrl(src,true))return;
+  if(!src||!isSafeUrl(src,true)){
+   lastWindow.current='';
+   const canvas=surface.current;
+   canvas?.getContext('2d')?.clearRect(0,0,canvas.width,canvas.height);
+   return;
+  }
   const img=new window.Image();img.crossOrigin='anonymous';
   img.onload=()=>{if(!live)return;
    // Rasterise a vector tileset once, rather than once per tile on every pan.
-   const atlas=document.createElement('canvas');atlas.width=img.naturalWidth;atlas.height=img.naturalHeight;
+   // Guard against 0x0 intrinsic dimensions (e.g. unsized SVG) so drawImage never throws InvalidStateError.
+   const aw=img.naturalWidth||img.width,ah=img.naturalHeight||img.height;
+   if(aw<=0||ah<=0)return;
+   const atlas=document.createElement('canvas');atlas.width=aw;atlas.height=ah;
    const ctx=atlas.getContext('2d');if(!ctx)return;ctx.drawImage(img,0,0);
    image.current=atlas;dirty.current=true;setReady(true);scheduleRef.current();};
   img.src=src;

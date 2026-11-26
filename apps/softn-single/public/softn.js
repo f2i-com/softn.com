@@ -57,6 +57,13 @@
   }
   import(new URL('softn-page.js', script.src).href).catch(function (error) {
     document.documentElement.removeAttribute('data-softn-page-loading');
-    document.body.textContent = 'This page could not start SoftN: ' + (error && error.message ? error.message : error);
+    var msg = 'This page could not start SoftN: ' + (error && error.message ? error.message : error);
+    if (document.body) {
+      document.body.textContent = msg;
+    } else {
+      document.addEventListener('DOMContentLoaded', function () {
+        if (document.body) document.body.textContent = msg;
+      }, { once: true });
+    }
   });
 })();

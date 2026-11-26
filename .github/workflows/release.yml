@@ -177,6 +177,7 @@ jobs:
     needs: gate
     if: needs.gate.outputs.skip != 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     env:
       ZIPP_RELEASE: ${{ needs.gate.outputs.zipp-release }}
       ZIPP_SUMS_SHA256: ${{ needs.gate.outputs.zipp-sums-sha256 }}
@@ -208,6 +209,15 @@ jobs:
         run: npm run fetch:demos
       - name: Build the site with the example bundles
         run: SOFTN_WITH_DEMOS=1 SOFTN_NO_PRECOMPRESS=1 npm run build:site
+      - name: Which Playwright the lockfile pins
+        id: pw
+        run: echo "version=$(node -p "require('./node_modules/@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
+      - name: Keep Playwright's Chromium between runs
+        id: pw-cache
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
       - name: Run the Chromium journeys
@@ -344,11 +354,22 @@ jobs:
           }
           check "package.json" "$(node -p "require('./package.json').version")"
           check "apps/softn-single/package.json" "$(node -p "require('./apps/softn-single/package.json').version")"
+          check "apps/softn-single-private/package.json" "$(node -p "require('./apps/softn-single-private/package.json').version")"
           for app in softn-loader softn-builder; do
             check "apps/$app/src-tauri/tauri.conf.json" \
               "$(node -p "require('./apps/$app/src-tauri/tauri.conf.json').version")"
             check "apps/$app/package.json" \
               "$(node -p "require('./apps/$app/package.json').version")"
+          done
+          for cargo in \
+            apps/softn-host-rust/Cargo.toml \
+            apps/softn-builder/src-tauri/Cargo.toml \
+            apps/softn-loader/src-tauri/Cargo.toml \
+            apps/softn-runner/guest/Cargo.toml \
+            apps/softn-runner/host/Cargo.toml \
+            apps/softn-runner/shared/Cargo.toml; do
+            ver="$(awk -F'"' '/^version *= *"/ {print $2; exit}' "$cargo")"
+            check "$cargo" "$ver"
           done
           if [[ "$fail" -ne 0 ]]; then
             echo "Refusing to publish: the tag and the manifests disagree." >&2
@@ -507,6 +528,8 @@ jobs:
       # install is compared once more with what ZIPP publishes under the tag,
       # every file byte for byte, right before it is packaged.
       - name: Check the ZIPP install against the published release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: node packages/@softn/core/scripts/fetch-zipp-release.mjs --check --online
 
       # What FormLogic takes from a release instead of building SoftN from

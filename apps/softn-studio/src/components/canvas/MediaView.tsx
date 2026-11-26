@@ -154,12 +154,12 @@ export function MediaView({ path, content }: MediaViewProps): React.ReactElement
     stage = <FontSpecimen url={url} name={name} />;
   } else if (kind === 'pdf') {
     stage = (
-      <object data={url} type="application/pdf" className="st-media-pdf" aria-label={name}>
-        <div className="st-media-empty">
-          <strong>This browser does not show PDFs inline</strong>
-          Use Open in a new tab below to read it.
-        </div>
-      </object>
+      <iframe
+        src={url}
+        title={name}
+        className="st-media-pdf"
+        aria-label={name}
+      />
     );
   } else {
     stage = (

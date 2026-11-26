@@ -475,7 +475,10 @@ final class Prerender
                 $slash = strpos($first, '/');
                 if ($slash !== false && $slash > 0) {
                     $candPrefix = substr($first, 0, $slash + 1);
-                    if ($zip->locateName($candPrefix . 'manifest.json') !== false) {
+                    $hasWrapperEntry = $zip->locateName($candPrefix . 'manifest.json') !== false
+                        || $zip->locateName($candPrefix . 'index.html') !== false
+                        || $zip->locateName($candPrefix . 'app.html') !== false;
+                    if ($hasWrapperEntry) {
                         $allUnder = true;
                         for ($i = 0; $i < $zip->numFiles; $i++) {
                             $n = $zip->getNameIndex($i);
@@ -486,7 +489,9 @@ final class Prerender
                         }
                         if ($allUnder) {
                             $prefix = $candPrefix;
-                            $manifestName = $candPrefix . 'manifest.json';
+                            if ($zip->locateName($candPrefix . 'manifest.json') !== false) {
+                                $manifestName = $candPrefix . 'manifest.json';
+                            }
                         }
                     }
                 }
@@ -725,7 +730,15 @@ final class Prerender
                 ? substr($rel, strlen($feRoot) + 1)
                 : $rel;
             $feLower = strtolower($feRel);
-            if ($feLower === 'index.html' || $feLower === 'index.htm') {
+            $manifestMainRel = '';
+            if (is_array($manifest) && is_string($manifest['main'] ?? null)) {
+                $m = ltrim(str_replace('\\', '/', trim($manifest['main'])), '/');
+                if ($feRoot !== '' && str_starts_with(strtolower($m), strtolower($feRoot) . '/')) {
+                    $m = substr($m, strlen($feRoot) + 1);
+                }
+                $manifestMainRel = strtolower($m);
+            }
+            if ($feLower === 'index.html' || $feLower === 'index.htm' || ($manifestMainRel !== '' && $feLower === $manifestMainRel)) {
                 $virtualPath = '/';
                 $currentDir = '';
             } elseif (preg_match('#^(.+)/index\.html?$#i', $feRel, $dm) === 1) {

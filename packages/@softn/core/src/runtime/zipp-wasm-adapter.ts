@@ -165,24 +165,24 @@ const ASYNC_ENTRY = '__zippSoftnEnter';
  */
 function asyncEntrySource(names: ReadonlySet<string>): string {
   const cases = [...names]
-    .map((name) => `case ${JSON.stringify(name)}: fn = typeof ${name} === "function" ? ${name} : undefined; break;`)
+    .map((name) => `case ${JSON.stringify(name)}: __zipp_fn = typeof ${name} === "function" ? ${name} : undefined; break;`)
     .join('\n    ');
   return `
-;function ${ASYNC_ENTRY}(name, args) {
-  var fn;
-  switch (name) {
+;function ${ASYNC_ENTRY}(__zipp_name, __zipp_args) {
+  var __zipp_fn;
+  switch (__zipp_name) {
     ${cases}
   }
-  if (typeof fn !== "function") throw new TypeError(name + " is not a function");
-  var result = fn(...args);
-  if (result !== null && typeof result === "object" && typeof result.then === "function") {
-    result.then(undefined, function (error) {
-      var said;
-      try { said = String(error); } catch (_) { said = "an error that cannot be shown"; }
-      console.error("[SoftN] Error executing function " + name + ": " + said);
+  if (typeof __zipp_fn !== "function") throw new TypeError(__zipp_name + " is not a function");
+  var __zipp_result = __zipp_fn(...__zipp_args);
+  if (__zipp_result !== null && typeof __zipp_result === "object" && typeof __zipp_result.then === "function") {
+    __zipp_result.then(undefined, function (__zipp_error) {
+      var __zipp_said;
+      try { __zipp_said = String(__zipp_error); } catch (_) { __zipp_said = "an error that cannot be shown"; }
+      console.error("[SoftN] Error executing function " + __zipp_name + ": " + __zipp_said);
     });
   }
-  return result;
+  return __zipp_result;
 }
 `;
 }
@@ -212,7 +212,9 @@ export function declaredFunctionNames(code: string): Set<string> {
   // harmless here (its case answers undefined), but a reserved word is not a
   // name at all: `typeof for` would be a syntax error in the entry, and the
   // app's whole script would fail to compile with it.
-  for (const name of names) if (RESERVED_WORDS.has(name)) names.delete(name);
+  for (const name of names) {
+    if (RESERVED_WORDS.has(name) || name.startsWith('__zipp_')) names.delete(name);
+  }
   return names;
 }
 
@@ -228,19 +230,19 @@ const RESERVED_WORDS: ReadonlySet<string> = new Set([
 /** {@link EVENT_ENTRY} for `names`; `asyncNames` are entered through {@link ASYNC_ENTRY}. */
 function eventEntrySource(names: ReadonlySet<string>, asyncNames: ReadonlySet<string>): string {
   const cases = [...names]
-    .map((name) => `case ${JSON.stringify(name)}: fn = typeof ${name} === "function" ? ${name} : undefined; break;`)
+    .map((name) => `case ${JSON.stringify(name)}: __zipp_fn = typeof ${name} === "function" ? ${name} : undefined; break;`)
     .join('\n    ');
   const entered = [...names].filter((name) => asyncNames.has(name)).map((name) => JSON.stringify(name));
   return `${EVENT_METHODS_SOURCE}
-;function ${EVENT_ENTRY}(name, args) {
-  ${EVENT_METHODS_FUNCTION}(args);
-  ${entered.length > 0 ? `if ([${entered.join(', ')}].indexOf(name) !== -1) return ${ASYNC_ENTRY}(name, args);` : ''}
-  var fn;
-  switch (name) {
+;function ${EVENT_ENTRY}(__zipp_name, __zipp_args) {
+  ${EVENT_METHODS_FUNCTION}(__zipp_args);
+  ${entered.length > 0 ? `if ([${entered.join(', ')}].indexOf(__zipp_name) !== -1) return ${ASYNC_ENTRY}(__zipp_name, __zipp_args);` : ''}
+  var __zipp_fn;
+  switch (__zipp_name) {
     ${cases}
   }
-  if (typeof fn !== "function") throw new TypeError(name + " is not a function");
-  return fn(...args);
+  if (typeof __zipp_fn !== "function") throw new TypeError(__zipp_name + " is not a function");
+  return __zipp_fn(...__zipp_args);
 }
 `;
 }

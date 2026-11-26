@@ -96,7 +96,11 @@ function LegacyTileMap({
     }
   }, [layers, tileSize, tilesetColumns]);
 
-  // Load tileset image
+  const renderRef = React.useRef(render);
+  renderRef.current = render;
+
+  // Load tileset image — keyed only by `src` so layer updates never cancel in-flight
+  // tileset loads or trigger redundant double renders.
   React.useEffect(() => {
     // The tileset is named by the bundle, and this assigns it to a real
     // `HTMLImageElement`, so it needs the same scheme check an `<img src>` gets.
@@ -111,7 +115,7 @@ function LegacyTileMap({
       return;
     }
     if (src === loadedSrcRef.current) {
-      render();
+      renderRef.current();
       return;
     }
 
@@ -125,13 +129,13 @@ function LegacyTileMap({
       if (cancelled) return;
       imgRef.current = img;
       loadedSrcRef.current = src;
-      render();
+      renderRef.current();
     };
     img.src = src;
     return () => {
       cancelled = true;
     };
-  }, [src, render]);
+  }, [src]);
 
   // Re-render when layers change, and when the map is resized: setting a
   // canvas's width or height clears it, and nothing else would repaint it.

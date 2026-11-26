@@ -21,6 +21,21 @@ const MAX_WEBGL_UPLOAD_BYTES = 32 * 1024 * 1024;
 const MAX_WEBGL_CUMULATIVE_BYTES = 256 * 1024 * 1024;
 const SERVER_HANDLE_BASE = 1_000_000_000;
 
+/** Explicit allowlist of read/query/status WebGL methods permitted on the synchronous `syncCmd` path. */
+const ALLOWED_SYNC_GL_METHODS: ReadonlySet<string> = new Set([
+  'getUniformLocation', 'getAttribLocation', 'getShaderParameter', 'getProgramParameter',
+  'getShaderInfoLog', 'getProgramInfoLog', 'getActiveUniform', 'getActiveAttrib',
+  'getActiveUniformBlockName', 'getActiveUniformBlockParameter', 'getActiveUniforms',
+  'getUniformBlockIndex', 'getBufferParameter', 'getFramebufferAttachmentParameter',
+  'getRenderbufferParameter', 'getTexParameter', 'getVertexAttrib', 'getVertexAttribOffset',
+  'getUniform', 'getQuery', 'getQueryParameter', 'getSamplerParameter', 'getSyncParameter',
+  'getIndexedParameter', 'getInternalformatParameter', 'getFragDataLocation',
+  'getTransformFeedbackVarying', 'getAttachedShaders', 'getShaderSource', 'getError',
+  'checkFramebufferStatus', 'clientWaitSync', 'getParameter', 'readPixels',
+  'isBuffer', 'isEnabled', 'isFramebuffer', 'isProgram', 'isQuery', 'isRenderbuffer',
+  'isSampler', 'isShader', 'isSync', 'isTexture', 'isTransformFeedback', 'isVertexArray',
+]);
+
 /** Explicit allowlist of WebGL object-creation methods permitted for `op === 'c'`. */
 const CREATE_KIND_BY_METHOD: Readonly<Record<string, string>> = {
   createBuffer: 'buffer',
@@ -656,7 +671,7 @@ export class WebGLWorkerHost {
         return { __glB64: bytesToBase64(new Uint8Array(buf)) };
       }
 
-      if (!entry.allowedMethods.has(method)) return null;
+      if (!ALLOWED_SYNC_GL_METHODS.has(method) || !entry.allowedMethods.has(method)) return null;
       const fn = glRec[method];
       if (typeof fn !== 'function') return null;
       const decoded: unknown[] = [];

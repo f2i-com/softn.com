@@ -101,20 +101,36 @@ export default function App(): React.ReactElement {
           route.query.get('q') || route.query.get('tag') || route.query.get('author') || route.query.get('cap') || route.query.get('hosting')
         )}`
       : '';
-  const metaKey = selected.kind === 'app' ? `app:${selected.slug}` : selected.kind === 'directory' ? `dir:${dirQueryKey}` : selected.kind;
-  const initialMetaApplied = useRef(false);
+  const publishQueryKey =
+    selected.kind === 'publish'
+      ? `${Boolean(route.query.get('remix')?.trim())}|${Boolean(route.query.get('update')?.trim())}`
+      : '';
+  const metaKey =
+    selected.kind === 'app'
+      ? `app:${selected.slug}`
+      : selected.kind === 'directory'
+        ? `dir:${dirQueryKey}`
+        : selected.kind === 'publish'
+          ? `publish:${publishQueryKey}`
+          : selected.kind;
+  const lastAppliedMetaKey = useRef<string | null>(null);
   useEffect(() => {
-    const isInitialMount = !initialMetaApplied.current;
-    initialMetaApplied.current = true;
     const pageNow = selectPage(route.path);
-    if (
-      isInitialMount &&
-      ((pageNow.kind === 'app' && document.head.querySelector('meta[name="softn:app"]')) ||
-        (pageNow.kind === 'directory' && document.querySelector('[data-softn-ssr="directory"]')) ||
-        (pageNow.kind === 'publish' && document.querySelector('[data-softn-ssr="publish"]')))
-    ) {
-      return;
+    if (lastAppliedMetaKey.current === null) {
+      const ssrKind =
+        document.documentElement.dataset.softnSsr ??
+        document.querySelector('[data-softn-ssr]')?.getAttribute('data-softn-ssr');
+      if (
+        (pageNow.kind === 'app' && Boolean(document.head.querySelector('meta[name="softn:app"]'))) ||
+        (pageNow.kind === 'directory' && ssrKind === 'directory') ||
+        (pageNow.kind === 'publish' && ssrKind === 'publish')
+      ) {
+        lastAppliedMetaKey.current = metaKey;
+        return;
+      }
     }
+    if (lastAppliedMetaKey.current === metaKey) return;
+    lastAppliedMetaKey.current = metaKey;
     applyMeta(metaFor(pageNow, route.query));
     // eslint-disable-next-line react-hooks/exhaustive-deps -- metaKey captures the page and canonical directory params
   }, [metaKey]);

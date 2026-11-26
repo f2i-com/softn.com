@@ -155,14 +155,9 @@ export function GaugeChart({
   const formatValue = formatterOr<NonNullable<GaugeChartProps['formatValue']>>(givenFormatValue, (v) => String(Math.round(v)));
   const reducedMotion = usePrefersReducedMotion();
   const animate = animated && !reducedMotion;
-  // Derive height from variant if not provided
-  const computedHeight =
-    height ??
-    (variant === 'semicircle'
-      ? width * 0.65
-      : variant === 'arc'
-        ? width
-        : width);
+  // Derive height from variant if not provided, sanitizing non-numeric strings via chartSize
+  const defaultHeight = variant === 'semicircle' ? width * 0.65 : width;
+  const computedHeight = chartSize(height, defaultHeight);
 
   const strokeWidth = width * 0.08;
   const padding = strokeWidth / 2 + 6;

@@ -202,7 +202,12 @@ final class HostedBackend
                 throw new ApiError(503, 'Could not prepare hosted backend data folder.');
             }
 
+            $rawReqPath = parse_url((string) ($_SERVER['REQUEST_URI'] ?? ''), PHP_URL_PATH);
+            $hadTrailingSlash = is_string($rawReqPath) && $subpath !== '' && str_ends_with($rawReqPath, '/');
             $cleanSubpath = '/' . ltrim($subpath, '/');
+            if ($hadTrailingSlash && !str_ends_with($cleanSubpath, '/')) {
+                $cleanSubpath .= '/';
+            }
             $queryString = (string) ($_SERVER['QUERY_STRING'] ?? '');
             $host = (string) ($_SERVER['HTTP_HOST'] ?? 'localhost');
             $https = Request::isHttps();
@@ -433,90 +438,178 @@ final class HostedBackend
             1 => ['pipe', 'w'],
             2 => ['pipe', 'w'],
         ];
-        $argv = [$nodeBin, '--max-old-space-size=128', '--disable-proto=throw', $runner];
-        $proc = @proc_open($argv, $descriptors, $pipes, __DIR__, $env, ['bypass_shell' => true]);
-        if (!is_resource($proc)) {
-            error_log("softn-api: failed to spawn ZIPP hosted backend runner via $nodeBin");
-            throw new ApiError(503, 'The hosted ZIPP sandbox runtime could not be started.');
-        }
-
         $inputJson = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
         if ($inputJson === false) $inputJson = '{}';
 
-        stream_set_blocking($pipes[0], false);
-        stream_set_blocking($pipes[1], false);
-        stream_set_blocking($pipes[2], false);
-
-        $stdinOpen = true;
-        $stdinOffset = 0;
-        $stdinLen = strlen($inputJson);
-        if ($stdinLen === 0) {
-            fclose($pipes[0]);
-            $stdinOpen = false;
-        }
-
+        $isWindows = PHP_OS_FAMILY === 'Windows';
+        $argv = [$nodeBin, '--max-old-space-size=128', '--disable-proto=throw', $runner];
         $stdout = '';
         $stderr = '';
         $deadline = microtime(true) + $timeout;
         $timedOut = false;
         $overflowed = false;
+        $aborted = false;
 
-        while (true) {
-            $read = [];
-            if (!feof($pipes[1])) $read[] = $pipes[1];
-            if (!feof($pipes[2])) $read[] = $pipes[2];
-            $write = $stdinOpen ? [$pipes[0]] : null;
-            if ($read === [] && !$stdinOpen) break;
-
-            $remaining = $deadline - microtime(true);
-            if ($remaining <= 0) {
-                $timedOut = true;
-                break;
+        if ($isWindows) {
+            // PHP's `stream_set_blocking(..., false)` is a no-op on Windows `proc_open` pipes,
+            // so `fread()` can block past `$deadline`. Redirect stdin/stdout/stderr to private
+            // temp files and poll `proc_get_status()` + output size against the deadline.
+            $tmpDir = sys_get_temp_dir();
+            $tok = bin2hex(random_bytes(8));
+            $inTmp = $tmpDir . DIRECTORY_SEPARATOR . "softn-zipp-in-$tok.tmp";
+            $outTmp = $tmpDir . DIRECTORY_SEPARATOR . "softn-zipp-out-$tok.tmp";
+            $errTmp = $tmpDir . DIRECTORY_SEPARATOR . "softn-zipp-err-$tok.tmp";
+            if (@file_put_contents($inTmp, $inputJson) === false) {
+                throw new ApiError(503, 'The hosted ZIPP sandbox runtime could not prepare its input.');
             }
-            $sec = (int) floor($remaining);
-            $usec = (int) (($remaining - $sec) * 1_000_000);
-            $except = null;
-            $ready = @stream_select($read, $write, $except, $sec, $usec);
-            if ($ready === false) break;
+            $winDescriptors = [
+                0 => ['file', $inTmp, 'r'],
+                1 => ['file', $outTmp, 'w'],
+                2 => ['file', $errTmp, 'w'],
+            ];
+            $proc = @proc_open($argv, $winDescriptors, $pipes, __DIR__, $env, ['bypass_shell' => true]);
+            if (!is_resource($proc)) {
+                @unlink($inTmp);
+                @unlink($outTmp);
+                @unlink($errTmp);
+                error_log("softn-api: failed to spawn ZIPP hosted backend runner via $nodeBin");
+                throw new ApiError(503, 'The hosted ZIPP sandbox runtime could not be started.');
+            }
+            try {
+                while (true) {
+                    $st = proc_get_status($proc);
+                    clearstatcache(true, $outTmp);
+                    $outSize = @filesize($outTmp);
+                    if (is_int($outSize) && $outSize > self::MAX_STDOUT_BYTES) {
+                        $overflowed = true;
+                        break;
+                    }
+                    if (!$st['running']) {
+                        break;
+                    }
+                    if (microtime(true) >= $deadline) {
+                        $timedOut = true;
+                        break;
+                    }
+                    usleep(5000);
+                }
+                $st = proc_get_status($proc);
+                if ($timedOut || $overflowed || $st['running']) {
+                    @proc_terminate($proc, 15);
+                    // Brief wait so Windows releases handles before reading/unlinking temp files.
+                    $killWait = microtime(true) + 0.25;
+                    while (proc_get_status($proc)['running'] && microtime(true) < $killWait) {
+                        usleep(5000);
+                    }
+                }
+                $exitCode = proc_close($proc);
+                if (!$overflowed && is_file($outTmp)) {
+                    clearstatcache(true, $outTmp);
+                    $finalSize = @filesize($outTmp);
+                    if (is_int($finalSize) && $finalSize > self::MAX_STDOUT_BYTES) {
+                        $overflowed = true;
+                    } else {
+                        $readOut = @file_get_contents($outTmp, false, null, 0, self::MAX_STDOUT_BYTES + 1);
+                        if (is_string($readOut)) {
+                            if (strlen($readOut) > self::MAX_STDOUT_BYTES) $overflowed = true;
+                            else $stdout = $readOut;
+                        }
+                    }
+                }
+                if (is_file($errTmp)) {
+                    $readErr = @file_get_contents($errTmp, false, null, 0, self::MAX_STDERR_BYTES);
+                    if (is_string($readErr)) $stderr = $readErr;
+                }
+            } finally {
+                @unlink($inTmp);
+                @unlink($outTmp);
+                @unlink($errTmp);
+            }
+        } else {
+            $proc = @proc_open($argv, $descriptors, $pipes, __DIR__, $env, ['bypass_shell' => true]);
+            if (!is_resource($proc)) {
+                error_log("softn-api: failed to spawn ZIPP hosted backend runner via $nodeBin");
+                throw new ApiError(503, 'The hosted ZIPP sandbox runtime could not be started.');
+            }
 
-            if ($stdinOpen && is_array($write) && in_array($pipes[0], $write, true)) {
-                $chunk = substr($inputJson, $stdinOffset, 65536);
-                $written = @fwrite($pipes[0], $chunk);
-                if ($written === false) {
-                    @fclose($pipes[0]);
-                    $stdinOpen = false;
-                } else {
-                    $stdinOffset += $written;
-                    if ($stdinOffset >= $stdinLen) {
+            stream_set_blocking($pipes[0], false);
+            stream_set_blocking($pipes[1], false);
+            stream_set_blocking($pipes[2], false);
+
+            $stdinOpen = true;
+            $stdinOffset = 0;
+            $stdinLen = strlen($inputJson);
+            if ($stdinLen === 0) {
+                fclose($pipes[0]);
+                $stdinOpen = false;
+            }
+
+            while (true) {
+                $read = [];
+                if (!feof($pipes[1])) $read[] = $pipes[1];
+                if (!feof($pipes[2])) $read[] = $pipes[2];
+                $write = $stdinOpen ? [$pipes[0]] : null;
+                if ($read === [] && !$stdinOpen) break;
+
+                $remaining = $deadline - microtime(true);
+                if ($remaining <= 0) {
+                    $timedOut = true;
+                    break;
+                }
+                $sec = (int) floor($remaining);
+                $usec = (int) (($remaining - $sec) * 1_000_000);
+                $except = null;
+                $ready = @stream_select($read, $write, $except, $sec, $usec);
+                if ($ready === false) {
+                    // Retry transient EINTR while budget remains; avoid unbounded proc_close hang.
+                    usleep(5000);
+                    continue;
+                }
+
+                if ($stdinOpen && is_array($write) && in_array($pipes[0], $write, true)) {
+                    $chunk = substr($inputJson, $stdinOffset, 65536);
+                    $written = @fwrite($pipes[0], $chunk);
+                    if ($written === false) {
                         @fclose($pipes[0]);
                         $stdinOpen = false;
+                    } else {
+                        $stdinOffset += $written;
+                        if ($stdinOffset >= $stdinLen) {
+                            @fclose($pipes[0]);
+                            $stdinOpen = false;
+                        }
                     }
                 }
-            }
-            foreach ($read as $pipe) {
-                $chunk = fread($pipe, 65536);
-                if ($chunk === false || $chunk === '') continue;
-                if ($pipe === $pipes[1]) {
-                    if (strlen($stdout) + strlen($chunk) > self::MAX_STDOUT_BYTES) {
-                        $overflowed = true;
+                foreach ($read as $pipe) {
+                    $chunk = fread($pipe, 65536);
+                    if ($chunk === false) {
+                        $aborted = true;
                         break 2;
                     }
-                    $stdout .= $chunk;
-                } elseif (strlen($stderr) < self::MAX_STDERR_BYTES) {
-                    $stderr .= substr($chunk, 0, self::MAX_STDERR_BYTES - strlen($stderr));
+                    if ($chunk === '') continue;
+                    if ($pipe === $pipes[1]) {
+                        if (strlen($stdout) + strlen($chunk) > self::MAX_STDOUT_BYTES) {
+                            $overflowed = true;
+                            break 2;
+                        }
+                        $stdout .= $chunk;
+                    } elseif (strlen($stderr) < self::MAX_STDERR_BYTES) {
+                        $stderr .= substr($chunk, 0, self::MAX_STDERR_BYTES - strlen($stderr));
+                    }
                 }
             }
-        }
 
-        if ($stdinOpen) {
-            @fclose($pipes[0]);
+            if ($stdinOpen) {
+                @fclose($pipes[0]);
+            }
+            $st = proc_get_status($proc);
+            if ($timedOut || $overflowed || $aborted || $st['running']) {
+                @proc_terminate($proc, 9);
+            }
+            @fclose($pipes[1]);
+            @fclose($pipes[2]);
+            $exitCode = proc_close($proc);
         }
-        if ($timedOut || $overflowed) {
-            @proc_terminate($proc, PHP_OS_FAMILY === 'Windows' ? 15 : 9);
-        }
-        @fclose($pipes[1]);
-        @fclose($pipes[2]);
-        $exitCode = proc_close($proc);
 
         if ($overflowed) {
             error_log('softn-api: hosted backend stdout exceeded limit for ' . (string) ($payload['slug'] ?? 'unknown'));

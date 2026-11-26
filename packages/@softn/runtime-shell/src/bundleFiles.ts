@@ -588,7 +588,16 @@ export function createAssetResolver(
     }
     // An SVG may have been read as text rather than as bytes, depending on how
     // the bundle was written; both are the same picture.
-    const text = binary ? undefined : textFiles.get(path);
+    let text: string | undefined;
+    if (!binary) {
+      try {
+        text = textFiles.get(path);
+      } catch (err) {
+        unreadable.add(path);
+        console.error(`[SoftN] Asset ${path} could not be read from the bundle:`, err);
+        return '';
+      }
+    }
     if (!binary && text === undefined) return '';
 
     try {
@@ -634,12 +643,14 @@ function warnUnknownAssetExtension(path: string): void {
   );
 }
 
+const MAX_ICON_DATA_URL_BYTES = 512 * 1024;
+
 /** Extract icon as a data URL from bundle binary files */
 export function extractIconDataUrl(
   binaryFiles: Pick<BundleBinaryStore, 'get'>,
   manifest: BundleManifest
 ): string | undefined {
-  if (!manifest.icon) return undefined;
+  if (typeof manifest.icon !== 'string' || !manifest.icon) return undefined;
 
   // Reject paths with traversal or absolute references
   if (
@@ -658,7 +669,7 @@ export function extractIconDataUrl(
     console.error(`[SoftN] Icon ${manifest.icon} could not be read from the bundle:`, err);
     return undefined;
   }
-  if (!iconData) return undefined;
+  if (!iconData || iconData.byteLength > MAX_ICON_DATA_URL_BYTES) return undefined;
 
   const ext = manifest.icon.split('.').pop()?.toLowerCase() || 'png';
   // Allow safe image formats. SVG is safe here because icons are always

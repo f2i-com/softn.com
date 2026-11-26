@@ -169,6 +169,28 @@ export function analyzeHostedAppNeeds(manifest, clientFiles, options = {}) {
   const scriptTexts = [];
   const allTexts = [];
 
+  // Check zero-config browser-local backend/database files across ALL client entries when
+  // `!remoteHostedBackend`, since `names` excludes `server/` and `backend/` prefixes.
+  if (!remoteHostedBackend) {
+    for (const name of allClientNames) {
+      const lower = name.toLowerCase();
+      if (/\.(?:db|sqlite|sqlite3)$/i.test(lower) || lower === 'schema.sql' || lower.endsWith('/schema.sql')) {
+        hasZeroConfigSqlite = true;
+      }
+      if ((lower.endsWith('.php') || lower.endsWith('.phtml')) && (!lower.includes('/') || /^(?:server|backend)\//.test(lower))) {
+        hasZeroConfigPhp = true;
+      }
+      if (
+        lower === 'cargo.toml' ||
+        lower === 'main.rs' ||
+        lower === 'src/main.rs' ||
+        /^(?:server|backend)\/(?:cargo\.toml|.*\.rs)$/.test(lower)
+      ) {
+        hasZeroConfigRust = true;
+      }
+    }
+  }
+
   for (const name of names) {
     const lower = name.toLowerCase();
     if (lower.endsWith('.ui')) hasUiPages = true;
@@ -180,19 +202,6 @@ export function analyzeHostedAppNeeds(manifest, clientFiles, options = {}) {
     if (lower.endsWith('.glb') || lower.endsWith('.gltf')) hasGlbOrGltf = true;
     if (/\.(?:db|sqlite|sqlite3)$/i.test(lower) || lower === 'schema.sql' || lower.endsWith('/schema.sql')) {
       hasZeroConfigSqlite = true;
-    }
-    // Match `archive.ts` zero-config backend discovery: only root or `server/`/`backend/`
-    // PHP/Rust files activate a local backend, never example/doc files nested elsewhere.
-    if ((lower.endsWith('.php') || lower.endsWith('.phtml')) && (!lower.includes('/') || /^(?:server|backend)\//.test(lower))) {
-      hasZeroConfigPhp = true;
-    }
-    if (
-      lower === 'cargo.toml' ||
-      lower === 'main.rs' ||
-      lower === 'src/main.rs' ||
-      /^(?:server|backend)\/(?:cargo\.toml|.*\.rs)$/.test(lower)
-    ) {
-      hasZeroConfigRust = true;
     }
 
     if (TEXT_EXT_RE.test(lower)) {
@@ -250,7 +259,7 @@ export function analyzeHostedAppNeeds(manifest, clientFiles, options = {}) {
   const combinedUi = uiTexts.join('\n');
   const classicMarkup = [combinedUi, ...htmlPages].join('\n');
 
-  const backendRuntime = String(manifest?.backend?.runtime ?? manifest?.server?.runtime ?? '').toLowerCase();
+  const backendRuntime = String(manifest?.backend?.runtime ?? manifest?.backend?.type ?? manifest?.server?.runtime ?? '').toLowerCase();
   const hasEmbeddedBackend = !remoteHostedBackend && (Boolean(manifest?.backend) || Boolean(manifest?.server) || hasZeroConfigPhp || hasZeroConfigRust);
   const usesBrowserPhpBackend =
     !remoteHostedBackend && (backendRuntime === 'php' || hasZeroConfigPhp);

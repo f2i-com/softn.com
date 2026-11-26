@@ -268,6 +268,11 @@ self.onmessage = async (evt: MessageEvent) => {
 
   try {
     if (type === 'init') {
+      mainStateDirty = false;
+      symbolMap = null;
+      stateVarNames = [];
+      stateVarIndices = [];
+      for (const key of Object.keys(workerState)) delete workerState[key];
       const script = payload.script as CodeBlock;
       const permissions = payload.permissions as AppPermissions | undefined;
       const logicBasePath = payload.logicBasePath as string | undefined;
@@ -352,7 +357,6 @@ self.onmessage = async (evt: MessageEvent) => {
           externalPreamble
       );
       const fullCode = prefix + resolvedCode + TIMER_TRAILER;
-      mainStateDirty = false;
       try {
         symbolMap = await wasmAdapter.initializeScript(fullCode, logicOrigin(prefix));
       } catch (error) {
@@ -395,8 +399,26 @@ self.onmessage = async (evt: MessageEvent) => {
       // What a function the page could call while it is drawn may read is
       // observed too, as on the main thread (see drawn-functions.ts): the
       // function is how the page reads that state. Unknown mirrors everything.
+      // Preserve any `update_context` values that arrived while `init` was awaiting
+      // engine/imports, and push them into the VM once `stateVarIndices` is settled.
+      const pendingInitUpdates = mainStateDirty ? { ...workerState } : null;
+      mainStateDirty = false;
       loadedCode = externalPreamble + resolvedCode;
-      const state = settleObservation(payload.observedStateNames, payload.drawnNames);
+      let state = settleObservation(payload.observedStateNames, payload.drawnNames);
+      if (pendingInitUpdates) {
+        let applied = false;
+        for (const name of stateVarNames) {
+          if (Object.prototype.hasOwnProperty.call(pendingInitUpdates, name)) {
+            workerState[name] = pendingInitUpdates[name];
+            applied = true;
+          }
+        }
+        if (applied) {
+          mainStateDirty = true;
+          syncStateToVM();
+          state = { ...workerState };
+        }
+      }
 
       // Top-level code ran inside initializeScript: whatever it queued or
       // registered comes back with the initial state.

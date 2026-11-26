@@ -159,7 +159,7 @@ describe('the export never widens the declaration', () => {
 describe("Studio's HTML preview iframe sandbox", () => {
   const source = fs.readFileSync(path.join(studioSrc, 'components/canvas/VisualCanvas.tsx'), 'utf8');
 
-  it('every iframe in the canvas is sandboxed with exactly allow-scripts, and never allow-same-origin', () => {
+  it('every iframe in the canvas is sandboxed with empty sandbox="" (no scripts, no same-origin)', () => {
     const iframes = source.match(/<iframe\b[\s\S]*?>/g) ?? [];
     expect(iframes.length, 'the canvas previews HTML in an iframe').toBeGreaterThan(0);
     for (const tag of iframes) {
@@ -168,8 +168,9 @@ describe("Studio's HTML preview iframe sandbox", () => {
       const sandbox = attrs.match(/\bsandbox=(?:"([^"]*)"|\{`([^`]*)`\}|\{'([^']*)'\})/);
       expect(sandbox, `iframe has a literal sandbox attribute:\n${tag}`).not.toBeNull();
       const tokens = (sandbox![1] ?? sandbox![2] ?? sandbox![3]).trim().split(/\s+/).filter(Boolean).sort();
-      expect(tokens).toEqual(['allow-scripts']);
+      expect(tokens).toEqual([]);
       expect(tokens).not.toContain('allow-same-origin');
+      expect(tokens).not.toContain('allow-scripts');
       expect(attrs).not.toMatch(/\ballow=/);
       // The HTML is the frame's text, never an address: a blob: URL has
       // Studio's origin, and opened as a page of its own it ran as Studio.

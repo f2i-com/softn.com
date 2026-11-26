@@ -749,86 +749,118 @@ export async function mountSoftNContainer(
   let idbWriting: Promise<unknown> = Promise.resolve();
   /** Tells the same app in other tabs, and elsewhere in this page, which parts were kept. */
   let idbChannel: BroadcastChannel | null = null;
-  /** Keep a batch of parts; true once kept, false when the page's storage refused (its answers come in the batches' order). */
-  const keepIdbParts = (parts: Record<string, string | null>): Promise<boolean> => {
-    if (!parts || typeof parts !== 'object') return Promise.resolve(true);
-    if (!idbBacking && persistStorage) {
-      return (async () => {
-        idbBacking ??= (await indexedDbBacking(storageBase)) ?? localStorageBacking(storageBase, storage);
-        return keepIdbParts(parts);
+  let idbInitPromise: Promise<IdbBacking | null> | null = null;
+  const ensureIdbBacking = (): Promise<IdbBacking | null> => {
+    if (!persistStorage || disposed) return Promise.resolve(null);
+    if (idbBacking) return Promise.resolve(idbBacking);
+    if (!idbInitPromise) {
+      idbInitPromise = (async () => {
+        const backing = (await indexedDbBacking(storageBase)) ?? localStorageBacking(storageBase, storage);
+        if (disposed) return null;
+        idbBacking = backing;
+        try {
+          const kept = await backing.loadAll();
+          if (disposed) return null;
+          idbParts.clear();
+          idbPartsBytes = 0;
+          for (const [name, value] of kept) setIdbPart(name, value);
+        } catch {
+          // Not read: start with empty cache.
+        }
+        if (disposed) return null;
+        if (backing.kind === 'indexeddb' && !idbChannel && typeof BroadcastChannel === 'function') {
+          idbChannel = new BroadcastChannel(`softn-idb:${storageBase}`);
+          idbChannel.onmessage = (event: MessageEvent) => idbToldElsewhere((event.data as { names?: unknown } | null)?.names);
+        }
+        return backing;
       })();
     }
-    const backing = idbBacking;
-    if (!backing) return Promise.resolve(true);
+    return idbInitPromise;
+  };
+  /** Keep a batch of parts; true once kept, false when the page's storage refused (its answers come in the batches' order). */
+  const writeLocalStorageParts = (changes: Map<string, string | null>): boolean => {
+    cachedPersistedBytes = null;
+    // Held to the one quota with the rest the app keeps, all of it or none: a part refused
+    // puts back what the others were (kept a part at a time, half a transaction could be).
+    // Told to the same app elsewhere in this page.
+    const before = new Map<string, string | null>();
+    for (const name of changes.keys()) {
+      try {
+        before.set(name, storage ? storage.getItem(`${storageBase}idb:${name}`) : null);
+      } catch {
+        before.set(name, null);
+      }
+    }
+    let refused = false;
+    for (const [name, value] of changes) {
+      if (!savePersistedIdb(storageBase, name, value, limits.storageQuotaBytes, storage)) {
+        refused = true;
+        break;
+      }
+    }
+    if (refused) {
+      for (const [name, value] of before) {
+        try {
+          if (!storage) break;
+          if (value === null) storage.removeItem(`${storageBase}idb:${name}`);
+          else storage.setItem(`${storageBase}idb:${name}`, value);
+        } catch {
+          // What was there fitted before; nothing more to do.
+        }
+      }
+      storageKept(false);
+      return false;
+    }
+    for (const [name, value] of changes) setIdbPart(name, value);
+    tellNeighbours(storageBase, heard, [...changes.keys()].map((name) => `${storageBase}idb:${name}`));
+    return true;
+  };
+  const writeIndexedDbParts = async (backing: IdbBacking, changes: Map<string, string | null>): Promise<boolean> => {
+    let bytes = idbPartsBytes;
+    for (const [name, value] of changes) {
+      const prev = idbParts.get(name);
+      if (prev !== undefined) bytes -= partBytes(name, prev);
+      if (value !== null) bytes += partBytes(name, value);
+    }
+    if (bytes > limits.idbQuotaBytes) {
+      storageKept(false);
+      return false;
+    }
+    const previous = new Map<string, string | null>();
+    for (const name of changes.keys()) previous.set(name, idbParts.get(name) ?? null);
+    for (const [name, value] of changes) setIdbPart(name, value);
+    // Under a lease, the write checks the lease is this tab's still, in its own transaction.
+    const fences: LeaseFence[] = [];
+    for (const database of new Set([...changes.keys()].map((name) => databaseOfPart(name) ?? ''))) {
+      const fence = idbFences.get(database);
+      if (fence) fences.push(fence);
+    }
+    const kept = await backing.write(changes, fences);
+    if (!kept) for (const [name, value] of previous) setIdbPart(name, value);
+    storageKept(kept);
+    if (kept) idbChannel?.postMessage({ names: [...changes.keys()] });
+    return kept;
+  };
+  const keepIdbParts = (parts: Record<string, string | null>): Promise<boolean> => {
+    if (!parts || typeof parts !== 'object') return Promise.resolve(true);
     const changes = new Map<string, string | null>();
     for (const [name, value] of Object.entries(parts)) {
       if (name.length > 1024 || (value !== null && typeof value !== 'string')) continue;
       changes.set(name, value);
     }
     if (changes.size === 0) return Promise.resolve(true);
-    if (backing.kind === 'localStorage') {
-      cachedPersistedBytes = null;
-      // Held to the one quota with the rest the app keeps, all of it or none: a part refused
-      // puts back what the others were (kept a part at a time, half a transaction could be).
-      // Told to the same app elsewhere in this page.
-      const before = new Map<string, string | null>();
-      for (const name of changes.keys()) {
-        try {
-          before.set(name, storage ? storage.getItem(`${storageBase}idb:${name}`) : null);
-        } catch {
-          before.set(name, null);
-        }
-      }
-      let refused = false;
-      for (const [name, value] of changes) {
-        if (!savePersistedIdb(storageBase, name, value, limits.storageQuotaBytes, storage)) {
-          refused = true;
-          break;
-        }
-      }
-      if (refused) {
-        for (const [name, value] of before) {
-          try {
-            if (!storage) break;
-            if (value === null) storage.removeItem(`${storageBase}idb:${name}`);
-            else storage.setItem(`${storageBase}idb:${name}`, value);
-          } catch {
-            // What was there fitted before; nothing more to do.
-          }
-        }
-        storageKept(false);
-        return Promise.resolve(false);
-      }
-      for (const [name, value] of changes) setIdbPart(name, value);
-      tellNeighbours(storageBase, heard, [...changes.keys()].map((name) => `${storageBase}idb:${name}`));
-      return Promise.resolve(true);
+    if (idbBacking?.kind === 'localStorage') {
+      return Promise.resolve(writeLocalStorageParts(changes));
     }
+    if (!idbBacking && !persistStorage) return Promise.resolve(true);
     // Held to the app's IndexedDB quota as a whole, and kept together (a transaction whole or
     // not at all), after what is being kept before it.
     const done = idbWriting.then(async () => {
-      let bytes = idbPartsBytes;
-      for (const [name, value] of changes) {
-        const prev = idbParts.get(name);
-        if (prev !== undefined) bytes -= partBytes(name, prev);
-        if (value !== null) bytes += partBytes(name, value);
-      }
-      if (bytes > limits.idbQuotaBytes) return false;
-      const previous = new Map<string, string | null>();
-      for (const name of changes.keys()) previous.set(name, idbParts.get(name) ?? null);
-      for (const [name, value] of changes) setIdbPart(name, value);
-      // Under a lease, the write checks the lease is this tab's still, in its own transaction.
-      const fences: LeaseFence[] = [];
-      for (const database of new Set([...changes.keys()].map((name) => databaseOfPart(name) ?? ''))) {
-        const fence = idbFences.get(database);
-        if (fence) fences.push(fence);
-      }
-      const kept = await backing.write(changes, fences);
-      if (!kept) for (const [name, value] of previous) setIdbPart(name, value);
-      return kept;
-    }).then((kept) => {
-      storageKept(kept);
-      if (kept) idbChannel?.postMessage({ names: [...changes.keys()] });
-      return kept;
+      const backing = idbBacking ?? (await ensureIdbBacking());
+      if (!backing) return true;
+      if (disposed) return false;
+      if (backing.kind === 'localStorage') return writeLocalStorageParts(changes);
+      return writeIndexedDbParts(backing, changes);
     });
     idbWriting = done.catch(() => false);
     return done.catch(() => false);
@@ -1627,8 +1659,14 @@ export async function mountSoftNContainer(
       throw new Error(`Cannot navigate to missing container page: ${rawTarget}`);
     }
     if (disposed || !owns() || seq !== navSeq) return;
-    recordHistory(urlPath, pushHistory);
-    await mountPage(resolved, undefined, urlPath);
+    // Canonicalize directory-index routes (`/docs` -> `/docs/`) without mutating explicit
+    // HTML filenames (`/index.html` or `/docs/index.html` must stay as files, not `/index.html/`).
+    const effectiveUrlPath =
+      /(^|\/)index\.html?$/i.test(resolved) && !parsed.pathname.endsWith('/') && !/\.html?$/i.test(parsed.pathname)
+        ? `${parsed.pathname}/${parsed.search}${parsed.hash}`
+        : urlPath;
+    recordHistory(effectiveUrlPath, pushHistory);
+    await mountPage(resolved, undefined, effectiveUrlPath);
   };
 
   const submitForm = async (req: { action: string; method: string; encoded: string }): Promise<void> => {
@@ -2581,12 +2619,15 @@ export async function mountSoftNContainer(
               }
               void loadDeviceBridge()
                 .then((mod) => {
+                  if (disposed || !owns() || currentPatcher !== patcher) {
+                    throw new Error('Container disposed');
+                  }
                   if (!deviceBridge) deviceBridge = mod.createWebDeviceBridge();
                   return mod.dispatchDeviceBridgeCall(deviceBridge, namespace, method, params, grantedCaps, permissions);
                 })
                 .then(
-                  (res) => reply(true, res),
-                  (err) => reply(false, undefined, err instanceof Error ? err.message : String(err))
+                  (res) => { if (!disposed && owns() && currentPatcher === patcher) reply(true, res); },
+                  (err) => { if (!disposed && owns() && currentPatcher === patcher) reply(false, undefined, err instanceof Error ? err.message : String(err)); }
                 );
               break;
             }
@@ -2736,22 +2777,9 @@ export async function mountSoftNContainer(
 
         const loadInitialIdb = async (): Promise<Record<string, string>> => {
           if (!persistStorage || !bundleMayUseIdb()) return {};
-          idbBacking ??= (await indexedDbBacking(storageBase)) ?? localStorageBacking(storageBase, storage);
-          let out: Record<string, string> = {};
-          try {
-            const kept = await idbBacking.loadAll();
-            idbParts.clear();
-            idbPartsBytes = 0;
-            for (const [name, value] of kept) setIdbPart(name, value);
-            out = Object.fromEntries(kept);
-          } catch {
-            // Not read: the app starts with no databases.
-          }
-          if (idbBacking.kind === 'indexeddb' && !idbChannel && typeof BroadcastChannel === 'function') {
-            idbChannel = new BroadcastChannel(`softn-idb:${storageBase}`);
-            idbChannel.onmessage = (event: MessageEvent) => idbToldElsewhere((event.data as { names?: unknown } | null)?.names);
-          }
-          return out;
+          const backing = await ensureIdbBacking();
+          if (!backing || disposed) return {};
+          return Object.fromEntries(idbParts);
         };
 
         let resolvedEngine: { source: WebAssembly.Module | Uint8Array | string | undefined; tier: ZippEngineTier };
@@ -2887,7 +2915,8 @@ export async function mountSoftNContainer(
 
   try {
     if (disposed || !owns()) {
-      // Superseded during async setup — skip mounting.
+      // Superseded during async setup — tear down listeners, blob URLs, and backend workers.
+      disposeContainer();
     } else if (options.initialPath) {
       await navigateTo(options.initialPath, true);
     } else if (resolvedInitialPage) {

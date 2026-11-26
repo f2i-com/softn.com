@@ -435,13 +435,29 @@ impl SqlStorage {
                     if !allowed_read {
                         return Authorization::Deny;
                     }
-                    if pragma_value.is_some()
-                        && !matches!(
+                    if let Some(val) = pragma_value {
+                        let is_introspection = matches!(
+                            lower.as_str(),
+                            "table_info"
+                                | "table_xinfo"
+                                | "table_list"
+                                | "index_list"
+                                | "index_info"
+                                | "index_xinfo"
+                                | "foreign_key_list"
+                        );
+                        if is_introspection {
+                            let target = val.trim().trim_matches(|c| c == '"' || c == '\'' || c == '`');
+                            let target_lower = target.to_ascii_lowercase();
+                            if target.starts_with('_') || target_lower.starts_with("sqlite_") {
+                                return Authorization::Deny;
+                            }
+                        } else if !matches!(
                             lower.as_str(),
                             "foreign_keys" | "user_version" | "application_id"
-                        )
-                    {
-                        return Authorization::Deny;
+                        ) {
+                            return Authorization::Deny;
+                        }
                     }
                     Authorization::Allow
                 }

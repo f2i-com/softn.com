@@ -259,13 +259,23 @@ fn sanitize_error_paths(mut message: String, base_dir: &Path, control: &SharedNe
     message
 }
 
-/// Network status with OS paths inside `pending_restore` redacted to basenames.
+/// Network status with OS paths inside `pending_restore` redacted to basenames
+/// and any pending restore belonging to another app hidden from the open bundle.
 #[tauri::command]
 pub async fn get_network_status(
     network: State<'_, SharedNetworkState>,
     control: State<'_, SharedNetworkControl>,
+    identity: State<'_, DataIdentity>,
 ) -> Result<NetworkStatus, String> {
     let mut status = xdb::tauri::get_network_status(network, control).await?;
+    let bound = identity.bound();
+    if let Some(pending) = status.pending_restore.as_ref() {
+        let same_app = pending.unreadable.is_none()
+            && bound.as_deref() == Some(pending.app_id.as_str());
+        if !same_app {
+            status.pending_restore = None;
+        }
+    }
     if let Some(pending) = status.pending_restore.as_mut() {
         pending.backup_path = redact_path(pending.backup_path.take());
         pending.source_path = redact_path(pending.source_path.take());
@@ -276,6 +286,22 @@ pub async fn get_network_status(
     Ok(status)
 }
 
+fn require_pending_restore_owner(
+    control: &SharedNetworkControl,
+    identity: &DataIdentity,
+) -> Result<(), String> {
+    if !identity.open_started() {
+        return Err("Refused: no app is open".to_string());
+    }
+    let bound = identity.bound();
+    if let Some(pending) = control.pending_restore() {
+        if pending.unreadable.is_some() || bound.as_deref() != Some(pending.app_id.as_str()) {
+            return Err("Refused: pending restore belongs to another app".to_string());
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn resume_sync(
     db_manager: State<'_, SharedDbManager>,
@@ -283,9 +309,7 @@ pub async fn resume_sync(
     control: State<'_, SharedNetworkControl>,
     identity: State<'_, DataIdentity>,
 ) -> Result<bool, String> {
-    if !identity.open_started() {
-        return Err("Refused: no app is open".to_string());
-    }
+    require_pending_restore_owner(&control, &identity)?;
     let base_dir = db_manager.base_dir().clone();
     let control_ref = control.inner().clone();
     xdb::tauri::resume_sync(network, control)
@@ -301,9 +325,7 @@ pub async fn recover_restore(
     identity: State<'_, DataIdentity>,
     action: String,
 ) -> Result<RecoveryOutcome, String> {
-    if !identity.open_started() {
-        return Err("Refused: no app is open".to_string());
-    }
+    require_pending_restore_owner(&control, &identity)?;
     let base_dir = db_manager.base_dir().clone();
     let control_ref = control.inner().clone();
     xdb::tauri::recover_restore(db_manager, network, control, action)

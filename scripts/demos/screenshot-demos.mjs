@@ -170,6 +170,7 @@ async function launch(browser, port, width, height) {
   }
   if (!info) {
     proc.kill();
+    try { fs.rmSync(profile, { recursive: true, force: true }); } catch {}
     throw new Error('The browser did not start');
   }
   const cdp = await connect(info.webSocketDebuggerUrl);

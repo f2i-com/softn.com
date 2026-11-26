@@ -4,7 +4,8 @@
   "description": "Builder window: files are opened and saved through the app's own commands (src/files.rs), which show the dialogs themselves",
   "windows": ["main"],
   "permissions": [
-    "core:default",
+    "core:event:default",
+    "core:window:allow-set-title",
     "core:window:allow-destroy",
     "shell:allow-open"
   ]

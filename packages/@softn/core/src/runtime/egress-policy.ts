@@ -287,6 +287,19 @@ function resolveForJudgement(url: string): string {
  * the bar is unanswered and nothing remote goes out; otherwise the URL must
  * not be egress at all, or `net` must be enabled and permit the destination.
  */
+/**
+ * Whether `url` is a root-relative host path (`/api/...`, `/...`) or parent-traversal
+ * relative path (`../...`) that would fire a credentialed same-origin request against
+ * the embedding host rather than referencing a bundle-local relative asset.
+ */
+export function isHostRootOrTraversalPath(url: string): boolean {
+  const trimmed = url.trim();
+  if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('//') || /^[a-z][a-z0-9+.-]*:/i.test(trimmed)) {
+    return false;
+  }
+  return trimmed.startsWith('/') || /(?:^|\/)\.\.(?:\/|$|\?|#)/.test(trimmed);
+}
+
 export function describeMarkupEgress(
   url: string,
   config: EgressConfig | null | undefined

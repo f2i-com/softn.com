@@ -2183,6 +2183,7 @@ export class ContainerWorkerSession {
           }
           if (resolved.kind === 'remote') {
             if (
+              !this.isExplicitEmbeddingHostAllowed(resolved.url) ||
               !isExternalUrlAllowed(
                 resolved.url,
                 this.permissions.permissions?.net,
@@ -4233,7 +4234,10 @@ export class ContainerWorkerSession {
       return this.scriptReady(text, url);
     }
     if (!/^https?:/i.test(url)) return { error: `A script is not loaded from ${url} here` };
-    if (!isExternalUrlAllowed(url, this.permissions.permissions?.net, this.grantedCapabilities.has('net'))) {
+    if (
+      !this.isExplicitEmbeddingHostAllowed(url) ||
+      !isExternalUrlAllowed(url, this.permissions.permissions?.net, this.grantedCapabilities.has('net'))
+    ) {
       return { error: `Network access to ${url} is not permitted by this container` };
     }
     // As a module from another site is: without the person's cookies, and not by a redirect
@@ -4405,30 +4409,55 @@ export class ContainerWorkerSession {
     if (!ok) {
       this.idbRefused.add(id);
       if (this.idbRefused.size > 256) this.idbRefused.delete(this.idbRefused.values().next().value as number);
-      // What the parts were is what they are again, before the app's side hears anything.
+      // Roll back only keys not overwritten by a later in-flight batch. For keys touched
+      // by a later batch, carry `before` forward to the earliest remaining batch so a
+      // subsequent failure restores the true pre-failure state instead of this refused value.
+      const rolledBackKeys: string[] = [];
       for (const [name, before] of prev ?? []) {
+        let laterBatch: Map<string, string | undefined> | undefined;
+        for (const [laterId, laterMap] of this.idbBatchPrev) {
+          if (laterId > id && laterMap.has(name)) {
+            laterBatch = laterMap;
+            break;
+          }
+        }
+        if (laterBatch) {
+          const oldVal = laterBatch.get(name);
+          const oldEntryBytes = (name.length + (oldVal?.length ?? 0)) * 2 + 64;
+          const newEntryBytes = (name.length + (before?.length ?? 0)) * 2 + 64;
+          laterBatch.set(name, before);
+          this.idbBatchPrevBytes = Math.max(0, this.idbBatchPrevBytes - oldEntryBytes) + newEntryBytes;
+          continue;
+        }
         const now = this.idbStore.get(name);
         this.idbBytes += (before === undefined ? 0 : (name.length + before.length) * 2) - (now === undefined ? 0 : (name.length + now.length) * 2);
         if (before === undefined) this.idbStore.delete(name);
         else this.idbStore.set(name, before);
+        rolledBackKeys.push(name);
       }
+      // The transactions waiting are told first (one not kept is undone, and puts itself back as
+      // it was); then the app's side reads again the parts put back.
+      const answered = this.idbKeptWaiters.filter((waiter) => waiter.id <= this.idbAcked);
+      this.idbKeptWaiters = this.idbKeptWaiters.filter((waiter) => waiter.id > this.idbAcked);
+      for (const waiter of answered) this.resolveCallbackAndFlush(waiter.callId, { ok: !this.idbRefused.has(waiter.id) });
+      if (this.engine && !this.disposed && this.language !== 'python') {
+        for (const name of rolledBackKeys) {
+          try {
+            this.engine.renewInstructionBudget();
+            this.callGuest('__softnContainerIdbChanged', [name]);
+            this.drainTurn();
+          } catch (err) {
+            this.reportGuestError('storage', err);
+          }
+        }
+      }
+      return;
     }
     // The transactions waiting are told first (one not kept is undone, and puts itself back as
     // it was); then the app's side reads again the parts put back.
     const answered = this.idbKeptWaiters.filter((waiter) => waiter.id <= this.idbAcked);
     this.idbKeptWaiters = this.idbKeptWaiters.filter((waiter) => waiter.id > this.idbAcked);
     for (const waiter of answered) this.resolveCallbackAndFlush(waiter.callId, { ok: !this.idbRefused.has(waiter.id) });
-    if (!ok && this.engine && !this.disposed && this.language !== 'python') {
-      for (const name of prev?.keys() ?? []) {
-        try {
-          this.engine.renewInstructionBudget();
-          this.callGuest('__softnContainerIdbChanged', [name]);
-          this.drainTurn();
-        } catch (err) {
-          this.reportGuestError('storage', err);
-        }
-      }
-    }
   }
 
   /** What the app's IndexedDB takes of the quota it shares with its localStorage: nothing where it is kept apart. */
@@ -4729,6 +4758,22 @@ export class ContainerWorkerSession {
    * without cookies: an address of http(s) the app was allowed to reach, and not of the
    * embedding page's own site (where the page's request carries the person's cookies).
    */
+  /**
+   * Block targeting the embedding hostname (even across other ports/schemes)
+   * unless that exact hostname is explicitly listed in `net.allowed_hosts`.
+   */
+  private isExplicitEmbeddingHostAllowed(rawUrl: string): boolean {
+    try {
+      const parsed = new URL(rawUrl);
+      const emb = embeddingHost();
+      if (!emb || parsed.hostname.toLowerCase().replace(/\.+$/, '') !== emb) return true;
+      const hosts = this.permissions.permissions?.net?.allowed_hosts;
+      return Array.isArray(hosts) && hosts.some((h) => h.trim().toLowerCase().replace(/\.+$/, '') === emb);
+    } catch {
+      return false;
+    }
+  }
+
   private mayReadRemotePicture(src: string): boolean {
     let url: URL;
     try {
@@ -4739,6 +4784,7 @@ export class ContainerWorkerSession {
     if (url.protocol !== 'https:' && url.protocol !== 'http:') return false;
     const origin = embeddingOrigin();
     if (origin && url.origin === origin) return false;
+    if (!this.isExplicitEmbeddingHostAllowed(url.href)) return false;
     return isExternalUrlAllowed(url.href, this.permissions.permissions?.net, this.grantedCapabilities.has('net'));
   }
 

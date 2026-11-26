@@ -409,6 +409,7 @@ export function createPortBackendTransport(call: FrameBackendCall): ContainerBac
           FORBIDDEN_PORT_HEADERS.has(lower) ||
           lower.startsWith('sec-') ||
           lower.startsWith('proxy-') ||
+          lower.startsWith('x-forwarded-') ||
           lower.startsWith('x-formlogic')
         ) {
           continue;

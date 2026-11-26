@@ -70,6 +70,12 @@ function cors_headers(): void
             exit;
         }
         header('Access-Control-Allow-Origin: ' . $origin);
+    } elseif (
+        in_array($asked, ['POST', 'PUT', 'PATCH', 'DELETE'], true)
+        && strtolower((string) ($_SERVER['HTTP_SEC_FETCH_SITE'] ?? '')) === 'cross-site'
+    ) {
+        Response::json(['ok' => false, 'error' => 'Cross-site requests to this route are refused.'], 403)->send();
+        exit;
     }
     header('Access-Control-Allow-Methods: GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS');
     // If-None-Match is not CORS-safelisted: without it here a page on another
@@ -95,7 +101,9 @@ function match_route(string $method, string $path, array $routes): ?array
         if ($m !== $method && $m !== '*') continue;
         if (preg_match($pattern, $path, $matches)) {
             array_shift($matches);
-            return [$handler, array_map('rawurldecode', $matches)];
+            // Request::$path is already rawurldecode()'d once in Request::fromGlobals();
+            // decoding a second time corrupts literal %xx sequences in route captures.
+            return [$handler, $matches];
         }
     }
     return null;

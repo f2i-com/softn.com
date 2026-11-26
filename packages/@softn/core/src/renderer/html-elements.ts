@@ -7,7 +7,7 @@
 
 import type { ElementNode, TemplateNode } from '../parser/ast';
 import type { SoftNProps } from '../types';
-import { cssResourceReferences, SVG_ELEMENT_NAMES } from './sanitize-html';
+import { cssResourceReferences, rewriteCssResources, SVG_ELEMENT_NAMES } from './sanitize-html';
 
 /**
  * The SVG elements a page may draw inside an `<svg>`, by their lower-case
@@ -184,41 +184,102 @@ export function bundlePathOf(written: string): string | null {
 }
 
 /** The attributes a page names one of its files in, to be shown or played. */
-const FILE_ATTRIBUTES = ['src', 'poster'] as const;
+const FILE_ATTRIBUTES = ['src', 'poster', 'background'] as const;
 
 /**
- * `<img src="images/logo.png">`: a file of the app's, named as an HTML page
- * names one, is shown from the bundle, as `asset("images/logo.png")` would
- * show it. Read against the host page's address, it was a request for a
- * file the server does not have. A path the bundle does not carry is left
- * as written, so a deployment that serves its pictures beside the page still
- * shows them. Only a value written in the page: one an expression makes is
- * the author's to resolve.
+ * Whether `written` is a relative or root-relative URL (no scheme, not protocol-relative,
+ * not a `#fragment`) that would resolve against the embedding host origin if left untouched.
  */
+export function isRelativeOrRootUrl(written: string): boolean {
+  const t = written.trim();
+  return t !== '' && !/^[a-z][a-z0-9+.-]*:/i.test(t) && !t.startsWith('//') && !t.startsWith('#');
+}
+
 export function showBundleFiles(
   node: ElementNode,
   props: SoftNProps,
   asset: unknown,
-  stripUnresolved = false
+  stripUnresolved = false,
+  svgElement = false
 ): void {
   if (typeof asset !== 'function') return;
-  for (const name of FILE_ATTRIBUTES) {
-    const value = props[name];
-    if (typeof value !== 'string') continue;
-    if (!node.props.some((prop) => prop.name === name && prop.value.type === 'static')) continue;
+
+  const resolveOrStrip = (key: string): void => {
+    const value = props[key];
+    if (typeof value !== 'string') return;
     const path = bundlePathOf(value);
-    if (path === null) continue;
+    if (path === null) {
+      if (stripUnresolved && isRelativeOrRootUrl(value)) {
+        delete props[key];
+      }
+      return;
+    }
     let url: unknown;
     try {
       url = (asset as (path: string) => unknown)(path);
     } catch {
-      if (stripUnresolved) delete props[name];
-      continue;
+      if (stripUnresolved) delete props[key];
+      return;
     }
     if (typeof url === 'string' && url !== '') {
-      props[name] = url;
+      props[key] = url;
     } else if (stripUnresolved) {
-      delete props[name];
+      delete props[key];
+    }
+  };
+
+  for (const name of FILE_ATTRIBUTES) {
+    const value = props[name];
+    if (typeof value !== 'string') continue;
+    if (!stripUnresolved && !node.props.some((prop) => prop.name === name && prop.value.type === 'static')) {
+      continue;
+    }
+    resolveOrStrip(name);
+  }
+
+  if (stripUnresolved && svgElement) {
+    for (const key of Object.keys(props)) {
+      const lower = key.toLowerCase();
+      if (lower === 'href' || lower === 'xlinkhref' || lower === 'xlink:href') {
+        resolveOrStrip(key);
+      }
+    }
+  }
+
+  if (stripUnresolved) {
+    for (const key of Object.keys(props)) {
+      if (key.toLowerCase() !== 'srcset') continue;
+      const value = props[key];
+      if (typeof value !== 'string') continue;
+      const kept: string[] = [];
+      let changed = false;
+      for (const rawCandidate of value.split(',')) {
+        const trimmed = rawCandidate.trim();
+        if (!trimmed) continue;
+        const spaceIdx = trimmed.search(/\s/);
+        const urlPart = spaceIdx < 0 ? trimmed : trimmed.slice(0, spaceIdx);
+        const descriptor = spaceIdx < 0 ? '' : trimmed.slice(spaceIdx);
+        if (!isRelativeOrRootUrl(urlPart)) {
+          kept.push(trimmed);
+          continue;
+        }
+        changed = true;
+        const bPath = bundlePathOf(urlPart);
+        if (bPath !== null) {
+          try {
+            const resolved = (asset as (path: string) => unknown)(bPath);
+            if (typeof resolved === 'string' && resolved !== '') {
+              kept.push(`${resolved}${descriptor}`);
+            }
+          } catch {
+            // drop unresolved candidate
+          }
+        }
+      }
+      if (changed) {
+        if (kept.length > 0) props[key] = kept.join(', ');
+        else delete props[key];
+      }
     }
   }
 }
@@ -229,27 +290,41 @@ export function showBundleFiles(
  * rules after they are sanitised, which removes every address that leaves
  * the bundle, so what is left that names a file is relative. When `stripUnresolved`
  * is enabled (sandboxed bundle with egress enforcement), any relative or root-relative
- * URL not present in the bundle is replaced with `none` so it cannot trigger a
- * credentialed same-origin GET against the embedding host.
+ * URL not present in the bundle (including inside `image-set()`, `image()`, `cross-fade()`,
+ * or quoted `url()` with spaces) is replaced with `none` / `url(/* removed *\/)` so it
+ * cannot trigger a credentialed same-origin GET against the embedding host.
  */
 export function showBundleFilesInStyles(
   css: string,
   resolve: ((path: string) => string) | undefined,
   stripUnresolved = false
 ): string {
-  if (!resolve || !/url\(/i.test(css)) return css;
-  return css.replace(/url\(\s*(["']?)([^"')\s]+)\1\s*\)/gi, (whole, _quote: string, written: string) => {
-    const path = bundlePathOf(written);
-    if (path === null) return whole;
-    let url = '';
-    try {
-      url = resolve(path);
-    } catch {
-      return stripUnresolved ? 'none' : whole;
-    }
-    if (typeof url === 'string' && url !== '') return `url("${url}")`;
-    return stripUnresolved ? 'none' : whole;
-  });
+  if (!resolve) return css;
+  let out = css;
+  if (/url\(/i.test(out)) {
+    out = out.replace(
+      /url\(\s*(?:"([^"]*)"|'([^']*)'|([^"')\s]+))\s*\)/gi,
+      (whole, dq: string | undefined, sq: string | undefined, bare: string | undefined) => {
+        const written = dq ?? sq ?? bare ?? '';
+        const path = bundlePathOf(written);
+        if (path === null) {
+          return stripUnresolved && isRelativeOrRootUrl(written) ? 'none' : whole;
+        }
+        let url = '';
+        try {
+          url = resolve(path);
+        } catch {
+          return stripUnresolved ? 'none' : whole;
+        }
+        if (typeof url === 'string' && url !== '') return `url("${url}")`;
+        return stripUnresolved ? 'none' : whole;
+      }
+    );
+  }
+  if (stripUnresolved) {
+    out = rewriteCssResources(out, (target) => isRelativeOrRootUrl(target));
+  }
+  return out;
 }
 
 /**

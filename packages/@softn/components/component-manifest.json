@@ -4669,8 +4669,7 @@
             "optional": true,
             "type": {
               "kind": "number"
-            },
-            "defaultUnknown": true
+            }
           },
           {
             "name": "formatValue",

@@ -233,11 +233,16 @@ fn replace_wedged(
     }
     match start() {
         Ok(replacement) => {
-            guard.abandoned.store(true, Ordering::Relaxed);
+            // Register the extra thread BEFORE marking `guard.abandoned` so that if
+            // the wedged worker finishes its native call concurrently and observes
+            // `abandoned == true`, `abandonment.exited()` sees the incremented
+            // `extra_threads` instead of saturating at 0 and causing double release.
             if !abandonment.replaced() {
                 GLOBAL_WORKER_COUNT.fetch_sub(1, Ordering::AcqRel);
+                abandonment.release();
                 return None;
             }
+            guard.abandoned.store(true, Ordering::Release);
             tracing::error!(
                 abandoned = abandonment.live(),
                 "Worker wedged in a native call — abandoned it and started a replacement. \
@@ -251,6 +256,28 @@ fn replace_wedged(
             refuse(why)
         }
     }
+}
+
+/// RAII reservation of one worker thread slot against [`GLOBAL_WORKER_COUNT`].
+pub(crate) struct GlobalWorkerSlot {
+    _private: (),
+}
+
+impl Drop for GlobalWorkerSlot {
+    fn drop(&mut self) {
+        GLOBAL_WORKER_COUNT.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// Reserve a worker thread slot from the process-wide [`MAX_GLOBAL_WORKER_THREADS`] budget.
+pub(crate) fn reserve_global_worker_slot() -> Result<GlobalWorkerSlot, String> {
+    if GLOBAL_WORKER_COUNT.fetch_add(1, Ordering::AcqRel) >= MAX_GLOBAL_WORKER_THREADS {
+        GLOBAL_WORKER_COUNT.fetch_sub(1, Ordering::AcqRel);
+        return Err(format!(
+            "the process-wide limit of {MAX_GLOBAL_WORKER_THREADS} worker threads is in use"
+        ));
+    }
+    Ok(GlobalWorkerSlot { _private: () })
 }
 
 /// The longest [`ServerRuntime::call`] will wait for a worker's reply.
@@ -720,7 +747,7 @@ impl ServerRuntime {
             // replacement. The native call it was stuck in has now returned, but
             // the watchdog will never arm against this guard again — so rejoining
             // the pool would mean serving requests with no wall-time limit at all.
-            if guard.abandoned.load(Ordering::Relaxed) {
+            if guard.abandoned.load(Ordering::Acquire) {
                 tracing::warn!(
                     "Abandoned worker finished its call — exiting rather than rejoining                      the pool, where it would run unbounded."
                 );

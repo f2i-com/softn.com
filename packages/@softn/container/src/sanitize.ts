@@ -281,19 +281,19 @@ export function isExternalUrlAllowed(
 
   const hosts = netPerm.allowed_hosts;
   const isPrivate = isPrivateOrLocalHost(hostname);
-  const isEmbedding = isEmbeddingHostOrigin(parsed, hostname);
+  const isEmbeddingHost = isEmbeddingHostOrigin(parsed, hostname) || isEmbeddingHostHostname(hostname);
   if (!hosts || hosts.length === 0) {
-    // Broad `net` without an explicit host allowlist may reach public hosts, never private/loopback/LAN or the embedding origin.
-    return !isPrivate && !isEmbedding;
+    // Broad `net` without an explicit host allowlist may reach public hosts, never private/loopback/LAN or the embedding host.
+    return !isPrivate && !isEmbeddingHost;
   }
   return hosts.some((rule) => {
     const cleanRule = rule.trim().toLowerCase().replace(/\.+$/, '');
     if (!cleanRule) return false;
     if (cleanRule === '*') {
-      return !isPrivate && !isEmbedding;
+      return !isPrivate && !isEmbeddingHost;
     }
     if (cleanRule.startsWith('*.')) {
-      if (isPrivate || isEmbedding) return false;
+      if (isPrivate || isEmbeddingHost) return false;
       const suffix = cleanRule.slice(2);
       return hostname === suffix || hostname.endsWith(`.${suffix}`);
     }
@@ -418,6 +418,7 @@ export function sanitizeHostAssetUrl(
       const baseUrl = `${VIRTUAL_ORIGIN}/${basePath.replace(/^\/+/, '')}`;
       const resolvedUrl = new URL(originalTrimmed, baseUrl);
       if (resolvedUrl.origin === VIRTUAL_ORIGIN) {
+        if (resolvedUrl.pathname.startsWith('//')) return null;
         return `${resolvedUrl.pathname}${resolvedUrl.search}${resolvedUrl.hash}`;
       }
     } catch {

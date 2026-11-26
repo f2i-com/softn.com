@@ -1433,8 +1433,16 @@ export class HostDomPatcher {
 
     switch (prop) {
       case 'value':
-        if ('value' in el && (el as HTMLInputElement).value !== String(val ?? '')) {
-          (el as HTMLInputElement).value = String(val ?? '');
+        if ('value' in el) {
+          const nextValue = String(val ?? '');
+          if (el instanceof HTMLInputElement && el.type === 'file' && nextValue !== '') break;
+          if ((el as HTMLInputElement).value !== nextValue) {
+            try {
+              (el as HTMLInputElement).value = nextValue;
+            } catch {
+              // Ignore browser-enforced InvalidStateError on restricted inputs
+            }
+          }
         }
         break;
       case 'checked':

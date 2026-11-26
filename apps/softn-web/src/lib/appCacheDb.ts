@@ -51,6 +51,11 @@ export interface CachedApp {
    */
   directorySlug?: string;
   /**
+   * Optional hosted backend endpoint for server-hosted or hybrid directory apps,
+   * retained so reopening the cached app from Home reconnects to its backend.
+   */
+  backendUrl?: string;
+  /**
    * Opened from a link, at some point: someone else's app, like one from the
    * directory. The runtime's editor never changes such an app; a person's
    * first edit of one makes their own copy (src/edit/).

@@ -27,17 +27,24 @@ const MIME_TYPES = new Map([
   ['.js', 'text/javascript; charset=utf-8'],
   ['.json', 'application/json; charset=utf-8'],
   ['.map', 'application/json; charset=utf-8'],
+  ['.md', 'text/markdown; charset=utf-8'],
   ['.mjs', 'text/javascript; charset=utf-8'],
+  ['.mp3', 'audio/mpeg'],
+  ['.mp4', 'video/mp4'],
+  ['.ogg', 'audio/ogg'],
   ['.png', 'image/png'],
   ['.softn', 'application/octet-stream'],
   ['.svg', 'image/svg+xml'],
   ['.ttf', 'font/ttf'],
   ['.txt', 'text/plain; charset=utf-8'],
   ['.wasm', 'application/wasm'],
+  ['.wav', 'audio/wav'],
+  ['.webm', 'video/webm'],
   ['.webmanifest', 'application/manifest+json; charset=utf-8'],
   ['.webp', 'image/webp'],
   ['.woff', 'font/woff'],
   ['.woff2', 'font/woff2'],
+  ['.xml', 'application/xml; charset=utf-8'],
 ]);
 
 function fallbackFor(pathname) {
@@ -167,6 +174,12 @@ function handleRequest(req, res) {
     return;
   }
 
+  if (pathname === '/play/index.html') {
+    res.writeHead(301, { Location: '/apps' });
+    res.end();
+    return;
+  }
+
   let file = onDisk ? existingFile(candidate) : null;
   let status = 200;
   const acceptsHtml = String(req.headers.accept || '').includes('text/html');
@@ -188,6 +201,9 @@ function handleRequest(req, res) {
     'Cache-Control': 'no-cache',
     'Content-Length': stat.size,
     'Content-Type': MIME_TYPES.get(path.extname(file).toLowerCase()) || 'application/octet-stream',
+    'Cross-Origin-Opener-Policy': 'same-origin',
+    'Cross-Origin-Embedder-Policy': 'credentialless',
+    'X-Content-Type-Options': 'nosniff',
   });
   if (req.method === 'HEAD') {
     res.end();

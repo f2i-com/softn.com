@@ -249,7 +249,14 @@ function AppPageContent({ slug, categories, route }: AppPageProps): React.ReactE
         // A link opened by its manifest name lands on the slug.
         if (a.slug !== slug) {
           window.history.replaceState({}, '', `/app/${a.slug}${window.location.search}`);
-          applyMeta({ ...metaFor({ kind: 'app', slug: a.slug }), title: `${a.name} — SoftN`, description: a.description || metaFor({ kind: 'app', slug: a.slug }).description });
+          const baseMeta = metaFor({ kind: 'app', slug: a.slug });
+          applyMeta({
+            ...baseMeta,
+            title: `${a.name} — SoftN`,
+            description: a.description || baseMeta.description,
+            image: a.thumbnail || undefined,
+            imageAlt: a.thumbnail ? `${a.name} on SoftN` : undefined,
+          });
         }
       })
       .catch((e) => {

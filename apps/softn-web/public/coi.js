@@ -60,32 +60,36 @@ self.addEventListener('fetch', (event) => {
   };
   event.respondWith(
     (async () => {
-      const network = fetch(req);
-      // Answered from the cache, a network failure that arrives later is
-      // nobody's to report.
-      network.catch(() => {});
-      let timer;
-      const slow = new Promise((resolve) => {
-        timer = setTimeout(() => resolve('slow'), NETWORK_WAIT_MS);
-      });
       let res;
-      try {
-        const first = await Promise.race([network, slow]);
-        if (first === 'slow') {
+      if (req.method !== 'GET') {
+        res = await fetch(req);
+      } else {
+        const network = fetch(req);
+        // Answered from the cache, a network failure that arrives later is
+        // nobody's to report.
+        network.catch(() => {});
+        let timer;
+        const slow = new Promise((resolve) => {
+          timer = setTimeout(() => resolve('slow'), NETWORK_WAIT_MS);
+        });
+        try {
+          const first = await Promise.race([network, slow]);
+          if (first === 'slow') {
+            res = await cachedCopy();
+            if (!res) res = await network;
+          } else if (first.status >= 500) {
+            // The site failing is no reason to lose the app: only a thrown network error reached the
+            // copy, so the page that opens offline showed the host's error page online.
+            res = (await cachedCopy()) ?? first;
+          } else {
+            res = first;
+          }
+        } catch (err) {
           res = await cachedCopy();
-          if (!res) res = await network;
-        } else if (first.status >= 500) {
-          // The site failing is no reason to lose the app: only a thrown network error reached the
-          // copy, so the page that opens offline showed the host's error page online.
-          res = (await cachedCopy()) ?? first;
-        } else {
-          res = first;
+          if (!res) throw err;
+        } finally {
+          clearTimeout(timer);
         }
-      } catch (err) {
-        res = await cachedCopy();
-        if (!res) throw err;
-      } finally {
-        clearTimeout(timer);
       }
       // A navigation answered with a redirect arrives here opaque, status 0,
       // and `new Response(body, { status: 0 })` throws — so every redirected

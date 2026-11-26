@@ -999,6 +999,7 @@ export class XDBServerSync {
         credentials: 'omit',
         referrerPolicy: 'no-referrer',
         cache: 'no-store',
+        redirect: 'error',
       });
       if (stale()) return;
       if (!response.ok) {

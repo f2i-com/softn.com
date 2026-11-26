@@ -1191,11 +1191,13 @@ export class WorkerScriptRuntime implements ScriptRuntimeHandle {
       const failure = runtimeLineFailure(line);
       if (failure) this.reportFailure(failure.where, failure.message);
     }
-    void this.applyDBMutations(out.dbMutations || []);
+    const dbMutationsDone = this.applyDBMutations(out.dbMutations || []);
     this.applyLSMutations(out.lsMutations || []);
     this.applyClipboardWrites(out.clipboardWrites || []);
     this.applyState(out.state || {});
     if (Array.isArray(out.eventTypes)) this.bridgeEventTypes(out.eventTypes);
+    await dbMutationsDone;
+    if (this.disposed) return;
     // Timers keep their own clock and are not run one after another with the
     // rest: see LogicTimers.
     const calls = this.timers.take(Array.isArray(out.hostCalls) ? out.hostCalls : []);

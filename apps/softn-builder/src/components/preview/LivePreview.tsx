@@ -409,10 +409,14 @@ export function LivePreview({ beside = false }: LivePreviewProps) {
     debug('[LivePreview] Component mounted');
   }, []);
 
-  // Reset forceRender when source changes significantly
+  // Reset forceRender and per-project crash/problem state when switching projects.
   useEffect(() => {
     setForceRender(false);
-  }, [rootId]);
+    setStopped(false);
+    setFailedInPlace(false);
+    setUpdateNews(null);
+    lastComposed.current = null;
+  }, [projectId, rootId]);
 
   // Merge schema entities with project collections
   const collections = useMemo((): CollectionDef[] => {
@@ -481,6 +485,7 @@ export function LivePreview({ beside = false }: LivePreviewProps) {
   }, [uiHasEmbeddedBackend, retainedSource.manifest, retainedSource.extraEntries, logicFiles, previewAssets, projectId, run]);
 
   useEffect(() => {
+    uiBackendBridge?.activate();
     return () => {
       uiBackendBridge?.dispose();
     };
@@ -749,13 +754,11 @@ export function LivePreview({ beside = false }: LivePreviewProps) {
           </button>
           <button
             onClick={() => {
-              // Show source instead
-              const sourceWindow = window.open('', '_blank');
-              if (sourceWindow) {
-                sourceWindow.document.write(
-                  `<pre style="white-space:pre-wrap;font-size:12px;padding:20px;">${source.replace(/</g, '&lt;')}</pre>`
-                );
-              }
+              // Show source as plain text in a new tab (never HTML-interpolated via document.write).
+              const blob = new Blob([source], { type: 'text/plain;charset=utf-8' });
+              const url = URL.createObjectURL(blob);
+              window.open(url, '_blank', 'noopener,noreferrer');
+              window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
             }}
             type="button"
             className="bl-btn"
@@ -767,7 +770,7 @@ export function LivePreview({ beside = false }: LivePreviewProps) {
     }
 
     if (projectFormat === 'web' && ContainerComponent) {
-      const startKey = `web-${run}`;
+      const startKey = `web-${projectId}-${run}`;
       return (
         <DeviceViewport device={device}>
           <PreviewErrorBoundary key={startKey} fallback={renderError}>
@@ -816,7 +819,7 @@ export function LivePreview({ beside = false }: LivePreviewProps) {
       // again a page that could not be drawn as well as an engine. An Allow
       // is not a start: the running app is handed its declaration and goes
       // on (a Withhold starts its logic again, with its variables).
-      const startKey = `${run}`;
+      const startKey = `${projectId}-${run}`;
       const preview = (
         <PreviewErrorBoundary key={startKey} fallback={renderError}>
           <PreviewComponent
@@ -933,7 +936,7 @@ export function LivePreview({ beside = false }: LivePreviewProps) {
           </div>
         </div>
       </div>
-      <PreviewProblems run={run} onRestart={() => setRun((n) => n + 1)} onStopped={setStopped} />
+      <PreviewProblems key={projectId} run={run} onRestart={() => setRun((n) => n + 1)} onStopped={setStopped} />
       {sourceInfo && <div style={styles.infoBanner}>{sourceInfo}</div>}
       {/* The newest change, when it is news: kept back for a problem, or a
           start that could not keep what the app held. */}

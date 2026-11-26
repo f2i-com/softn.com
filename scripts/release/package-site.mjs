@@ -117,7 +117,12 @@ function walk(dir, prefix = '') {
 // Only the rules that keep the directory unserved travel.
 const DATA_KEEP = new Set(['data/.htaccess', 'data/README.txt']);
 const files = walk(distDir)
-  .filter((name) => !(name === 'data' || name.startsWith('data/')) || DATA_KEEP.has(name))
+  .filter((name) => {
+    if (name === 'data' || name.startsWith('data/')) return DATA_KEEP.has(name);
+    if (name === '.softn-docs-build.json' || name.startsWith('.softn-docs-build.json.')) return false;
+    if (name.startsWith('.vite/') || name.includes('/.vite/')) return false;
+    return true;
+  })
   .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
 if (files.length === 0) fail('dist/ has no files.');
 for (const required of DATA_KEEP) {

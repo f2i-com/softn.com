@@ -168,13 +168,17 @@ window.addEventListener('message', async event => {
       return { phase, reason, ...(stack ? { stack } : {}) };
     };
     const initialPlace = readPlace(data.place);
+    const validPlaceFile =
+      initialPlace?.file && Object.prototype.hasOwnProperty.call(source, initialPlace.file)
+        ? initialPlace.file
+        : null;
     container = await mountSoftNContainer(target, {
       source, appId: data.appId, runtimeUrl, storage: store.storage,
       ...(hostBackend ? { backendTransport: hostBackend } : {}),
-      initialPage: initialPlace?.file ?? undefined,
-      ...(initialPlace?.section
+      initialPage: validPlaceFile ?? undefined,
+      ...(initialPlace?.section && (initialPlace.file === null || validPlaceFile !== null)
         ? {
-            initialPath: `/${initialPlace.file ?? ''}${initialPlace.section ? `#${encodeURIComponent(initialPlace.section)}` : ''}`,
+            initialPath: `/${validPlaceFile ?? ''}${initialPlace.section ? `#${encodeURIComponent(initialPlace.section)}` : ''}`,
           }
         : {}),
       onPageChange: (page, manifest) => {

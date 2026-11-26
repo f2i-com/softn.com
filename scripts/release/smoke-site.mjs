@@ -57,16 +57,32 @@ if (php.status !== 0) fail('php is not on PATH. The smoke test serves the site t
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'softn-smoke-'));
 
+const FETCH_BAD_PORTS = new Set([
+  1719, 1720, 1723, 2049, 3659, 4045, 4190, 5060, 5061,
+  6000, 6566, 6665, 6666, 6667, 6668, 6669, 6697, 10080,
+]);
+
 async function freePort() {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.unref();
-    server.on('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const { port } = server.address();
-      server.close(() => resolve(port));
-    });
-  });
+  const held = [];
+  try {
+    for (let i = 0; i < 32; i++) {
+      const probe = net.createServer();
+      probe.unref();
+      await new Promise((resolve, reject) => {
+        probe.once('error', reject);
+        probe.listen(0, '127.0.0.1', resolve);
+      });
+      const { port } = probe.address();
+      if (!FETCH_BAD_PORTS.has(port)) {
+        await new Promise((resolve) => probe.close(resolve));
+        return port;
+      }
+      held.push(probe);
+    }
+    throw new Error('could not allocate a fetch-safe ephemeral port');
+  } finally {
+    await Promise.all(held.map((p) => new Promise((resolve) => p.close(resolve))));
+  }
 }
 
 const port = await freePort();
@@ -81,13 +97,22 @@ server.stderr.on('data', (d) => (serverLog += d));
 
 function cleanup() {
   if (!server.killed) server.kill();
-  fs.rmSync(dataDir, { recursive: true, force: true });
+  try {
+    fs.rmSync(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  } catch {
+    /* ignore cleanup contention on exit */
+  }
 }
 process.on('exit', cleanup);
+process.on('SIGINT', () => { cleanup(); process.exit(130); });
+process.on('SIGTERM', () => { cleanup(); process.exit(143); });
 
 async function waitForServer(ms = 20000) {
   const until = Date.now() + ms;
   while (Date.now() < until) {
+    if (server.exitCode !== null) {
+      fail(`php -S exited early with code ${server.exitCode}\n${serverLog}`);
+    }
     try {
       const r = await fetch(`${base}/api/health`);
       if (r.ok || r.status === 503) return;

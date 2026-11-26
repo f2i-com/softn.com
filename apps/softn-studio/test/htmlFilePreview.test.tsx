@@ -47,9 +47,12 @@ describe('an .html file among the assets', () => {
     await act(async () => { await new Promise((r) => setTimeout(r, 50)); });
     const frame = container.querySelector<HTMLIFrameElement>('iframe[title="App Preview"]');
     expect(frame).not.toBeNull();
-    expect(frame!.getAttribute('srcdoc')).toBe(GUIDE);
+    const srcdoc = frame!.getAttribute('srcdoc') ?? '';
+    expect(srcdoc).toContain("default-src 'none'");
+    expect(srcdoc).toContain('<h1>Guide</h1>');
+    expect(srcdoc).not.toContain('<script');
     expect(frame!.hasAttribute('src')).toBe(false);
-    expect(frame!.getAttribute('sandbox')).toBe('allow-scripts');
+    expect(frame!.getAttribute('sandbox')).toBe('');
     expect(made.mock.calls.some(([blob]) => blob instanceof Blob && blob.type === 'text/html')).toBe(false);
   });
 });

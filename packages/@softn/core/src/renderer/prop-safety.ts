@@ -12,6 +12,7 @@ import {
   decodeCssEscapes,
   isRemoteUrl,
   isSafeUrl,
+  isSafeSrcSet,
   stripCssComments,
   DOCUMENT_NAMED_TAGS,
   OPENING_TAGS,
@@ -20,8 +21,13 @@ import {
   dropsFromMarkup,
   relWithoutOpener,
 } from './sanitize-html';
-import { describeMarkupEgress, describeSrcSetEgress, type EgressConfig } from '../runtime/egress-policy';
-import { loadsFromOutside } from './html-elements';
+import {
+  describeMarkupEgress,
+  describeSrcSetEgress,
+  isHostRootOrTraversalPath,
+  type EgressConfig,
+} from '../runtime/egress-policy';
+import { bundlePathOf, isRelativeOrRootUrl, loadsFromOutside } from './html-elements';
 import { isDevelopment } from './development';
 
 /**
@@ -104,11 +110,15 @@ function isWithheldUrl(name: string, value: string, policy: EgressPolicy): boole
   if (policy === null) return false;
   const canonical = urlPropName(name);
   if (canonical === 'href') return policy.consentPending === true && isRemoteUrl(value);
-  const verdict =
-    canonical === 'srcset'
-      ? describeSrcSetEgress(value, policy)
-      : describeMarkupEgress(value, policy);
-  return !verdict.allowed;
+  if (canonical === 'srcset') {
+    for (const candidate of value.split(',')) {
+      const url = candidate.trim().split(/\s+/)[0] ?? '';
+      if (url && isHostRootOrTraversalPath(url)) return true;
+    }
+    return !describeSrcSetEgress(value, policy).allowed;
+  }
+  if (isHostRootOrTraversalPath(value)) return true;
+  return !describeMarkupEgress(value, policy).allowed;
 }
 
 /**
@@ -130,12 +140,17 @@ export function dropDocumentName(props: SoftNProps, tag: string): void {
  * Every name in `URL_PROPS` is safe to judge by name here, because on a raw
  * element it can only ever mean the URL the browser will fetch.
  */
-export function sanitizeUrlProps(props: SoftNProps, tag: string, policy: EgressPolicy): void {
+export function sanitizeUrlProps(
+  props: SoftNProps,
+  tag: string,
+  policy: EgressPolicy,
+  assetResolver?: (path: string) => unknown
+): void {
   for (const name of Object.keys(props)) {
     if (!URL_PROPS.has(urlPropName(name))) continue;
     const value = props[name];
     if (value === undefined || value === null) continue;
-    const safe = judgedUrl(name, value, policy);
+    const safe = judgedUrl(name, value, policy, assetResolver);
     if (safe === undefined) {
       // `href={on && url}` is false when there is nothing to link to: no
       // attribute, and nothing worth a warning.
@@ -218,14 +233,62 @@ function urlText(value: unknown): string | undefined {
 /**
  * The text to hand on for a URL prop, or `undefined` when it must not be.
  * What comes back is the string that was judged, never the value it was
- * read from.
+ * read from. When `assetResolver` is active under egress enforcement, fetch
+ * props resolve bundle-relative paths to `blob:` URLs and drop unresolved
+ * relative paths so they cannot trigger credentialed same-origin host GETs.
  */
-function judgedUrl(name: string, value: unknown, policy: EgressPolicy): string | undefined {
-  const text = urlText(value);
+function judgedUrl(
+  name: string,
+  value: unknown,
+  policy: EgressPolicy,
+  assetResolver?: (path: string) => unknown
+): string | undefined {
+  let text = urlText(value);
   if (text === undefined) return undefined;
   const canonical = urlPropName(name);
+  const isNavProp = canonical === 'href' || canonical === 'navigate' || canonical === 'formaction';
+  if (policy !== null && assetResolver && !isNavProp) {
+    if (canonical === 'srcset') {
+      const kept: string[] = [];
+      for (const rawCandidate of text.split(',')) {
+        const trimmed = rawCandidate.trim();
+        if (!trimmed) continue;
+        const spaceIdx = trimmed.search(/\s/);
+        const urlPart = spaceIdx < 0 ? trimmed : trimmed.slice(0, spaceIdx);
+        const descriptor = spaceIdx < 0 ? '' : trimmed.slice(spaceIdx);
+        if (!isRelativeOrRootUrl(urlPart)) {
+          kept.push(trimmed);
+          continue;
+        }
+        const bPath = bundlePathOf(urlPart);
+        if (bPath !== null) {
+          try {
+            const resolved = assetResolver(bPath);
+            if (typeof resolved === 'string' && resolved !== '') {
+              kept.push(`${resolved}${descriptor}`);
+            }
+          } catch {
+            // drop unresolved candidate
+          }
+        }
+      }
+      if (kept.length === 0) return undefined;
+      text = kept.join(', ');
+    } else if (isRelativeOrRootUrl(text)) {
+      const bPath = bundlePathOf(text);
+      if (bPath === null) return undefined;
+      try {
+        const resolved = assetResolver(bPath);
+        if (typeof resolved !== 'string' || resolved === '') return undefined;
+        text = resolved;
+      } catch {
+        return undefined;
+      }
+    }
+  }
   const allowSvgData = canonical === 'src' || canonical === 'fallbacksrc';
-  return isSafeUrl(text, allowSvgData) && !isWithheldUrl(name, text, policy) ? text : undefined;
+  const safe = canonical === 'srcset' ? isSafeSrcSet(text, false) : isSafeUrl(text, allowSvgData);
+  return safe && !isWithheldUrl(name, text, policy) ? text : undefined;
 }
 
 /** A refused URL value for the development warning: its text, or what kind of thing it was. */
@@ -308,7 +371,7 @@ export function dropTopLayerStyle(props: SoftNProps): void {
     if (typeof style !== 'object' || style === null || Array.isArray(style)) continue;
     let copy: Record<string, unknown> | null = null;
     for (const [name, value] of Object.entries(style as Record<string, unknown>)) {
-      if (/^csstext$/i.test(name)) {
+      if (/^csstext$/i.test(name) || /^view-?transition-?(?:name|class)$/i.test(name)) {
         copy ??= { ...(style as Record<string, unknown>) };
         delete copy[name];
         continue;
@@ -346,16 +409,25 @@ export function dropTopLayerStyle(props: SoftNProps): void {
  * The object is copied rather than mutated: it may be the app's own state, and
  * deleting from that would corrupt the state as well as the render.
  */
-export function withholdRemoteStyleUrls(props: SoftNProps, policy: EgressPolicy): void {
+export function withholdRemoteStyleUrls(
+  props: SoftNProps,
+  policy: EgressPolicy,
+  assetResolver?: (path: string) => unknown
+): void {
   if (policy === null) return;
   // `style`, and a component's other style objects — `tooltipStyle`,
   // `overlayStyle` — which it spreads onto an element of its own just the same.
   for (const name of Object.keys(props)) {
-    if (name === 'style' || name.endsWith('Style')) withholdFromStyle(props, name, policy);
+    if (name === 'style' || name.endsWith('Style')) withholdFromStyle(props, name, policy, assetResolver);
   }
 }
 
-function withholdFromStyle(props: SoftNProps, prop: string, policy: NonNullable<EgressPolicy>): void {
+function withholdFromStyle(
+  props: SoftNProps,
+  prop: string,
+  policy: NonNullable<EgressPolicy>,
+  assetResolver?: (path: string) => unknown
+): void {
   const style = props[prop];
   if (typeof style !== 'object' || style === null || Array.isArray(style)) return;
 
@@ -379,7 +451,13 @@ function withholdFromStyle(props: SoftNProps, prop: string, policy: NonNullable<
     const scan = cssResourceReferences(value);
     if (!scan.opaque && scan.urls.length === 0) continue;
     const withheld =
-      scan.opaque || scan.urls.some((target) => !describeMarkupEgress(target, policy).allowed);
+      scan.opaque ||
+      scan.urls.some(
+        (target) =>
+          !describeMarkupEgress(target, policy).allowed ||
+          isHostRootOrTraversalPath(target) ||
+          (assetResolver !== undefined && isRelativeOrRootUrl(target))
+      );
     if (!withheld) continue;
     if (!copy) copy = { ...(style as Record<string, unknown>) };
     delete copy[name];
@@ -467,7 +545,8 @@ function scrubUrlsIn(
   depth: number,
   blocked: string[],
   policy: EgressPolicy,
-  seen: Scrubbed
+  seen: Scrubbed,
+  assetResolver?: (path: string) => unknown
 ): unknown {
   // Elements arriving as a prop were built by `renderElement`, which already
   // sanitized them; copying one here would drop the non-enumerable bookkeeping
@@ -494,7 +573,7 @@ function scrubUrlsIn(
     const entries = value as unknown[];
     let copy: unknown[] | null = null;
     for (let i = 0; i < entries.length; i++) {
-      const next = scrubUrlsIn(entries[i], depth + 1, blocked, policy, seen);
+      const next = scrubUrlsIn(entries[i], depth + 1, blocked, policy, seen, assetResolver);
       if (next !== entries[i]) {
         if (!copy) copy = entries.slice();
         copy[i] = next;
@@ -505,7 +584,7 @@ function scrubUrlsIn(
     const record = value as Record<string, unknown>;
     let copy: Record<string, unknown> | null = null;
     for (const name of Object.keys(record)) {
-      const next = scrubUrlProp(name, record[name], depth + 1, blocked, policy, seen);
+      const next = scrubUrlProp(name, record[name], depth + 1, blocked, policy, seen, assetResolver);
       if (next !== record[name]) {
         if (!copy) copy = { ...record };
         copy[name] = next;
@@ -523,26 +602,32 @@ function scrubUrlProp(
   depth: number,
   blocked: string[],
   policy: EgressPolicy,
-  seen: Scrubbed
+  seen: Scrubbed,
+  assetResolver?: (path: string) => unknown
 ): unknown {
   if (COMPONENT_URL_PROPS.has(urlPropName(name))) {
     if (value === undefined || value === null) return value;
     // Text or nothing, at any depth: see `urlText`. A component that puts
     // `item.href` into an <a> writes a list out exactly as a raw <a> does.
-    const safe = judgedUrl(name, value, policy);
+    const safe = judgedUrl(name, value, policy, assetResolver);
     if (safe === undefined && typeof value !== 'boolean') blocked.push(describeUrlValue(value));
     return safe;
   }
-  return scrubUrlsIn(value, depth, blocked, policy, seen);
+  return scrubUrlsIn(value, depth, blocked, policy, seen, assetResolver);
 }
 
 /** Drop unsafe URLs from the props of a registered component. */
-export function sanitizeComponentUrlProps(props: SoftNProps, tag: string, policy: EgressPolicy): void {
+export function sanitizeComponentUrlProps(
+  props: SoftNProps,
+  tag: string,
+  policy: EgressPolicy,
+  assetResolver?: (path: string) => unknown
+): void {
   const blocked: string[] = [];
 
   const seen: Scrubbed = new Map();
   for (const name of Object.keys(props)) {
-    const next = scrubUrlProp(name, props[name], 0, blocked, policy, seen);
+    const next = scrubUrlProp(name, props[name], 0, blocked, policy, seen, assetResolver);
     if (next !== props[name]) props[name] = next;
   }
 

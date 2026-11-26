@@ -185,6 +185,10 @@ export function rememberedRoomCollections(appId: string | undefined, room: strin
   }
 }
 
+const MAX_PERSISTED_ROOM_COLLECTIONS = 64;
+const MAX_PERSISTED_COLLECTION_NAME_LEN = 64;
+const MAX_PERSISTED_ROOM_COLLECTIONS_BYTES = 4096;
+
 function rememberRoomCollections(appId: string | undefined, room: string, list: string[]): void {
   if (!appId || room.length > MAX_SYNC_ROOM_NAME_LEN) return;
   try {
@@ -194,7 +198,16 @@ function rememberRoomCollections(appId: string | undefined, room: string, list: 
     if (store.getItem(key) === null && countPrefixKeys(store, `${COLLECTIONS_PREFIX}:${appId}:`) >= MAX_PERSISTED_SYNC_ROOMS_PER_APP) {
       return;
     }
-    store.setItem(key, JSON.stringify(list));
+    const bounded: string[] = [];
+    for (const item of list) {
+      if (bounded.length >= MAX_PERSISTED_ROOM_COLLECTIONS) break;
+      if (typeof item === 'string' && item.length > 0 && item.length <= MAX_PERSISTED_COLLECTION_NAME_LEN) {
+        bounded.push(item);
+      }
+    }
+    const serialized = JSON.stringify(bounded);
+    if (serialized.length > MAX_PERSISTED_ROOM_COLLECTIONS_BYTES) return;
+    store.setItem(key, serialized);
   } catch {
     // Quota or a restricted context: the list holds for this start.
   }

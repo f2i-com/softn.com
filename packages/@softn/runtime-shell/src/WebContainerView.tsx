@@ -205,14 +205,13 @@ export function WebContainerView({
     handleRef.current?.setActive(active);
   }, [active]);
 
-  if (fatalError && renderError) {
-    return <>{renderError(fatalError)}</>;
-  }
+  const showError = Boolean(fatalError && renderError);
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%', flex: '1 1 auto', minHeight: 0 }}>
-      <div ref={hostRef} style={{ width: '100%', height: '100%' }} />
-      {booting && loading && (
+      <div ref={hostRef} style={{ width: '100%', height: '100%', display: showError ? 'none' : undefined }} />
+      {showError && fatalError && renderError && renderError(fatalError)}
+      {!showError && booting && loading && (
         <div style={{ position: 'absolute', inset: 0, zIndex: 2 }}>
           {typeof loading === 'function' ? loading(bootStatus) : loading}
         </div>

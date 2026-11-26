@@ -66,11 +66,16 @@ final class Pages
                 $ver = null;
             }
         }
-        // Release the global catalogue lock before any ZIP/prerender disk work.
-        Catalog::release();
-        $prerender = $ver !== null
-            ? self::prerenderFor($slug, $row, $ver, null, '', "/play/$slug", $appDir)
-            : ['themeMode' => null, 'previewHtml' => '', 'sourceType' => 'none', 'entryFile' => null, 'publicPages' => []];
+        // Hold storage.lock (LOCK_SH) before releasing catalog.lock so a concurrent
+        // retire/move cannot remove `$appDir` mid-prerender or create zombie folders.
+        $storageLock = self::holdStorageAndReleaseCatalog();
+        try {
+            $prerender = $ver !== null
+                ? self::prerenderFor($slug, $row, $ver, null, '', "/play/$slug", $appDir)
+                : ['themeMode' => null, 'previewHtml' => '', 'sourceType' => 'none', 'entryFile' => null, 'publicPages' => []];
+        } finally {
+            self::releaseStorageLock($storageLock);
+        }
 
         $html = self::stripStaticHomeHead($html);
         $html = self::replaceOnce('#<title>.*?</title>#s', fn() => '<title>' . $e($title) . '</title>', $html);
@@ -483,22 +488,27 @@ final class Pages
             return self::problem($err->getMessage(), $err->status);
         }
         $cfg = self::playConfig($row, $ver, $forceLocal);
-        // Release the global catalogue lock before reading/extracting ZIP entries or building HTML.
-        Catalog::release();
+        // Hold storage.lock (LOCK_SH) before releasing catalog.lock so a concurrent
+        // retire/move cannot remove `$appDir` while reading/caching bundle entries.
+        $storageLock = self::holdStorageAndReleaseCatalog();
         $html = (string) file_get_contents($shell);
         $appName = (string) $row['name'];
         $appDesc = (string) ($row['description'] ?? '');
         $origin = self::origin();
         $linkBase = "/play/$slug";
-        $prerender = self::prerenderFor(
-            $slug,
-            $row,
-            $ver,
-            is_string($cfg['sha256'] ?? null) ? $cfg['sha256'] : null,
-            $subPath,
-            $linkBase,
-            $appDir
-        );
+        try {
+            $prerender = self::prerenderFor(
+                $slug,
+                $row,
+                $ver,
+                is_string($cfg['sha256'] ?? null) ? $cfg['sha256'] : null,
+                $subPath,
+                $linkBase,
+                $appDir
+            );
+        } finally {
+            self::releaseStorageLock($storageLock);
+        }
 
         $cleanSub = trim(str_replace('\\', '/', $subPath), '/');
         if ($cleanSub !== '' && !($prerender['found'] ?? false)) {
@@ -695,8 +705,8 @@ final class Pages
             }
             $snapshots[] = ['row' => $row, 'slug' => $slug, 'ver' => $ver, 'appDir' => $appDir];
         }
-        Catalog::release();
-
+        $storageLock = self::holdStorageAndReleaseCatalog();
+        try {
         $urls = [
             ['loc' => "$origin/", 'lastmod' => null, 'image' => null, 'title' => null],
             ['loc' => "$origin/apps", 'lastmod' => null, 'image' => null, 'title' => null],
@@ -764,6 +774,9 @@ final class Pages
                     // Unreadable version never breaks sitemap generation.
                 }
             }
+        }
+        } finally {
+            self::releaseStorageLock($storageLock);
         }
 
         $lines = [
@@ -952,6 +965,32 @@ final class Pages
             }
         }
         return $out;
+    }
+
+    /**
+     * Acquire `storage.lock` (LOCK_SH) before releasing `catalog.lock` so a concurrent
+     * retire/purge or folder move cannot delete or relocate `$appDir` while pages read
+     * bundles or update `backend-cache/`.
+     *
+     * @return resource|false
+     */
+    private static function holdStorageAndReleaseCatalog()
+    {
+        $lock = @fopen(Config::dataDir() . '/storage.lock', 'c');
+        if ($lock !== false) {
+            flock($lock, LOCK_SH);
+        }
+        Catalog::release();
+        return $lock;
+    }
+
+    /** @param resource|false $lock */
+    private static function releaseStorageLock($lock): void
+    {
+        if (is_resource($lock)) {
+            flock($lock, LOCK_UN);
+            fclose($lock);
+        }
     }
 
     /**

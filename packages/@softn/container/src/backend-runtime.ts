@@ -130,6 +130,7 @@ export type BackendToHostMsg =
   | { type: 'php-overlay-persist'; overlayJson: string }
   | { type: 'rust-overlay-persist'; overlayJson: string }
   | { type: 'console'; level: 'log' | 'info' | 'warn' | 'error'; text: string }
+  | { type: 'disposed' }
   | { type: 'error'; message: string };
 
 interface RustWsFrameOut {
@@ -1658,6 +1659,7 @@ export class BackendWorkerSession {
       this.drainRustConsole();
       this.forwardRustWsFrames(parsed.wsFrames);
       this.scheduleRustTimerPoll(parsed.nextTimerMs);
+      this.persistRustOverlayIfChanged();
       this.scheduleSqlFlush();
     } catch (err) {
       const text = err instanceof Error ? err.message : String(err);
@@ -1741,6 +1743,7 @@ export class BackendWorkerSession {
       this.drainRustConsole();
       this.forwardRustWsFrames(parsed.wsFrames);
       this.scheduleRustTimerPoll(parsed.nextTimerMs);
+      this.persistRustOverlayIfChanged();
       this.scheduleSqlFlush();
     } catch (err) {
       const text = err instanceof Error ? err.message : String(err);
@@ -1767,6 +1770,7 @@ export class BackendWorkerSession {
       this.drainRustConsole();
       this.forwardRustWsFrames(parsed.wsFrames);
       this.scheduleRustTimerPoll(parsed.nextTimerMs);
+      this.persistRustOverlayIfChanged();
       this.scheduleSqlFlush();
     } catch {
       // ignore close errors
@@ -1779,8 +1783,10 @@ export class BackendWorkerSession {
       clearTimeout(this.rustTimerHandle);
       this.rustTimerHandle = null;
     }
+    try { this.persistRustOverlayIfChanged(); } catch { /* ignore */ }
     try { this.flushSqlNow(); } catch { /* ignore */ }
     this.disposed = true;
+    try { this.postToHost({ type: 'disposed' }); } catch { /* ignore */ }
     try { this.rustEngine?.dispose(); this.rustEngine?.free?.(); } catch { /* ignore */ }
     try { this.phpApp?.dispose(); this.phpApp?.free?.(); } catch { /* ignore */ }
     try { this.phpWorkerEngine?.dispose(); this.phpWorkerEngine?.free?.(); } catch { /* ignore */ }

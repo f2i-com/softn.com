@@ -503,6 +503,10 @@ final class Bundle
             $sha = hash_file('sha256', $tmp);
             if (!@rename($tmp, $cachePath)) {
                 @unlink($tmp);
+                // Another concurrent reader may have already written the identical cached client bundle.
+                if (is_file($cachePath)) {
+                    return $cachePath;
+                }
                 throw new ApiError(503, 'Cannot store client bundle archive.');
             }
             if (is_string($sha) && strlen($sha) === 64) {

@@ -469,6 +469,10 @@ function scanCss(s: Scanner): void {
   /** Inside a declaration block: after the colon, reading a value. */
   let inValue = false;
   const inDecls = () => blocks[blocks.length - 1] === 'decls';
+  /** Cached next `;`, `{`, or `}` position so declaration-vs-nested-selector lookahead stays O(n). */
+  const delimRe = /[;{}]/g;
+  let nextDelimPos = -1;
+  let nextDelimChar = '';
 
   while (!s.done) {
     const ch = s.peek();
@@ -509,10 +513,13 @@ function scanCss(s: Scanner): void {
     if (inDecls() && !inValue && atRule === null) {
       // A declaration, unless a `{` comes before the next `;` or `}` — then it
       // is a nested rule's selector (`&:hover { … }`).
-      const rest = /[;{}]/g;
-      rest.lastIndex = s.pos;
-      const stop = rest.exec(s.src);
-      if (stop?.[0] !== '{') {
+      if (nextDelimPos < s.pos) {
+        delimRe.lastIndex = s.pos;
+        const stop = delimRe.exec(s.src);
+        nextDelimPos = stop ? stop.index : s.src.length;
+        nextDelimChar = stop ? stop[0] : '';
+      }
+      if (nextDelimChar !== '{') {
         const property = matchAt(s, /-{0,2}[A-Za-z_][\w-]*/y);
         if (property && nextNonSpace(s.src, s.pos + property.length) === ':') {
           s.take('property', property.length);

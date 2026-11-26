@@ -81,7 +81,7 @@ export function renderPage(doc,page,assets) {
   const crumbItems=[{name:labels.home,item:doc.site.origin+'/'},{name:labels.docs,item:doc.site.origin+routeFor(doc,indexPage)}];
   if(!isIndex)crumbItems.push({name:page.title,item:canonical});
   const structured={'@context':'https://schema.org','@graph':[
-    {'@type':isIndex?'CollectionPage':'TechArticle','@id':canonical+'#page',url:canonical,headline:page.title,description:page.seo.description,inLanguage:doc.site.language,dateModified:page.updatedAt,isPartOf:{'@id':doc.site.origin+doc.site.basePath+'#documentation'}},
+    {'@type':isIndex?'CollectionPage':'TechArticle','@id':canonical+'#page',url:canonical,headline:page.title,description:page.seo.description,inLanguage:doc.site.language,dateModified:page.updatedAt,...(isIndex?{}:{isPartOf:{'@id':doc.site.origin+routeFor(doc,indexPage)+'#page'}})},
     {'@type':'BreadcrumbList',itemListElement:crumbItems.map((item,i)=>({'@type':'ListItem',position:i+1,name:item.name,item:item.item}))}
   ]};
   const toc=`<nav aria-label="${e(labels.onThisPage)}"><p>${e(labels.onThisPage)}</p><ul>${page.sections.map(s=>`<li><a href="#section-${e(s.id)}">${e(s.title)}</a></li>`).join('')}</ul></nav>`;

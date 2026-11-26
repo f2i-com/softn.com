@@ -180,6 +180,10 @@ return [
     'secret' => '',
     // Entries never sent: exact paths, directories ('notes/') or globs ('*.md').
     'withhold' => [],
+    // For full-stack v2 containers with a server-hosted backend (e.g. PHP/Node backend/),
+    // set this to '/' (or the app's base path) so browser requests route to the server
+    // backend and server/backend source + SQLite files are automatically withheld from ?source.
+    // 'backendUrl' => '/',
     // How long a browser may keep an entry it fetched.
     'cacheSeconds' => 3600,
     // Set to true to include sanitized server-rendered HTML from the app's

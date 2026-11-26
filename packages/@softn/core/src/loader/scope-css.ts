@@ -113,6 +113,7 @@ function pastBlock(css: string, i: number, depth = 0): number {
  */
 function pastValue(css: string, i: number, depth = 0): number {
   const c = css[i];
+  if (c === '\\') return Math.min(i + 2, css.length);
   if (c === '/' && css[i + 1] === '*') return pastComment(css, i);
   if (c === '"' || c === "'") return pastString(css, i);
   if (c === '{' || c === '(' || c === '[') return pastBlock(css, i, depth);
@@ -270,7 +271,9 @@ class Scoper {
       const prelude = css.slice(i, j).trim();
       if (j >= end || css[j] !== '{') {
         // A statement: `@layer a, b;` orders layers and says nothing else.
-        if (/^@layer\s[^{}]*$/i.test(prelude)) out += prelude + ';\n';
+        if (/^@layer\s+[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*(?:\s*,\s*[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)*$/i.test(prelude)) {
+          out += prelude + ';\n';
+        }
         i = j + 1;
         continue;
       }
@@ -417,6 +420,8 @@ const NAMED = /([{;]\s*)(font-family|font|animation-name|animation)(\s*:)([^;{}]
 const TOP_LAYER_APPEARANCE = /^\s*base\b|(?:var|attr|env|if)\s*\(/i;
 const TOP_LAYER_APPEARANCE_DECLARATION =
   /([{;]\s*)(?:-(?:webkit|moz|ms)-)?appearance\s*:\s*(?:base\b|[^;{}]*(?:var|attr|env|if)\s*\()[^;{}]*/gi;
+const TOP_LAYER_TRANSITION_DECLARATION =
+  /([{;]\s*)view-transition-(?:name|class)\s*:[^;{}]*/gi;
 
 const STYLE_KEYS: Record<string, string> = {
   fontFamily: 'font-family',
@@ -503,7 +508,6 @@ function asTheBrowserReadsIt(css: string, app: string): string | null {
   } catch {
     return null;
   }
-  let removed = false;
   const walk = (owner: { cssRules: CSSRuleList; deleteRule(index: number): void }, nested: boolean): void => {
     for (let i = owner.cssRules.length - 1; i >= 0; i--) {
       const rule = owner.cssRules[i];
@@ -529,7 +533,11 @@ function asTheBrowserReadsIt(css: string, app: string): string | null {
             for (const prop of ['appearance', '-webkit-appearance', '-moz-appearance']) {
               if (TOP_LAYER_APPEARANCE.test(frameStyle.getPropertyValue(prop))) {
                 frameStyle.removeProperty(prop);
-                removed = true;
+              }
+            }
+            for (const prop of ['view-transition-name', 'view-transition-class']) {
+              if (frameStyle.getPropertyValue(prop)) {
+                frameStyle.removeProperty(prop);
               }
             }
           }
@@ -540,7 +548,11 @@ function asTheBrowserReadsIt(css: string, app: string): string | null {
         for (const prop of ['appearance', '-webkit-appearance', '-moz-appearance']) {
           if (TOP_LAYER_APPEARANCE.test(style.getPropertyValue(prop))) {
             style.removeProperty(prop);
-            removed = true;
+          }
+        }
+        for (const prop of ['view-transition-name', 'view-transition-class']) {
+          if (style.getPropertyValue(prop)) {
+            style.removeProperty(prop);
           }
         }
       }
@@ -549,12 +561,13 @@ function asTheBrowserReadsIt(css: string, app: string): string | null {
       }
       if (!keep) {
         owner.deleteRule(i);
-        removed = true;
       }
     }
   };
   walk(sheet, false);
-  if (!removed) return css;
+  // Always serialize from CSSOM: `replaceSync()` silently discards disallowed
+  // rules like `@import` without setting `removed = true`, so returning the
+  // original input string when `!removed` would preserve stripped `@import`s.
   return Array.from(sheet.cssRules, (rule) => rule.cssText).join('\n');
 }
 
@@ -565,7 +578,10 @@ function asTheBrowserReadsIt(css: string, app: string): string | null {
  */
 export function scopeAppCss(css: string, app: string): ScopedCss {
   const scoper = new Scoper(css, app);
-  let scoped = scoper.rules(0, css.length).replace(TOP_LAYER_APPEARANCE_DECLARATION, '$1');
+  let scoped = scoper
+    .rules(0, css.length)
+    .replace(TOP_LAYER_APPEARANCE_DECLARATION, '$1')
+    .replace(TOP_LAYER_TRANSITION_DECLARATION, '$1');
   if (scoper.fonts.size > 0 || scoper.animations.size > 0) {
     scoped = scoped.replace(NAMED, (_m, before: string, property: string, colon: string, value: string) =>
       // The `font-family` of an `@font-face` is the new name already.

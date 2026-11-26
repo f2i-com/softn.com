@@ -45,6 +45,7 @@ export interface UiBackendBridgeOptions {
 
 export interface UiBackendBridge {
   netFetchHandler: NetFetchHandler;
+  activate(): void;
   dispose(): void;
 }
 
@@ -105,6 +106,7 @@ export function createUiBackendBridge(options: UiBackendBridgeOptions): UiBacken
 
   const { backend, databases } = extracted;
   let disposed = false;
+  let generation = 0;
   let transportPromise: Promise<{
     transport: LocalBackendTransport;
     match: typeof import('@softn/container').matchBackendTarget;
@@ -154,6 +156,7 @@ export function createUiBackendBridge(options: UiBackendBridgeOptions): UiBacken
 
   async function ensureTransport() {
     if (transportPromise) return transportPromise;
+    const gen = generation;
     transportPromise = (async () => {
       const container = await import('@softn/container');
       const routing = container.buildBackendRoutingConfig(backend);
@@ -219,13 +222,13 @@ export function createUiBackendBridge(options: UiBackendBridgeOptions): UiBacken
         engineModule,
         onConsole: options.onConsole,
       });
-      if (disposed) {
+      if (disposed || gen !== generation) {
         transport.dispose();
         throw new Error('Backend bridge was disposed while starting.');
       }
       liveTransport = transport;
       await transport.ready;
-      if (disposed) {
+      if (disposed || gen !== generation) {
         transport.dispose();
         if (liveTransport === transport) liveTransport = null;
         throw new Error('Backend bridge was disposed while starting.');
@@ -307,8 +310,12 @@ export function createUiBackendBridge(options: UiBackendBridgeOptions): UiBacken
 
   return {
     netFetchHandler,
+    activate() {
+      disposed = false;
+    },
     dispose() {
       disposed = true;
+      generation++;
       liveTransport?.dispose();
       liveTransport = null;
       transportPromise = null;

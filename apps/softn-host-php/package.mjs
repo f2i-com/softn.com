@@ -1,4 +1,6 @@
-import {readFileSync,readdirSync} from 'node:fs';
+import {existsSync,mkdtempSync,readFileSync,readdirSync,rmSync} from 'node:fs';
+import {execFileSync} from 'node:child_process';
+import {tmpdir} from 'node:os';
 import {resolve,join,dirname} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {createHash} from 'node:crypto';
@@ -133,7 +135,8 @@ export function packagePhp({runtime,bundle,client,nodeDir,wasmDir,containerEngin
   const entries={};
   const add=(name,file)=>{entries[name]=readFileSync(file);};
   function tree(dir,prefix,skip=[]) {
-    for(const item of readdirSync(dir,{withFileTypes:true})) {
+    const items=readdirSync(dir,{withFileTypes:true}).sort((a,b)=>(a.name<b.name?-1:a.name>b.name?1:0));
+    for(const item of items) {
       if(skip.includes(item.name)||item.name.endsWith('.map'))continue;
       if(item.isSymbolicLink())throw new Error('Package input contains symlink');
       const file=join(dir,item.name),name=prefix+item.name;
@@ -144,9 +147,20 @@ export function packagePhp({runtime,bundle,client,nodeDir,wasmDir,containerEngin
   // built index.html beside it would be a page with no boot configuration.
   // A packaged single-app dist carries its own README.md (the static archive's
   // explainer); this archive has its own front door, so that one stays out.
-  tree(runtime,'webroot/',['app.softn','runtime.config.json','.htaccess','PREVIEW-BUILD.json','.vite','README.md',...(privateDir?['index.html']:[])]);
+  tree(runtime,'webroot/',['app.softn','runtime.config.json','.htaccess','PREVIEW-BUILD.json','.vite','README.md','DEPLOYMENT.md','THIRD-PARTY-INVENTORY.json',...(privateDir?['index.html']:[])]);
   if(privateDir){for(const name of ['index.php','softn-serve.php'])if(!entries['webroot/'+name])throw new Error('Served runtime missing '+name);}
   else if(!entries['webroot/index.html'])throw new Error('Runtime page missing');
+  // Populate webroot notices directly when the standalone build did not copy them into dist/.
+  const repoRoot=join(here,'../..');
+  for(const name of ['LICENSE','NOTICE']){if(!entries['webroot/'+name]&&existsSync(join(repoRoot,name)))add('webroot/'+name,join(repoRoot,name));}
+  if(!entries['webroot/THIRD-PARTY-NOTICES.txt']&&existsSync(join(notices,'THIRD-PARTY-NOTICES.txt')))add('webroot/THIRD-PARTY-NOTICES.txt',join(notices,'THIRD-PARTY-NOTICES.txt'));
+  if(!entries['webroot/THIRD-PARTY-NOTICES.txt']) {
+    const genTmp=mkdtempSync(join(tmpdir(),'softn-host-notices-'));
+    try {
+      execFileSync(process.execPath,[join(repoRoot,'scripts/licenses/generate-third-party-notices.mjs'),'--out-dir',genTmp],{cwd:repoRoot,stdio:'ignore'});
+      if(existsSync(join(genTmp,'THIRD-PARTY-NOTICES.txt')))add('webroot/THIRD-PARTY-NOTICES.txt',join(genTmp,'THIRD-PARTY-NOTICES.txt'));
+    } finally { rmSync(genTmp,{recursive:true,force:true}); }
+  }
   for(const name of ['LICENSE','NOTICE','THIRD-PARTY-NOTICES.txt'])if(!entries['webroot/'+name])throw new Error('Runtime notices missing');
   tree(join(here,'runtime'),'backend/');
   if(websocketDir)tree(websocketDir,'backend/vendor/ws/');else delete entries['backend/websocket.mjs'];
@@ -182,7 +196,7 @@ export function packagePhp({runtime,bundle,client,nodeDir,wasmDir,containerEngin
     entries['webroot/runtime.config.json']=Buffer.from(JSON.stringify(deploymentConfig(manifest,clientBytes,permissionMode),null,2));
     if(entries['webroot/index.html'])entries['webroot/index.html']=bakeAppSeoHtml(entries['webroot/index.html'],publicManifest,clientFiles);
     if(operator)tree(operator,'backend/operator/');
-    prunedRuntime=pruneHostedRuntimeEntries(entries,{...publicManifest,backend:manifest.backend,server:manifest.server},clientFiles,{webrootPrefix:'webroot/',remoteHostedBackend:Boolean(manifest.backend)});
+    prunedRuntime=pruneHostedRuntimeEntries(entries,{...publicManifest,backend:manifest.backend,server:manifest.server},clientFiles,{webrootPrefix:'webroot/',remoteHostedBackend:Boolean(manifest.backend||manifest.server)});
     const backendType=String(manifest.backend?.runtime??manifest.backend?.type??manifest.server?.runtime??'').toLowerCase();
     const backendServerKeys=Object.keys(entries).filter(n=>/^backend\/app\/(?:backend|server)\//i.test(n));
     backendEngineFilter=new Set();
@@ -217,7 +231,8 @@ export function packagePhp({runtime,bundle,client,nodeDir,wasmDir,containerEngin
     // softn-runner carries its engine inside it.
     softnRunner:runnerDir?{file:'backend/bin/'+RUNNER_BINARY,sha256:sha(entries['backend/bin/'+RUNNER_BINARY]),requestMemoryMb:{default:256,min:128,max:1024}}:null},null,2)+'\n');
   if(Object.keys(entries).some(n=>n.includes('/private/')||n.endsWith('.sqlite')||n.endsWith('backend.json')||n.endsWith('secret.key')||n.endsWith('digest.cache')))throw new Error('Live state in archive');
-  entries['SHA256SUMS.txt']=Buffer.from(Object.entries(entries).map(([n,b])=>sha(b)+'  '+n).join('\n')+'\n');
+  const sortedEntries=Object.entries(entries).sort(([a],[b])=>(a<b?-1:a>b?1:0));
+  entries['SHA256SUMS.txt']=Buffer.from(sortedEntries.map(([n,b])=>sha(b)+'  '+n).join('\n')+'\n');
   // The shared release writer: stores what is already compressed, deflates
   // the rest, reads the file back and compares every entry, writes .sha256.
   // The Node binary and softn-runner keep their executable mode through the unix attributes.

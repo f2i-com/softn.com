@@ -178,13 +178,15 @@ function discoverHtmlEntry(entries: Map<string, Uint8Array>): string | null {
 }
 
 function inferHtmlTitle(html: string): string {
-  const m = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html);
+  const head = html.slice(0, 64 * 1024);
+  const m = /<title[^<>]*>([\s\S]*?)<\/title>/i.exec(head);
   if (!m) return '';
-  return m[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim().slice(0, 64);
+  return m[1].replace(/<[^<>]+>/g, '').replace(/\s+/g, ' ').trim().slice(0, 64);
 }
 
 function discoverHtmlIcon(entries: Map<string, Uint8Array>, html: string): string | undefined {
-  const linkMatch = /<link\b[^>]*rel\s*=\s*["'](?:shortcut\s+)?icon["'][^>]*>/i.exec(html);
+  const head = html.slice(0, 64 * 1024);
+  const linkMatch = /<link\b[^<>]*rel\s*=\s*["'](?:shortcut\s+)?icon["'][^<>]*>/i.exec(head);
   if (linkMatch) {
     const hrefMatch = /\bhref\s*=\s*["']([^"']+)["']/i.exec(linkMatch[0]);
     const clean = hrefMatch?.[1]?.replace(/^\.?\/+/, '').split(/[?#]/)[0];

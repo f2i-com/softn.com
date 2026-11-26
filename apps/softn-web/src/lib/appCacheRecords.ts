@@ -67,7 +67,8 @@ export async function cacheApp(
   directorySlug?: string,
   requestedCapabilities?: string[],
   /** These bytes came by a link. Remembered once seen: see CachedApp.linked. */
-  linked?: boolean
+  linked?: boolean,
+  backendUrl?: string
 ): Promise<CachedApp | null> {
   // The manifest is the bundle's, read as it came: a description written as
   // `{ "en": "…" }` was stored as that and blanked Home when it was drawn.
@@ -116,6 +117,7 @@ export async function cacheApp(
         lastOpened: Date.now(),
         icon: icon ?? existing.icon,
         directorySlug: directorySlug ?? existing.directorySlug,
+        backendUrl: backendUrl ?? existing.backendUrl,
         requestedCapabilities: requestedCapabilities ?? existing.requestedCapabilities,
         ...(linked || existing.linked ? { linked: true } : {}),
       };
@@ -146,6 +148,7 @@ export async function cacheApp(
       lastOpened: Date.now(),
       icon,
       directorySlug,
+      ...(backendUrl ? { backendUrl } : {}),
       requestedCapabilities,
       ...(linked ? { linked: true } : {}),
     };
@@ -287,15 +290,18 @@ export async function getCachedAppByOrigin(origin: string): Promise<CachedApp | 
   }
 }
 
-/** Update the lastOpened timestamp */
+/** Update the lastOpened timestamp atomically inside one readwrite transaction */
 export async function updateLastOpened(id: string): Promise<void> {
   try {
     const db = await getDB();
-    const app = await db.get('softn-apps', id);
+    const tx = db.transaction('softn-apps', 'readwrite');
+    const store = tx.objectStore('softn-apps');
+    const app = await store.get(id);
     if (app) {
       app.lastOpened = Date.now();
-      await db.put('softn-apps', app);
+      await store.put(app);
     }
+    await tx.done;
   } catch {
     // Non-critical, ignore
   }

@@ -83,20 +83,23 @@ export function PrepublishReport({ info, extra = [] }: { info: Inspection | null
 /** A screenshot resized to fit the card, as a PNG (or JPEG when it came in as one). */
 async function fitImage(file: File): Promise<Blob> {
   const bitmap = await createImageBitmap(file);
-  const maxW = 1280;
-  const maxH = 800;
-  const scale = Math.min(1, maxW / bitmap.width, maxH / bitmap.height);
-  const w = Math.max(1, Math.round(bitmap.width * scale));
-  const h = Math.max(1, Math.round(bitmap.height * scale));
-  const canvas = document.createElement('canvas');
-  canvas.width = w;
-  canvas.height = h;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return file;
-  ctx.drawImage(bitmap, 0, 0, w, h);
-  bitmap.close();
-  const type = file.type === 'image/jpeg' ? 'image/jpeg' : 'image/png';
-  return new Promise((resolve) => canvas.toBlob((b) => resolve(b ?? file), type, 0.9));
+  try {
+    const maxW = 1280;
+    const maxH = 800;
+    const scale = Math.min(1, maxW / bitmap.width, maxH / bitmap.height);
+    const w = Math.max(1, Math.round(bitmap.width * scale));
+    const h = Math.max(1, Math.round(bitmap.height * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return file;
+    ctx.drawImage(bitmap, 0, 0, w, h);
+    const type = file.type === 'image/jpeg' ? 'image/jpeg' : 'image/png';
+    return await new Promise<Blob>((resolve) => canvas.toBlob((b) => resolve(b ?? file), type, 0.9));
+  } finally {
+    bitmap.close();
+  }
 }
 
 /**
@@ -130,12 +133,35 @@ export interface ChosenThumbnail {
  */
 export function useThumbnail(say: (problem: string) => void): { thumb: ChosenThumbnail | null; take: (f: File) => Promise<void>; clear: () => void } {
   const [thumb, setThumb] = useState<ChosenThumbnail | null>(null);
+  const activeUrlRef = useRef<string | null>(null);
+  const mountedRef = useRef(true);
+  const reqIdRef = useRef(0);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (activeUrlRef.current) {
+        URL.revokeObjectURL(activeUrlRef.current);
+        activeUrlRef.current = null;
+      }
+    };
+  }, []);
   const take = async (f: File) => {
+    const reqId = ++reqIdRef.current;
     const blob = await fitChosenImage(f, say);
-    if (!blob) return;
-    if (thumb) URL.revokeObjectURL(thumb.url);
-    setThumb({ blob, url: URL.createObjectURL(blob) });
+    if (!blob || !mountedRef.current || reqId !== reqIdRef.current) return;
+    if (activeUrlRef.current) URL.revokeObjectURL(activeUrlRef.current);
+    const nextUrl = URL.createObjectURL(blob);
+    activeUrlRef.current = nextUrl;
+    setThumb({ blob, url: nextUrl });
   };
-  const clear = () => setThumb(null);
+  const clear = () => {
+    reqIdRef.current++;
+    if (activeUrlRef.current) {
+      URL.revokeObjectURL(activeUrlRef.current);
+      activeUrlRef.current = null;
+    }
+    setThumb(null);
+  };
   return { thumb, take, clear };
 }

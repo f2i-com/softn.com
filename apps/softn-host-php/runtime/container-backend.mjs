@@ -470,6 +470,9 @@ const SAFE_PRAGMA_NAMES = new Set([
   'busy_timeout', 'encoding', 'integrity_check', 'quick_check',
   'page_count', 'page_size', 'freelist_count',
 ]);
+const SCHEMA_INTROSPECTION_PRAGMAS = new Set([
+  'table_info', 'table_xinfo', 'index_list', 'index_info', 'foreign_key_list',
+]);
 const WRITABLE_SAFE_PRAGMAS = new Set(['foreign_keys', 'user_version', 'application_id']);
 
 function isHostReservedTable(name) {
@@ -498,7 +501,14 @@ function containerSqlAuthorizer(action, a, b, database, state) {
     case C.SQLITE_PRAGMA: {
       const pName = typeof a === 'string' ? a.toLowerCase() : '';
       if (!SAFE_PRAGMA_NAMES.has(pName)) return C.SQLITE_DENY;
-      if (b !== null && b !== undefined && !WRITABLE_SAFE_PRAGMAS.has(pName)) return C.SQLITE_DENY;
+      if (b !== null && b !== undefined) {
+        if (SCHEMA_INTROSPECTION_PRAGMAS.has(pName)) {
+          const target = typeof b === 'string' ? b : '';
+          if (isHostReservedTable(target) || target.toLowerCase().startsWith('sqlite_')) return C.SQLITE_DENY;
+          return C.SQLITE_OK;
+        }
+        if (!WRITABLE_SAFE_PRAGMAS.has(pName)) return C.SQLITE_DENY;
+      }
       return C.SQLITE_OK;
     }
     case C.SQLITE_FUNCTION: {
@@ -1231,7 +1241,10 @@ class NodeSqlManager {
       ) {
         return {error: `database file limit exceeded (max ${MAX_CONTAINER_DATABASES})`, code: 18, unique: false};
       }
-      if (srcPath === dstPath) return {bytes: existsSync(srcPath) ? lstatSync(srcPath).size : 0};
+      if (!existsSync(srcPath)) {
+        return {error: 'source database does not exist', code: 14, unique: false};
+      }
+      if (srcPath === dstPath) return {bytes: lstatSync(srcPath).size};
       // Flush WAL journal on source DB before file copy so the destination sees all committed writes.
       try {
         const ckpt = new DatabaseSync(srcPath, {allowExtension: false, limits: CONTAINER_SQL_LIMITS});
@@ -1660,8 +1673,12 @@ function isDeniedByHtaccess(vfs, targetPath) {
         blockDenied = false;
         continue;
       }
-      if (blockMatchers && /^(?:Require\s+all\s+denied|Deny\s+from\s+all)\b/i.test(line)) {
-        blockDenied = true;
+      if (/^(?:Require\s+all\s+denied|Deny\s+from\s+all)\b/i.test(line)) {
+        if (blockMatchers) {
+          blockDenied = true;
+        } else {
+          return true;
+        }
       }
     }
   }
@@ -1845,6 +1862,13 @@ export async function handleContainerRequest({root, bundle, data, manifest, conf
           status: 404,
           headers: [['Content-Type', 'application/json; charset=utf-8']],
           bodyBase64: Buffer.from(JSON.stringify({error: 'Endpoint not found.', code: 'not_found'})).toString('base64'),
+        };
+      }
+      if (isDeniedByHtaccess(vfs, '/' + scriptToRun)) {
+        return {
+          status: 403,
+          headers: [['Content-Type', 'application/json; charset=utf-8']],
+          bodyBase64: Buffer.from(JSON.stringify({error: 'Forbidden.', code: 'forbidden'})).toString('base64'),
         };
       }
       const vfsObj = vfsToZippObject(vfs);

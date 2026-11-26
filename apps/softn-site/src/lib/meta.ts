@@ -45,8 +45,17 @@ export function metaFor(page: Page, query?: URLSearchParams): PageMeta {
     case 'directory': {
       const rawCat = (query?.get('category') ?? '').trim().toLowerCase();
       const rawSub = (query?.get('subcategory') ?? '').trim().toLowerCase();
-      const cat = rawCat === 'all' ? '' : rawCat;
-      const sub = rawSub === 'all' ? '' : rawSub;
+      let cat = rawCat === 'all' ? '' : rawCat;
+      let sub = rawSub === 'all' ? '' : rawSub;
+      if (cat.includes('/')) {
+        const [cPart, sPart] = cat.split('/', 2);
+        cat = cPart === 'all' ? '' : cPart;
+        if (!sub && sPart && sPart !== 'all') sub = sPart;
+      } else if (!sub && (cat === 'story' || cat === 'strategy')) {
+        sub = cat;
+        cat = 'games';
+      }
+      if (!cat) sub = '';
       const rawPage = Number.parseInt((query?.get('page') ?? '').trim(), 10);
       const pageNum = Number.isFinite(rawPage) && rawPage > 1 ? rawPage : 1;
       const hasDynamicFilter = Boolean(
@@ -143,11 +152,30 @@ function canonicalOrigin(doc: Document): string {
   return doc.location?.origin ?? '';
 }
 
+const homeLdJsonByDoc = new WeakMap<Document, string | null>();
+
+function captureHomeLdJson(doc: Document): string | null {
+  if (!homeLdJsonByDoc.has(doc)) {
+    const el = doc.head.querySelector<HTMLScriptElement>('script#softn-ld-json[type="application/ld+json"]');
+    homeLdJsonByDoc.set(doc, el?.textContent ?? null);
+  }
+  return homeLdJsonByDoc.get(doc) ?? null;
+}
+
 export function applyMeta(meta: PageMeta, doc: Document = document): void {
   const origin = canonicalOrigin(doc);
   const url = `${origin}${meta.path}`;
+  const homeLdJson = captureHomeLdJson(doc);
   // Clean up route-scoped tags left over from previous pages during SPA transitions.
   doc.head.querySelectorAll('link[rel="prev"], link[rel="next"]').forEach((el) => el.remove());
+  doc.head.querySelectorAll('script[type="application/ld+json"]').forEach((el) => el.remove());
+  if (meta.path === '/' && homeLdJson) {
+    const script = doc.createElement('script');
+    script.type = 'application/ld+json';
+    script.id = 'softn-ld-json';
+    script.textContent = homeLdJson;
+    doc.head.appendChild(script);
+  }
   if (!meta.path.startsWith('/app/')) {
     doc.head.querySelector('meta[name="softn:app"]')?.remove();
   }
@@ -169,7 +197,16 @@ export function applyMeta(meta: PageMeta, doc: Document = document): void {
   }
   if (meta.title) setTitle(meta.title, doc);
   setDescription(meta.description, doc);
-  if (meta.image) setImage(meta.image, meta.imageAlt, doc);
+  if (meta.image) {
+    setImage(meta.image, meta.imageAlt, doc);
+  } else {
+    doc.head.querySelector('meta[property="og:image"]')?.remove();
+    doc.head.querySelector('meta[name="twitter:image"]')?.remove();
+    doc.head.querySelector('meta[property="og:image:alt"]')?.remove();
+    doc.head.querySelector('meta[name="twitter:image:alt"]')?.remove();
+    doc.head.querySelector('meta[property="og:image:width"]')?.remove();
+    doc.head.querySelector('meta[property="og:image:height"]')?.remove();
+  }
   const robots = doc.head.querySelector<HTMLMetaElement>('meta[name="robots"]');
   if (meta.indexable) {
     if (robots && /noindex/i.test(robots.content)) robots.remove();
@@ -195,6 +232,13 @@ export function setImage(imageUrl: string, alt?: string, doc: Document = documen
   const abs = /^https?:\/\//i.test(raw) ? raw : `${origin}${raw.startsWith('/') ? raw : `/${raw}`}`;
   metaTag(doc, 'property', 'og:image').content = abs;
   metaTag(doc, 'name', 'twitter:image').content = abs;
+  if (raw === '/og.png' || abs === `${origin}/og.png`) {
+    metaTag(doc, 'property', 'og:image:width').content = '1200';
+    metaTag(doc, 'property', 'og:image:height').content = '630';
+  } else {
+    doc.head.querySelector('meta[property="og:image:width"]')?.remove();
+    doc.head.querySelector('meta[property="og:image:height"]')?.remove();
+  }
   if (alt && alt.trim()) {
     metaTag(doc, 'property', 'og:image:alt').content = alt.trim();
     metaTag(doc, 'name', 'twitter:image:alt').content = alt.trim();

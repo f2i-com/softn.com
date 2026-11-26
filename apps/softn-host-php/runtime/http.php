@@ -15,7 +15,7 @@ header("Content-Security-Policy: default-src 'none'; frame-ancestors 'none'; for
 function reply(int $status, array $body): never { http_response_code($status); echo json_encode($body, JSON_INVALID_UTF8_SUBSTITUTE); exit; }
 $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH);
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
-if (!is_string($path) || !str_starts_with($path, '/api/') || strlen($path)>256) reply(404, ['error'=>'Not found.','code'=>'not_found']);
+if (!is_string($path) || ($path !== '/api' && !str_starts_with($path, '/api/')) || strlen($path)>256) reply(404, ['error'=>'Not found.','code'=>'not_found']);
 $rawPath = explode('?', (string)($_SERVER['REQUEST_URI'] ?? ''), 2)[0];
 if (str_contains($path, '..') || str_contains($path, '\\') || preg_match('/%(?:2e|2f|5c)/i', $rawPath)) {
     reply(400, ['error'=>'Invalid path.','code'=>'invalid_request']);
@@ -208,7 +208,7 @@ try {
         if(hrtime(true)>$deadline)throw new RuntimeException('timeout');
         $read=[];foreach([1,2] as $i)if(is_resource($pipes[$i])&&!feof($pipes[$i]))$read[]=$pipes[$i];
         $write=is_resource($pipes[0])?[$pipes[0]]:[];$except=[];
-        if($read || $write)@stream_select($read,$write,$except,0,20000);else usleep(10000);
+        if($read || $write){$ready=@stream_select($read,$write,$except,0,20000);if($ready===false)usleep(5000);}else usleep(10000);
         foreach($write as $pipe) {
             $n=fwrite($pipe,substr($input,$offset,65536));if($n===false)throw new RuntimeException('write');$offset+=$n;
             if($offset===strlen($input)){fclose($pipes[0]);$pipes[0]=null;}

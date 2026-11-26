@@ -1510,11 +1510,15 @@ function renderElement(
   // narrower, unambiguous set instead, applied through the whole prop value
   // rather than only its top level.
   const egressPolicy = egressPolicyFor(context);
+  const assetResolver =
+    typeof context.functions?.asset === 'function'
+      ? (context.functions.asset as (path: string) => unknown)
+      : undefined;
   if (typeof FinalComponent === 'string') {
     // `src="images/logo.png"`: the bundle's file, before the URL check. Under egress enforcement,
     // unresolved relative/root-relative paths are stripped rather than left to hit the host origin.
-    showBundleFiles(node, props, context.functions?.asset, egressPolicy !== null);
-    sanitizeUrlProps(props, node.tag, egressPolicy);
+    showBundleFiles(node, props, assetResolver, egressPolicy !== null, svgElement);
+    sanitizeUrlProps(props, node.tag, egressPolicy, assetResolver);
     if (svgElement) sanitizeSvgReferences(props, node.tag, egressPolicy);
     // After the URL check, which drops an action it refuses, and a link
     // it refuses.
@@ -1531,7 +1535,7 @@ function renderElement(
     dropTopLayerProps(props);
     dropDocumentName(props, FinalComponent);
   } else {
-    sanitizeComponentUrlProps(props, node.tag, egressPolicy);
+    sanitizeComponentUrlProps(props, node.tag, egressPolicy, assetResolver);
     coerceDeclaredProps(props, registry.getPropKinds(registry.resolveName(node.tag) ?? node.tag));
   }
   dropRawMarkupProp(props);
@@ -1589,7 +1593,7 @@ function renderElement(
   if (props.style !== undefined && props.style !== null && !isPlainObject(props.style)) delete props.style;
   // Applies to both: a registered component that spreads `style` onto its root
   // element reaches the network by exactly the same route a raw <div> does.
-  withholdRemoteStyleUrls(props, egressPolicy);
+  withholdRemoteStyleUrls(props, egressPolicy, assetResolver);
   dropTopLayerStyle(props);
   if (context.appStyleNames && isPlainObject(props.style)) props.style = context.appStyleNames(props.style);
 

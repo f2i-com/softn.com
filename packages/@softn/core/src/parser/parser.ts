@@ -430,6 +430,10 @@ export class Parser {
   private reopenInside: ElementNode[] = [];
   /** Whether the page has been said to nest too deep (MAX_TREE_DEPTH). */
   private reportedTooDeep = false;
+  /** Current expression recursion depth (bounded to prevent call-stack overflow). */
+  private exprDepth = 0;
+  /** Current control-flow (`#if`/`#each`) nesting depth. */
+  private controlFlowDepth = 0;
   /** What the table just read moved out of itself, to stand before it (see parseElement). */
   private fostered: TemplateNode[] = [];
   /** Whether the top-level elements being read are inside a document's `<head>`. */
@@ -2668,53 +2672,120 @@ export class Parser {
    * Parse control flow (#if, #each, etc.)
    */
   private parseControlFlow(): IfBlock | EachBlock | null {
+    const loc = this.currentLoc();
     this.nextToken(); // consume #
 
-    if (this.curTokenIs(TokenType.IF)) {
-      return this.parseIfBlock();
-    } else if (this.curTokenIs(TokenType.EACH)) {
-      return this.parseEachBlock();
+    if (!this.curTokenIs(TokenType.IF) && !this.curTokenIs(TokenType.EACH)) {
+      return null;
     }
 
-    return null;
+    if (this.controlFlowDepth >= MAX_TREE_DEPTH) {
+      if (!this.reportedTooDeep) {
+        this.reportedTooDeep = true;
+        this.diagnostics.push({
+          message: `This page nests more than ${MAX_TREE_DEPTH} control-flow blocks deep; what is deeper is omitted`,
+          severity: 'warning',
+          loc,
+        });
+      }
+      this.skipExcessControlFlowBlock();
+      return null;
+    }
+    this.controlFlowDepth++;
+    try {
+      if (this.curTokenIs(TokenType.IF)) {
+        return this.parseIfBlock();
+      }
+      return this.parseEachBlock();
+    } finally {
+      this.controlFlowDepth--;
+    }
   }
 
   /**
-   * Parse an if block
+   * Iteratively skip a `#if` or `#each` subtree beyond `MAX_TREE_DEPTH` without
+   * recursing so deeply nested adversarial templates cannot overflow the JS stack
+   * or leak inner content out to a shallower level.
+   */
+  private skipExcessControlFlowBlock(): void {
+    let depth = 1;
+    this.nextToken(); // consume 'if' or 'each'
+    while (!this.curTokenIs(TokenType.EOF) && depth > 0) {
+      this.skipComments();
+      if (this.curTokenIs(TokenType.HASH)) {
+        const nextType = this.peekToken.type;
+        if (nextType === TokenType.IF || nextType === TokenType.EACH) {
+          depth++;
+          this.nextToken();
+          this.nextToken();
+          continue;
+        }
+        if (nextType === TokenType.END) {
+          depth--;
+          this.nextToken();
+          this.nextToken();
+          continue;
+        }
+      } else if (
+        depth === 1 &&
+        this.curTokenIs(TokenType.TAG_END_OPEN) &&
+        this.openTags.length > 0 &&
+        this.openTags.some((t) => t.toLowerCase() === this.peekToken.literal.toLowerCase())
+      ) {
+        break;
+      }
+      this.nextToken();
+    }
+  }
+
+  /**
+   * Parse an if block (iterative over `#elseif` / `#else if` chains to avoid stack overflow)
    */
   private parseIfBlock(head?: SourceLocation): IfBlock {
-    const loc = this.currentLoc();
-    this.nextToken(); // consume 'if'
+    const firstHead = head ?? this.currentLoc();
+    const parseIfHead = (): IfBlock => {
+      const loc = this.currentLoc();
+      this.nextToken(); // consume 'if' or 'elseif'
 
-    const bare = this.openHeader();
-    const condition = this.parseExpression();
-    this.closeHeader(bare, loc);
-    this.reportPendingOperand();
+      const bare = this.openHeader();
+      const condition = this.parseExpression();
+      this.closeHeader(bare, loc);
+      this.reportPendingOperand();
 
-    const consequent = this.parseBranch([TokenType.ELSE, TokenType.ELSEIF, TokenType.END]);
+      const consequent = this.parseBranch([TokenType.ELSE, TokenType.ELSEIF, TokenType.END]);
+      return { type: 'IfBlock', condition, consequent, alternate: undefined, loc };
+    };
 
-    let alternate: TemplateNode[] | IfBlock | undefined;
+    const root = parseIfHead();
+    let tail = root;
 
-    // Check for #else or #elseif
-    if (this.curTokenIs(TokenType.HASH)) {
+    // Check for #elseif / #else if / #else / #end iteratively
+    while (this.curTokenIs(TokenType.HASH)) {
       this.nextToken();
 
       if (this.curTokenIs(TokenType.ELSEIF)) {
-        alternate = this.parseIfBlock(head ?? loc);
-        return { type: 'IfBlock', condition, consequent, alternate, loc };
+        const next = parseIfHead();
+        tail.alternate = next;
+        tail = next;
+        continue;
       } else if (this.curTokenIs(TokenType.ELSE) && this.peekToken.type === TokenType.IF) {
         // `#else if (…)`: the lexer keeps the header open for exactly this
         // spelling, and it is the same chain link `#elseif (…)` makes.
-        this.nextToken(); // consume 'else'; parseIfBlock consumes the 'if'
-        alternate = this.parseIfBlock(head ?? loc);
-        return { type: 'IfBlock', condition, consequent, alternate, loc };
+        this.nextToken(); // consume 'else'; parseIfHead consumes 'if'
+        const next = parseIfHead();
+        tail.alternate = next;
+        tail = next;
+        continue;
       } else if (this.curTokenIs(TokenType.ELSE)) {
         this.nextToken();
-        alternate = this.parseBranch([TokenType.END]);
+        tail.alternate = this.parseBranch([TokenType.END]);
+        break;
       } else if (this.curTokenIs(TokenType.END)) {
         this.nextToken();
         // A following #end belongs to the parent block, not this one.
-        return { type: 'IfBlock', condition, consequent, alternate, loc };
+        return root;
+      } else {
+        break;
       }
     }
 
@@ -2723,10 +2794,10 @@ export class Parser {
       this.nextToken();
       this.nextToken();
     } else {
-      this.reportMissingEnd('#if', head ?? loc);
+      this.reportMissingEnd('#if', firstHead);
     }
 
-    return { type: 'IfBlock', condition, consequent, alternate, loc };
+    return root;
   }
 
   /**
@@ -3013,7 +3084,15 @@ export class Parser {
    * Parse an expression (simplified expression parser)
    */
   private parseExpression(): Expression {
-    return this.parseAssignment();
+    if (this.exprDepth >= 128) {
+      throw new SoftNParseError('Expression nesting exceeds the maximum depth of 128 levels', this.currentLoc());
+    }
+    this.exprDepth++;
+    try {
+      return this.parseAssignment();
+    } finally {
+      this.exprDepth--;
+    }
   }
 
   /**
@@ -3048,7 +3127,16 @@ export class Parser {
       });
     }
     this.nextToken(); // consume the operator
-    const right = this.parseAssignment();
+    if (this.exprDepth >= 128) {
+      throw new SoftNParseError('Expression nesting exceeds the maximum depth of 128 levels', this.currentLoc());
+    }
+    this.exprDepth++;
+    let right: Expression;
+    try {
+      right = this.parseAssignment();
+    } finally {
+      this.exprDepth--;
+    }
     return { type: 'AssignmentExpression', operator, left, right, loc };
   }
 
@@ -3272,7 +3360,16 @@ export class Parser {
       });
     }
     this.nextToken(); // consume **
-    const right = this.parseExponent();
+    if (this.exprDepth >= 128) {
+      throw new SoftNParseError('Expression nesting exceeds the maximum depth of 128 levels', this.currentLoc());
+    }
+    this.exprDepth++;
+    let right: Expression;
+    try {
+      right = this.parseExponent();
+    } finally {
+      this.exprDepth--;
+    }
     return { type: 'BinaryExpression', operator: '**', left, right, loc };
   }
 
@@ -3288,7 +3385,16 @@ export class Parser {
       const loc = this.currentLoc();
       const operator = this.curToken.literal;
       this.nextToken();
-      const argument = this.parseUnary();
+      if (this.exprDepth >= 128) {
+        throw new SoftNParseError('Expression nesting exceeds the maximum depth of 128 levels', this.currentLoc());
+      }
+      this.exprDepth++;
+      let argument: Expression;
+      try {
+        argument = this.parseUnary();
+      } finally {
+        this.exprDepth--;
+      }
       return { type: 'UnaryExpression', operator, argument, prefix: true, loc };
     }
 
@@ -3297,7 +3403,16 @@ export class Parser {
       const loc = this.currentLoc();
       const operator = this.curToken.literal as '++' | '--';
       this.nextToken();
-      const argument = this.parseUnary();
+      if (this.exprDepth >= 128) {
+        throw new SoftNParseError('Expression nesting exceeds the maximum depth of 128 levels', this.currentLoc());
+      }
+      this.exprDepth++;
+      let argument: Expression;
+      try {
+        argument = this.parseUnary();
+      } finally {
+        this.exprDepth--;
+      }
       this.checkUpdateTarget(argument, operator);
       return { type: 'UpdateExpression', operator, prefix: true, argument, loc };
     }

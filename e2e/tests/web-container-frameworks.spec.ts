@@ -146,10 +146,12 @@ for (const framework of ['react', 'vue'] as const) {
       const address = page.url();
       await clickIn(page, '#new');
       await page.keyboard.type('third');
+      await expect.poll(async () => (await seeIn(page, '#new'))?.value).toBe('third');
       await page.keyboard.press('Enter');
       await expect.poll(() => rows(page)).toBe('first,second,third');
       await expect.poll(async () => (await seeIn(page, '#new'))?.value).toBe('');
       await page.keyboard.type('fourth');
+      await expect.poll(async () => (await seeIn(page, '#new'))?.value).toBe('fourth');
       await clickIn(page, '#push');
       await expect.poll(() => rows(page)).toBe('first,second,third,fourth');
       expect(page.url()).toBe(address);
@@ -167,7 +169,7 @@ for (const framework of ['react', 'vue'] as const) {
       // document.head and waits for: it is in before the part is drawn, and it applies.
       await clickIn(page, '#lazy-load');
       await shows(page, '#lazy', 'Lazy loaded');
-      expect((await seeIn(page, '#lazy'))?.letterSpacing).toBe('3px');
+      await expect.poll(async () => (await seeIn(page, '#lazy'))?.letterSpacing).toBe('3px');
 
       // A class the script sets on <html> is where the app's stylesheet looks for it.
       expect((await seeIn(page, '#count'))?.color).not.toBe('rgb(200, 200, 0)');
@@ -227,17 +229,17 @@ for (const framework of ['react', 'vue'] as const) {
       expect((await seeIn(page, '#faded-box'))?.opacity).toBe('1');
       await clickIn(page, '#fade-now');
       await shows(page, '#faded', 'faded');
-      expect((await seeIn(page, '#faded-box'))?.opacity).toBe('0.25');
+      await expect.poll(async () => (await seeIn(page, '#faded-box'))?.opacity).toBe('0.25');
 
       await clickIn(page, '#focus-me');
       await shows(page, '#focused', 'yes');
-      expect((await seeIn(page, '#focus-me'))?.focused).toBe(true);
+      await expect.poll(async () => (await seeIn(page, '#focus-me'))?.focused).toBe(true);
       await page.keyboard.press('Tab');
       await shows(page, '#focused', 'no');
       // The field focused by the script, through the ref the framework keeps it in.
       await clickIn(page, '#focus-by-ref');
       await shows(page, '#focused', 'yes');
-      expect((await seeIn(page, '#focus-me'))?.focused).toBe(true);
+      await expect.poll(async () => (await seeIn(page, '#focus-me'))?.focused).toBe(true);
 
       // The app's own address, moved by the app.
       await clickIn(page, '#go');
@@ -258,7 +260,7 @@ for (const framework of ['react', 'vue'] as const) {
         await expect.poll(() => seeIn(page, '#fade')).toBeNull();
         await clickIn(page, '#toggle');
         await shows(page, '#fade', 'fading');
-        expect((await seeIn(page, '#shown-when-agreed'))?.display).not.toBe('none');
+        await expect.poll(async () => (await seeIn(page, '#shown-when-agreed'))?.display).not.toBe('none');
       }
 
       // A component that throws is caught by the app, and the rest of it goes on.

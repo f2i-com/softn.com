@@ -26,7 +26,13 @@ import { repoRoot as root } from '../lib/paths.mjs';
 
 const dist = path.join(root, 'dist');
 const docs = path.join(dist, 'docs');
-const outDir = path.resolve(root, process.argv.includes('--out') ? process.argv[process.argv.indexOf('--out') + 1] : 'release');
+const outIdx = process.argv.indexOf('--out');
+const outArg = outIdx >= 0 ? process.argv[outIdx + 1] : undefined;
+if (outIdx >= 0 && (!outArg || outArg.startsWith('--'))) {
+  console.error('package-docs: --out requires a directory path.');
+  process.exit(1);
+}
+const outDir = path.resolve(root, outArg ?? 'release');
 
 function fail(message) {
   console.error(`package-docs: ${message}`);
@@ -81,7 +87,7 @@ Nothing outside \`docs/\` changes. Built from softn.com at commit ${commit}.
 
 fs.mkdirSync(outDir, { recursive: true });
 const out = path.join(outDir, name);
-writeArchive(entries, out, { stamp: new Date() });
+writeArchive(entries, out);
 const check = readArchive(fs.readFileSync(out));
 if (check.problems?.length) throw new Error(`The archive did not read back cleanly: ${check.problems.join('; ')}`);
 console.log(`${path.relative(root, out)}: ${entries.size} files, ${(fs.statSync(out).size / 1024 / 1024).toFixed(1)} MB (sha256 beside it)`);

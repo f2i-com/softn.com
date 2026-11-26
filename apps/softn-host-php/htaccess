@@ -37,9 +37,11 @@ AddType text/javascript .mjs
     Header always set Cross-Origin-Embedder-Policy "credentialless"
     # Only this site may frame the app, so another page cannot overlay it and
     # steer a signed-in visitor's clicks. To embed the app on another site,
-    # list that origin after 'self' (and remove X-Frame-Options).
-    Header always set Content-Security-Policy "frame-ancestors 'self'"
-    Header always set X-Frame-Options "SAMEORIGIN"
+    # list that origin after 'self' (and remove X-Frame-Options). Scoped away
+    # from /api so Apache does not overwrite api.php's stricter default-src 'none'
+    # CSP on 4xx/5xx responses.
+    Header always set Content-Security-Policy "frame-ancestors 'self'" "expr=%{REQUEST_URI} !~ m#^/api(?:/|$)#"
+    Header always set X-Frame-Options "SAMEORIGIN" "expr=%{REQUEST_URI} !~ m#^/api(?:/|$)#"
     Header always set Referrer-Policy "strict-origin-when-cross-origin"
     # Fingerprinted build assets are immutable for a year.
     <FilesMatch "-(?:[A-Za-z0-9_-]{8}|[0-9a-f]{12})\.(?:css|js|mjs|wasm|woff2?|ttf|png|jpe?g|gif|webp|svg)$">

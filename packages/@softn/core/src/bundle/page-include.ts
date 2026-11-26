@@ -217,13 +217,16 @@ export interface IgnoredOnUse {
  * author's and the rest was drawn, and behind `//` every line after the
  * first was.
  */
+export const MAX_COMPOSED_SOURCE_CHARS = 16 * 1024 * 1024;
+
 export function placeInclude(
   source: string,
   name: string,
   markup: string,
   onIgnored: (ignored: IgnoredOnUse) => void,
   /** Given a list, it is handed where each use stood, a list for each of the two passes: from, to. */
-  placed?: Array<Array<[number, number]>>
+  placed?: Array<Array<[number, number]>>,
+  maxChars: number = MAX_COMPOSED_SOURCE_CHARS
 ): string {
   const open = `<${name}`;
   const place = (text: string, paired: boolean): string => {
@@ -262,6 +265,10 @@ export function placeInclude(
       }
       if (tag.attributes.length > 0 || children) {
         onIgnored({ attributes: tag.attributes.map((attribute) => attribute.name), children });
+      }
+      const projectedLength = out.length + (at - copied) + markup.length + (text.length - end);
+      if (projectedLength > maxChars) {
+        throw new Error(`Bundle UI composition exceeded the maximum expanded size (${maxChars} characters) while inlining <${name}>`);
       }
       out += text.slice(copied, at) + markup;
       uses?.push([at, end]);

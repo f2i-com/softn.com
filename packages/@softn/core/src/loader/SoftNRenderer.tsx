@@ -172,11 +172,35 @@ export function sanitizeBundleCSS(css: string): string {
   // those reached the network. An escaped backslash is folded to a slash
   // rather than kept, because the URL parser treats `\` as `/` under an
   // http(s) base — `/\host/x` is `//host/x` — and the target test below asks
-  // about slashes. A backslash before a newline is a string continuation and
-  // is left to mean what it says.
-  sanitized = sanitized.replace(/\\([^0-9a-fA-F\r\n\f])/g, (_match, ch: string) =>
-    ch === '\\' ? '/' : ch
-  );
+  // about slashes. Preserve `\"`/`\'` ONLY inside matching string literals so
+  // quote parity stays intact, and fold escaped quotes outside strings to `_`
+  // so `\"` cannot desync string scanning in downstream passes.
+  let unescaped = '';
+  let quote: '"' | "'" | null = null;
+  for (let i = 0; i < sanitized.length; i++) {
+    const ch = sanitized[i];
+    if (ch === '\\' && i + 1 < sanitized.length) {
+      const next = sanitized[i + 1];
+      if (!/[0-9a-fA-F\r\n\f]/.test(next)) {
+        if (next === '\\') {
+          unescaped += '/';
+        } else if (next === '"' || next === "'") {
+          unescaped += quote === next ? `\\${next}` : quote !== null ? next : '_';
+        } else {
+          unescaped += next;
+        }
+        i++;
+        continue;
+      }
+    }
+    if (quote !== null) {
+      if (ch === quote) quote = null;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+    }
+    unescaped += ch;
+  }
+  sanitized = unescaped;
   // Comments out, each a space as it separates tokens, in one pass that reads
   // strings as strings. The passes below matched "whitespace or a comment"
   // between tokens with a pattern that backtracked: twenty-eight empty

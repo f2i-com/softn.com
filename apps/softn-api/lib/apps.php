@@ -251,13 +251,16 @@ final class Apps
                 $raw = $_SERVER[$hdr] ?? '';
                 if (!is_string($raw) || trim($raw) === '') continue;
                 if ($hdr === 'HTTP_HOST') {
-                    $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-                    $selfOrigins[] = $scheme . '://' . trim($raw);
+                    $hostVal = trim($raw);
+                    $selfOrigins[] = (Request::isHttps() ? 'https://' : 'http://') . $hostVal;
+                    // Also reject the opposite scheme on our own host behind TLS-terminating proxies.
+                    $selfOrigins[] = (Request::isHttps() ? 'http://' : 'https://') . $hostVal;
                 } else {
                     $selfOrigins[] = trim($raw);
                 }
             }
-            foreach (Config::allowedOrigins() as $allowed) {
+            $allowedList = Config::get('allowedOrigins', []);
+            foreach (is_array($allowedList) ? $allowedList : [] as $allowed) {
                 if (is_string($allowed) && trim($allowed) !== '') $selfOrigins[] = trim($allowed);
             }
             foreach ($selfOrigins as $candidate) {

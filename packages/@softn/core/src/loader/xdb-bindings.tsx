@@ -657,9 +657,13 @@ export function SoftNWithXDB({
       syncResumedAppRef.current = null;
       return;
     }
+    // Wait until consent is answered and sync is actually permitted so a rejected
+    // pre-consent attempt never permanently suppresses auto-resume after Allow.
+    if (consentPending || (stablePermissionConfig && stablePermissionConfig.permissions?.sync?.enabled !== true)) {
+      return;
+    }
     const appKey = props.appId ?? '_default';
     if (syncResumedAppRef.current === appKey) return;
-    syncResumedAppRef.current = appKey;
     try {
       const savedRoom = readSavedSyncRoom(props.appId);
       // Whether the saved room is a shared one (a host set it up on the app's
@@ -668,10 +672,11 @@ export function SoftNWithXDB({
       // A shared room must not take the per-user key, or different users
       // would join different signalling rooms and never discover each other.
       if (savedRoom) xdbHelpers.startSync(savedRoom);
+      syncResumedAppRef.current = appKey;
     } catch {
-      // localStorage may be unavailable in restricted contexts
+      // localStorage may be unavailable or sync not yet permitted
     }
-  }, [xdbHelpers, props.appId, props.resumeSavedSyncRoom]);
+  }, [xdbHelpers, props.appId, props.resumeSavedSyncRoom, consentPending, stablePermissionConfig]);
 
   // Notify parent of data changes
   useEffect(() => {

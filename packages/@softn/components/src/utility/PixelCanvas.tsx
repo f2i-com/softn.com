@@ -806,10 +806,12 @@ export function PixelCanvas({
     // 45 frames a second shows 45 and one that can make 90 is held by its own
     // pacing (a frame that is not new stops the chain until the next
     // requestAnimationFrame). At most one pull is ever in flight.
+    let frameTick = 0;
     const issue = () => {
       if (rafRef.current === 0 || inFlightRef.current) return;
       const { getFrame: pull } = configRef.current;
       if (!pull) return;
+      const startedTick = frameTick;
       let produced: PixelCanvasSource | Promise<PixelCanvasSource> = null;
       try {
         produced = pull() as PixelCanvasSource | Promise<PixelCanvasSource>;
@@ -826,7 +828,10 @@ export function PixelCanvas({
             if (rafRef.current === 0) return;
             if (frame !== null && frame !== undefined && paint(frame)) {
               framesPaintedRef.current += 1;
-              issue();
+              // Only chain immediately if a rAF tick already passed while this async pull
+              // was in flight; synchronous/microtask-settling Promises wait for the next rAF
+              // so they can never spin an infinite microtask loop and hang the tab.
+              if (frameTick !== startedTick) issue();
             }
           },
           (error) => {
@@ -846,6 +851,7 @@ export function PixelCanvas({
     // are load-bearing elsewhere in SoftN, and a frame loop is the last place
     // to find out.
     const step = (time: number) => {
+      frameTick += 1;
       rafRef.current = requestAnimationFrame(step);
 
       // The measuring window opens before the first frame is drawn, so that

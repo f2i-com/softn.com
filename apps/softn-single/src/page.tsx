@@ -36,6 +36,11 @@ async function boot(): Promise<void> {
     import('react-dom/client'),
     import('./page-shell'),
   ]);
+  if (document.readyState === 'loading' || !document.body) {
+    await new Promise<void>((resolve) => {
+      document.addEventListener('DOMContentLoaded', () => resolve(), { once: true });
+    });
+  }
   // What the browser drew of the page, or the plaintext `softn.js` turned the
   // rest of it into, is not the app: the app is drawn from the page's text.
   document.body.replaceChildren();

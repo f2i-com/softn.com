@@ -197,12 +197,25 @@ function softn_entry_ok(string $name): bool
  * client ever runs them. An operator who deploys that bundle here in place
  * of its public client serves the app without them, not its server source.
  */
+function softn_normalize_withhold(string $pattern): string
+{
+    $p = str_replace('\\', '/', trim($pattern));
+    $trailing = str_ends_with($p, '/');
+    while (str_starts_with($p, './') || str_starts_with($p, '/')) {
+        $p = str_starts_with($p, './') ? substr($p, 2) : substr($p, 1);
+    }
+    $p = strtolower(rtrim($p, '/'));
+    if ($p === '') return '';
+    return $trailing ? ($p . '/') : $p;
+}
+
 function softn_withheld(string $name, array $withhold): bool
 {
     $name = strtolower($name);
     if (str_starts_with($name, 'server/')) return true;
     foreach ($withhold as $pattern) {
-        $pattern = strtolower($pattern);
+        $pattern = softn_normalize_withhold((string)$pattern);
+        if ($pattern === '') continue;
         if (str_ends_with($pattern, '/')) {
             if (str_starts_with($name, $pattern)) return true;
         } elseif ($pattern === $name || fnmatch($pattern, $name)) {
@@ -335,7 +348,8 @@ function softn_withheld_for_bundle(string $name, array $withhold, array $manifes
         if (str_starts_with($lower, 'server/')) return true;
     }
     foreach ($withhold as $pattern) {
-        $pattern = strtolower($pattern);
+        $pattern = softn_normalize_withhold((string)$pattern);
+        if ($pattern === '') continue;
         if (str_ends_with($pattern, '/')) {
             if (str_starts_with($lower, $pattern)) return true;
         } elseif ($pattern === $lower || fnmatch($pattern, $lower)) {
@@ -395,8 +409,12 @@ function softn_config(string $private): array
     if (!is_string($secret) || ($secret !== '' && strlen($secret) < 32)) softn_fail(503, 'secret must be blank or at least 32 characters.');
     $withhold = $raw['withhold'] ?? [];
     if (!is_array($withhold)) softn_fail(503, 'withhold must be a list of paths.');
+    $normalizedWithhold = [];
     foreach ($withhold as $pattern) {
-        if (!is_string($pattern) || $pattern === '' || strtolower(ltrim(str_replace('\\', '/', $pattern), '/')) === 'manifest.json') softn_fail(503, 'withhold must list non-empty paths other than manifest.json.');
+        if (!is_string($pattern)) softn_fail(503, 'withhold must list non-empty paths other than manifest.json.');
+        $norm = softn_normalize_withhold($pattern);
+        if ($norm === '' || $norm === 'manifest.json') softn_fail(503, 'withhold must list non-empty paths other than manifest.json.');
+        $normalizedWithhold[] = $norm;
     }
     $cacheSeconds = $raw['cacheSeconds'] ?? 3600;
     if (!is_int($cacheSeconds) || $cacheSeconds < 0 || $cacheSeconds > 31536000) softn_fail(503, 'cacheSeconds must be between 0 and 31536000.');
@@ -428,7 +446,7 @@ function softn_config(string $private): array
     return [
         'id' => $id, 'title' => $title, 'description' => $description, 'lang' => $lang, 'bundle' => $bundle, 'theme' => $theme,
         'loadingText' => $loadingText, 'permissionMode' => $permissionMode, 'permissions' => $permissions, 'sha256' => $sha256,
-        'viewerToken' => $viewerToken, 'tokenLifetime' => $tokenLifetime, 'secret' => $secret, 'withhold' => array_values($withhold),
+        'viewerToken' => $viewerToken, 'tokenLifetime' => $tokenLifetime, 'secret' => $secret, 'withhold' => $normalizedWithhold,
         'cacheSeconds' => $cacheSeconds, 'allowPrivateInWebroot' => $allowPrivateInWebroot, 'pwa' => $pwa,
         'frameAncestors' => array_values($frameAncestors), 'backendUrl' => $backendUrl, 'prerender' => $prerender,
     ];
@@ -530,7 +548,10 @@ function softn_side(array $config, array $manifest): string
 {
     $theme = $manifest['config']->theme ?? null;
     $mode = is_array($theme) ? ($theme['mode'] ?? null) : null;
-    return $mode === 'light' || $mode === 'dark' ? $mode : $config['theme'];
+    if ($mode === 'light' || $mode === 'dark') return $mode;
+    $top = $manifest['theme'] ?? null;
+    if ($top === 'light' || $top === 'dark') return $top;
+    return $config['theme'];
 }
 
 /** The ground of a side: behind the boot screen, and the browser's colour where the operator chose none. */
@@ -793,18 +814,28 @@ function softn_token_valid(string $token, string $secret): bool
     return hash_equals(substr(hash_hmac('sha256', $body, $secret), 0, 32), $parts[3]);
 }
 
+/** Percent-encode each path segment of a decoded path so spaces/UTF-8 work in URLs and cookies. */
+function softn_encode_path(string $path): string
+{
+    $parts = explode('/', $path);
+    foreach ($parts as &$seg) {
+        if ($seg !== '') $seg = rawurlencode(rawurldecode($seg));
+    }
+    return implode('/', $parts);
+}
+
 /** The directory the page lives in, with a trailing slash: the cookie's scope. */
 function softn_cookie_path(): string
 {
     $script = str_replace('\\', '/', (string)($_SERVER['SCRIPT_NAME'] ?? '/'));
     $dir = dirname($script);
-    return rtrim($dir === '\\' ? '/' : $dir, '/') . '/';
+    return softn_encode_path(rtrim($dir === '\\' ? '/' : $dir, '/') . '/');
 }
 
 /** Path-absolute URL of index.php, what every fetch and asset URL is relative to. */
 function softn_endpoint(): string
 {
-    $script = str_replace('\\', '/', (string)($_SERVER['SCRIPT_NAME'] ?? ''));
+    $script = softn_encode_path(str_replace('\\', '/', (string)($_SERVER['SCRIPT_NAME'] ?? '')));
     if (preg_match('#^/[^?\#\s]*$#', $script) && !str_starts_with($script, '//')) return $script;
     return softn_cookie_path() . 'index.php';
 }
@@ -1431,6 +1462,9 @@ function softn_shell(array $config, string $private): never
     $zip = softn_open($config);
     $manifest = softn_manifest($zip);
     $icon = softn_icon_entry($zip, $manifest);
+    if ($icon !== null && softn_withheld_for_bundle($icon['name'], $config['withhold'], $manifest, $config['backendUrl'])) {
+        $icon = null;
+    }
     $previewHtml = softn_prerender_preview($zip, $manifest, $config);
     $zip->close();
     $endpoint = softn_endpoint();
@@ -1491,13 +1525,29 @@ function softn_shell(array $config, string $private): never
     $https = softn_is_https_request();
     $crossSiteFramed = !empty($config['frameAncestors']) && $https;
     if ($config['viewerToken']) {
-        setcookie(SOFTN_COOKIE, softn_token_issue(softn_secret($config, $private), $config['tokenLifetime']), [
-            'expires' => time() + $config['tokenLifetime'],
-            'path' => softn_cookie_path(),
-            'secure' => $https,
-            'httponly' => true,
-            'samesite' => $crossSiteFramed ? 'None' : 'Strict',
-        ]);
+        $tokenValue = softn_token_issue(softn_secret($config, $private), $config['tokenLifetime']);
+        $expires = time() + $config['tokenLifetime'];
+        $cookiePath = softn_cookie_path();
+        if ($crossSiteFramed) {
+            // Emit CHIPS `Partitioned` alongside `SameSite=None; Secure` so browsers
+            // blocking unpartitioned third-party cookies retain softn_viewer inside frames.
+            header(
+                'Set-Cookie: ' . SOFTN_COOKIE . '=' . rawurlencode($tokenValue)
+                . '; Expires=' . gmdate('D, d M Y H:i:s \G\M\T', $expires)
+                . '; Max-Age=' . $config['tokenLifetime']
+                . '; Path=' . $cookiePath
+                . '; Secure; HttpOnly; SameSite=None; Partitioned',
+                false
+            );
+        } else {
+            setcookie(SOFTN_COOKIE, $tokenValue, [
+                'expires' => $expires,
+                'path' => $cookiePath,
+                'secure' => $https,
+                'httponly' => true,
+                'samesite' => 'Strict',
+            ]);
+        }
     }
     // Hash any inline executable `<script>` blocks (ENTRY_WATCH + optional SW register) so CSP
     // enforces strict `script-src` and `worker-src` without breaking the shell bootstrap.
@@ -1765,7 +1815,8 @@ if ($method !== 'GET' && $method !== 'HEAD') {
 // not this host's, and a 404 says so rather than rendering the page under a
 // name like /app.softn.
 $requestPath = parse_url((string)($_SERVER['REQUEST_URI'] ?? '/'), PHP_URL_PATH);
-if (!is_string($requestPath) || ($requestPath !== softn_endpoint() && $requestPath !== softn_cookie_path())) {
+$decodedRequest = is_string($requestPath) ? rawurldecode($requestPath) : null;
+if (!is_string($decodedRequest) || ($decodedRequest !== rawurldecode(softn_endpoint()) && $decodedRequest !== rawurldecode(softn_cookie_path()))) {
     softn_fail(404, 'Not found.');
 }
 $config = softn_config($private);

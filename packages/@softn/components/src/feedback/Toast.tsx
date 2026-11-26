@@ -172,6 +172,10 @@ export function Toast({
 
   useEffect(() => {
     setVisible(isVisible);
+    holdsRef.current = { hover: false, focus: false };
+    pausedRef.current = false;
+    setIsPaused(false);
+    setIsHovered(false);
     if (isVisible) {
       setProgress(100);
       remainingTimeRef.current = duration;
@@ -267,6 +271,10 @@ export function Toast({
   );
 
   const handleClose = useCallback(() => {
+    holdsRef.current = { hover: false, focus: false };
+    pausedRef.current = false;
+    setIsPaused(false);
+    setIsHovered(false);
     setVisible(false);
     if (timerRef.current) clearInterval(timerRef.current);
     onClose?.();

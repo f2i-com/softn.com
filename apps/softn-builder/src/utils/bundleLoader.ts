@@ -155,14 +155,13 @@ export function loadBundleContents({ manifest, manifestBytes, files, dropped, sy
   // And only over a page: `"engine": 2` with a `.ui` entry is the SoftN bundle its entry is.
   const isWebContainer = Boolean(synthesizedManifest) || manifestRunsInContainer(rawManifest);
   const hasContainerBackend =
-    isWebContainer &&
-    (Boolean(rawManifest.backend && typeof rawManifest.backend === 'object' && !Array.isArray(rawManifest.backend)) ||
-      [...files.keys()].some((k) =>
-        k === 'index.php' ||
-        k === 'Cargo.toml' ||
-        /^(?:server|backend)\/(?:Cargo\.toml|public\/index\.php|index\.php|server\.(?:js|mjs|ts|py)|app\.py|main\.py|src\/main\.rs)$/i.test(k) ||
-        (/^(?:server|backend)\/.*\.(?:php|phtml|rs)$/i.test(k) && !/(?:^|\/)(?:vendor|node_modules)\//i.test(k))
-      ));
+    Boolean(rawManifest.backend && typeof rawManifest.backend === 'object' && !Array.isArray(rawManifest.backend)) ||
+    [...files.keys()].some((k) =>
+      k === 'index.php' ||
+      k === 'Cargo.toml' ||
+      /^(?:server|backend)\/(?:Cargo\.toml|public\/index\.php|index\.php|server\.(?:js|mjs|ts|py)|app\.py|main\.py|src\/main\.rs)$/i.test(k) ||
+      (/^(?:server|backend)\/.*\.(?:php|phtml|rs)$/i.test(k) && !/(?:^|\/)(?:vendor|node_modules)\//i.test(k))
+    );
   if (isWebContainer) {
     for (const [path, bytes] of files) {
       if (path.startsWith('__softn_generated__/') && isGeneratedSourceModule(path, decoder.decode(bytes))) consumed.add(path);

@@ -38,6 +38,9 @@ export interface ModelLoadOptions {
 export interface ModelHostConfig {
   ai?: AIPermissionConfig;
   net?: NetPermission;
+  /** Optional live getters so in-place permission updates take effect immediately. */
+  getAi?: () => AIPermissionConfig | undefined;
+  getNet?: () => NetPermission | undefined;
   /** A file of the app's own bundle, or null when it has none by that name. */
   readBundleFile?: (path: string) => Promise<Blob | null>;
   /** Makes the Worker a model lives in; tests hand in their own. */
@@ -409,13 +412,21 @@ export class ModelHost {
 
   constructor(private readonly config: ModelHostConfig) {}
 
+  private currentAi(): AIPermissionConfig | undefined {
+    return this.config.getAi ? this.config.getAi() : this.config.ai;
+  }
+
+  private currentNet(): NetPermission | undefined {
+    return this.config.getNet ? this.config.getNet() : this.config.net;
+  }
+
   private maxBytes(): number {
-    const mb = num(this.config.ai?.maxModelSizeMB) ?? DEFAULT_MAX_MB;
+    const mb = num(this.currentAi()?.maxModelSizeMB) ?? DEFAULT_MAX_MB;
     return Math.min(HARD_MAX_MODEL_MB, Math.max(1, mb)) * MB;
   }
 
   private allow(kind: Resolved['kind']): void {
-    const allowed = this.config.ai?.allowedSources;
+    const allowed = this.currentAi()?.allowedSources;
     if (allowed && !allowed.includes(kind)) {
       throw new Error(`This app's ai permission does not allow models from ${kind === 'huggingface' ? 'Hugging Face' : kind === 'url' ? 'a URL' : 'its bundle'}`);
     }
@@ -435,7 +446,7 @@ export class ModelHost {
     if (parsed.kind === 'url') {
       // The network, so `ai` alone does not reach it: the same `net` verdict
       // `softn.net.fetch` gets, and no redirect to anywhere it was not given.
-      const net = this.config.net;
+      const net = this.currentNet();
       if (net?.enabled !== true) throw new Error('Downloading a model from a URL needs net in permission.json');
       const verdict = describeNetDestination(parsed.url!, net);
       if (!verdict.allowed) throw new Error(`Model URL not allowed: ${verdict.reason}`);

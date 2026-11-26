@@ -185,16 +185,25 @@ export function AppRunner({ tabId, source, appName, appId, active, initialPage, 
   const [uiSurface, setUiSurface] = useState<LoadedUiAppSurface | null>(() =>
     webContainer ? null : getLoadedUiAppSurface()
   );
+  const [uiSurfaceError, setUiSurfaceError] = useState<string | null>(null);
+  const [uiSurfaceRetry, setUiSurfaceRetry] = useState(0);
   useEffect(() => {
     if (webContainer || !source || uiSurface) return;
     let activeLoad = true;
-    void preloadUiAppSurface().then((loaded) => {
-      if (activeLoad) setUiSurface(loaded);
-    });
+    setUiSurfaceError(null);
+    void preloadUiAppSurface()
+      .then((loaded) => {
+        if (activeLoad) setUiSurface(loaded);
+      })
+      .catch((err) => {
+        if (activeLoad) {
+          setUiSurfaceError(err instanceof Error ? err.message : String(err));
+        }
+      });
     return () => {
       activeLoad = false;
     };
-  }, [webContainer, source, uiSurface]);
+  }, [webContainer, source, uiSurface, uiSurfaceRetry]);
   const [page, setPage] = useState<{ path: string; composed: ComposedBundleSource } | null>(null);
   const followLink = useCallback(
     (href: string): boolean => {
@@ -341,6 +350,7 @@ export function AppRunner({ tabId, source, appName, appId, active, initialPage, 
   }, [webContainer, uiManifest, runtimeAppId, textFiles, bundleData]);
 
   useEffect(() => {
+    uiBackendBridge?.activate();
     return () => {
       uiBackendBridge?.dispose();
     };
@@ -631,6 +641,19 @@ export function AppRunner({ tabId, source, appName, appId, active, initialPage, 
                 )}
               />
             </uiSurface.ThemeProvider>
+          ) : uiSurfaceError ? (
+            <div className="softn-runner-error-wrap" role="alert">
+              <RunnerErrorCard
+                title="Couldn’t load the app runtime"
+                hint="The runtime scripts failed to download. Check your connection and try again."
+                detail={uiSurfaceError}
+                action={
+                  <button type="button" className="softn-runner-retry-btn" onClick={() => setUiSurfaceRetry((n) => n + 1)}>
+                    Try again
+                  </button>
+                }
+              />
+            </div>
           ) : (
             startingScreen(true)
           )}

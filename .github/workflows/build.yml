@@ -208,6 +208,10 @@ jobs:
           DMG_DIR="apps/${{ matrix.app }}/src-tauri/target/release/bundle/dmg"
           mkdir -p "$DMG_DIR"
           APP_PATH=$(find "$APP_DIR" -maxdepth 1 -name "*.app" | head -1)
+          if [[ -z "$APP_PATH" ]]; then
+            echo "No .app bundle found under $APP_DIR" >&2
+            exit 1
+          fi
           APP_NAME=$(basename "$APP_PATH" .app)
           hdiutil create -volname "$APP_NAME" -srcfolder "$APP_PATH" -ov -format UDZO "$DMG_DIR/$APP_NAME.dmg"
 

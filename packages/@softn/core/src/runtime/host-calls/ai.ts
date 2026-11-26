@@ -36,11 +36,10 @@ export class AppAI {
     const { ModelHost } = await import('../models/model-host');
     if (this.gate.disposed()) throw new Error('The app has closed');
     if (!this.modelHost) {
-      const permissions = this.gate.permissionConfig()?.permissions;
-      // The net declaration rides along: a model URL is egress like any other.
+      // Read permissions dynamically so in-place permission narrowing applies immediately.
       this.modelHost = new ModelHost({
-        ai: permissions?.ai,
-        net: permissions?.net,
+        getAi: () => this.gate.permissionConfig()?.permissions?.ai,
+        getNet: () => this.gate.permissionConfig()?.permissions?.net,
         readBundleFile: (path) => this.readBundleFile(path),
       });
     }
@@ -99,27 +98,28 @@ export class AppAI {
   private async getGpuComputeManager(): Promise<
     import('../ai-gpu-compute-manager').GpuComputeManager
   > {
-    if (this.gpuComputeManager) return this.gpuComputeManager;
-    const { GpuComputeManager } = await import('../ai-gpu-compute-manager');
-    if (this.gate.disposed()) throw new Error('The app has closed');
     if (!this.gpuComputeManager) {
-      this.gpuComputeManager = new GpuComputeManager();
-      // A shader the app ships is read as its models are. Only a bundle
-      // provider was asked, and no host supplies one, so every
-      // `createShader({ bundle })` failed with "No bundle file provider".
-      const read = this.readBundleFile;
-      const files: BundleFileProvider = {
-        readFile: async (path) => {
-          const blob = await read(path);
-          return blob ? blob.arrayBuffer() : null;
-        },
-        hasFile: async (path) => (await read(path)) !== null,
-      };
-      this.gpuComputeManager.setBundleFileProvider(files);
-      const gpu = this.gate.permissionConfig()?.permissions.gpu;
-      if (gpu) {
-        this.gpuComputeManager.setPermissionConfig(gpu);
+      const { GpuComputeManager } = await import('../ai-gpu-compute-manager');
+      if (this.gate.disposed()) throw new Error('The app has closed');
+      if (!this.gpuComputeManager) {
+        this.gpuComputeManager = new GpuComputeManager();
+        // A shader the app ships is read as its models are. Only a bundle
+        // provider was asked, and no host supplies one, so every
+        // `createShader({ bundle })` failed with "No bundle file provider".
+        const read = this.readBundleFile;
+        const files: BundleFileProvider = {
+          readFile: async (path) => {
+            const blob = await read(path);
+            return blob ? blob.arrayBuffer() : null;
+          },
+          hasFile: async (path) => (await read(path)) !== null,
+        };
+        this.gpuComputeManager.setBundleFileProvider(files);
       }
+    }
+    const gpu = this.gate.permissionConfig()?.permissions?.gpu;
+    if (gpu) {
+      this.gpuComputeManager.setPermissionConfig(gpu);
     }
     return this.gpuComputeManager;
   }
