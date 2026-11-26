@@ -129,4 +129,14 @@ describe('the step for each kind of failure', () => {
     expect(nextStepFor({ kind: 'stuck', message: 'x', at }, { goOn: 'continue' })!.title).toBe('The run stopped itself');
     expect(nextStepFor({ kind: 'provider', message: 'x', at }, { goOn: 'continue' })!.title).toBe('The AI provider had an error of its own');
   });
+
+  it('distinguishes an empty reply from a text-only build reply', () => {
+    const empty = nextStepFor({ kind: 'empty', message: 'The AI returned an empty reply without making any changes.', fix: 'provider', at }, { goOn: 'continue', hosted: true })!;
+    expect(empty.title).toBe('The AI returned an empty reply');
+    expect(empty.advice).toMatch(/context and output budget/i);
+    expect(empty.advice).toMatch(/the one chosen in the site Studio is opened in/);
+
+    const textOnly = nextStepFor({ kind: 'empty', message: 'The model stopped without building anything: it answered in text.', fix: 'provider', at }, { goOn: 'continue' })!;
+    expect(textOnly.title).toBe('The model answered without building anything');
+  });
 });

@@ -1474,13 +1474,8 @@ async function drive(ctl: RunController): Promise<void> {
         ctl.turns.push({ role: 'user', text: 'Your reply was empty. Carry on with the tools, or call finish.' });
         continue;
       }
-      // A build that wrote nothing and never called finish did not build anything, whatever its text says.
+      // A build or edit that wrote nothing and got an empty reply (or unreadable tool markup) did not succeed.
       const wroteAnything = (record(ctl)?.transactions.length ?? 0) > 0;
-      if (ctl.kind === 'build' && !wroteAnything) {
-        failRun(ctl, 'The model stopped without building anything: it answered in text and never called the tools that write files. Smaller models often cannot drive tool calls. Continue to let it try again, or choose a larger model in AI setup.', undefined, { kind: 'empty', fix: 'provider' });
-        return;
-      }
-      // An edit run that got an empty reply (or unreadable tool markup) and made no changes did not succeed.
       if (!wroteAnything && !ctl.answer) {
         if (protocol === 'text' && /<tool_call\b/i.test(reply.text)) {
           failRun(ctl, 'The model wrote tool calls in a format Studio could not read, so no changes were made. Continue to try again, or choose a tool-capable model in AI setup.', undefined, { kind: 'empty', fix: 'provider' });
@@ -1490,6 +1485,11 @@ async function drive(ctl: RunController): Promise<void> {
           failRun(ctl, 'The AI returned an empty reply without making any changes. Check that the selected model is running, has enough context/output budget, and supports tool calls, then try again.', undefined, { kind: 'empty', fix: 'provider' });
           return;
         }
+      }
+      // A build that wrote nothing and never called finish did not build anything, whatever its text says.
+      if (ctl.kind === 'build' && !wroteAnything) {
+        failRun(ctl, 'The model stopped without building anything: it answered in text and never called the tools that write files. Smaller models often cannot drive tool calls. Continue to let it try again, or choose a larger model in AI setup.', undefined, { kind: 'empty', fix: 'provider' });
+        return;
       }
       await finishRun(ctl, completedSummary(ctl, reply.text.trim() || 'The agent stopped without a summary.'));
       return;

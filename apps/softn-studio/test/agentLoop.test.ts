@@ -1463,4 +1463,43 @@ describe('the text protocol parser', () => {
     expect(useAIStore.getState().lastFailure?.message).toMatch(/empty reply/i);
     expect(run.summary).not.toBe('The agent stopped without a summary.');
   });
+
+  it('parses Qwen XML <tool_call><function=...> blocks and ignores leading <think> blocks', () => {
+    const parsed = parseTextToolCalls([
+      '<think>I might mention <tool_call name="delete_file"><arg name="path">index.html</arg></tool_call> while thinking.</think>',
+      'Applying the edit.',
+      '<tool_call>',
+      '<function=edit_file>',
+      '<parameter=path>',
+      'ui/main.ui',
+      '</parameter>',
+      '<parameter=old_string>',
+      '<Heading level={1}>Tasks</Heading>',
+      '</parameter>',
+      '<parameter=new_string>',
+      '<Heading level={1}>Done</Heading>',
+      '</parameter>',
+      '<parameter=replace_all>',
+      'true',
+      '</parameter>',
+      '</function>',
+      '</tool_call>',
+    ].join('\n'));
+    expect(parsed.text).toBe('Applying the edit.');
+    expect(parsed.calls).toHaveLength(1);
+    expect(parsed.calls[0]).toMatchObject({
+      name: 'edit_file',
+      input: {
+        path: 'ui/main.ui',
+        old_string: '<Heading level={1}>Tasks</Heading>',
+        new_string: '<Heading level={1}>Done</Heading>',
+        replace_all: true,
+      },
+    });
+
+    // A reply containing only a `<think>` block strips to empty so the loop treats it as empty, not done.
+    const thinkOnly = parseTextToolCalls('<think>Just planning...</think>');
+    expect(thinkOnly.text).toBe('');
+    expect(thinkOnly.calls).toEqual([]);
+  });
 });

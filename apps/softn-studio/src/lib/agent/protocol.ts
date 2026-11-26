@@ -288,7 +288,13 @@ export function decodeHosted(reply: HostedAIReply): AgentReply {
 
 function withTextCalls(reply: AgentReply): AgentReply {
   const parsed = parseTextToolCalls(reply.text);
-  return { ...reply, text: parsed.text, calls: parsed.calls, status: reply.status === 'empty' && parsed.calls.length > 0 ? 'complete' : reply.status };
+  const status =
+    parsed.calls.length > 0
+      ? (reply.status === 'empty' ? 'complete' : reply.status)
+      : !parsed.text.trim() && reply.status === 'complete'
+        ? 'empty'
+        : reply.status;
+  return { ...reply, text: parsed.text, calls: parsed.calls, status };
 }
 
 // ---------------------------------------------------------------------------
@@ -520,10 +526,16 @@ export function decodeOpenAI(data: Record<string, unknown>): AgentReply {
   return markTextCalls(reply);
 }
 
+/** Strip leading `<think>...</think>` reasoning blocks emitted by local thinking models. */
+function stripLeadingThinkBlocks(raw: string): string {
+  return raw.replace(/^(?:\s*<think>[\s\S]*?<\/think>\s*)+/i, '');
+}
+
 /** A native reply with no calls whose text is full of text-protocol calls: the model does not use `tools`. */
 function markTextCalls(reply: AgentReply): AgentReply {
   if (reply.calls.length > 0) return reply;
-  if (/<tool_call(?:\s+name=|\s*>)/i.test(reply.text) || FILE_BLOCK_START.test(reply.text)) return { ...reply, wroteCallsAsText: true };
+  const visible = stripLeadingThinkBlocks(reply.text);
+  if (/<tool_call(?:\s+[^>]*\bname\s*=|\s*>)/i.test(visible) || FILE_BLOCK_START.test(visible)) return { ...reply, wroteCallsAsText: true };
   return reply;
 }
 
@@ -538,11 +550,11 @@ const FILE_BLOCK_START = /(?:^|\n)[ \t]*<softn-file\s+path=/i;
 const FILE_BLOCK = /(?:^|\n)[ \t]*<softn-file\s+path="([^"]+)">([\s\S]*?)<\/softn-file>/g;
 
 /**
- * A `<tool_call>` opening tag (either `<tool_call name="..." ...>` or nameless
- * `<tool_call>` carrying a JSON `{"name": "...", "arguments": {...}}` body)
- * or a closing `</tool_call>` tag.
+ * A `<tool_call>` opening tag (either `<tool_call name="..." ...>` with attributes in any
+ * order, or nameless `<tool_call>` carrying a JSON `{"name": "...", "arguments": {...}}` or
+ * Qwen `<function=name><parameter=k>v</parameter></function>` body) or a closing `</tool_call>` tag.
  */
-const CALL_TAG = /<tool_call(?:\s+name\s*=\s*["']([A-Za-z_][\w-]*)["']((?:\s+[A-Za-z_][\w-]*\s*=\s*(?:"[^"]*"|'[^']*'))*)\s*(\/?)|\s*)>|<\/tool_call\s*>/g;
+const CALL_TAG = /<tool_call((?:\s+[A-Za-z_][\w-]*\s*=\s*(?:"[^"]*"|'[^']*'))*)\s*(\/?)\s*>|<\/tool_call\s*>/gi;
 
 interface CallBlock {
   start: number;
@@ -550,6 +562,38 @@ interface CallBlock {
   name: string;
   attributes: string;
   body: string;
+}
+
+/** Pull `name="..."` out of a `<tool_call ...>` attribute string, returning the name and remaining attributes. */
+function splitCallNameAttribute(rawAttrs: string): { name: string; attributes: string } {
+  let name = '';
+  const rest = rawAttrs.replace(/\s+name\s*=\s*(?:"([A-Za-z_][\w-]*)"|'([A-Za-z_][\w-]*)')/i, (_m, dq, sq) => {
+    if (!name) name = dq ?? sq ?? '';
+    return '';
+  });
+  return { name, attributes: rest };
+}
+
+/** Parse Qwen's XML tool-call body (`<function=name><parameter=k>v</parameter></function>`). */
+function parseQwenXmlCall(body: string): { name: string; input: Record<string, unknown> } | null {
+  const fnMatch = body.match(/^\s*<function\s*=\s*([A-Za-z_][\w-]*)\s*>([\s\S]*?)<\/function\s*>\s*$/i);
+  if (!fnMatch) return null;
+  const name = fnMatch[1];
+  const inner = fnMatch[2];
+  const input: Record<string, unknown> = {};
+  const paramRe = /<parameter\s*=\s*([A-Za-z_][\w-]*)\s*>([\s\S]*?)<\/parameter\s*>/gi;
+  let lastIndex = 0;
+  for (const m of inner.matchAll(paramRe)) {
+    const idx = m.index ?? 0;
+    if (inner.slice(lastIndex, idx).trim() !== '') return null;
+    lastIndex = idx + m[0].length;
+    const key = m[1];
+    if (Object.hasOwn(input, key)) continue;
+    const val = m[2].replace(/^\r?\n/, '').replace(/\r?\n$/, '');
+    input[key] = coerce(name, key, val);
+  }
+  if (inner.slice(lastIndex).trim() !== '') return null;
+  return { name, input };
 }
 
 /**
@@ -578,15 +622,17 @@ function callBlocks(raw: string): CallBlock[] {
       }
       continue;
     }
+    const selfClosing = tag[2] === '/';
     if (open) {
-      if (tag[3] !== '/') depth++;
+      if (!selfClosing) depth++;
       continue;
     }
-    if (tag[3] === '/' && tag[1]) {
-      blocks.push({ start: index, end: index + tag[0].length, name: tag[1], attributes: tag[2] ?? '', body: '' });
+    const { name, attributes } = splitCallNameAttribute(tag[1] ?? '');
+    if (selfClosing && name) {
+      blocks.push({ start: index, end: index + tag[0].length, name, attributes, body: '' });
       continue;
     }
-    open = { start: index, bodyStart: index + tag[0].length, name: tag[1] ?? '', attributes: tag[2] ?? '' };
+    open = { start: index, bodyStart: index + tag[0].length, name, attributes };
     depth = 1;
   }
   if (open && lastClose) {
@@ -632,25 +678,32 @@ let textCallCounter = 0;
  * model is told rather than ignored.
  */
 export function parseTextToolCalls(raw: string): { text: string; calls: AgentToolCall[] } {
+  const source = stripLeadingThinkBlocks(raw);
   const calls: AgentToolCall[] = [];
   // A block, or the self-closing form some models write (`<tool_call name="list_files" prefix="ui/" />`);
   // either may carry arguments as attributes.
-  const blocks = callBlocks(raw);
+  const blocks = callBlocks(source);
   // Every block read leaves the text, however its body turns out: a call
   // left in the text would be shown, and sent back, twice.
   let text = '';
   let from = 0;
   for (const block of blocks) {
-    text += raw.slice(from, block.start);
+    text += source.slice(from, block.start);
     from = block.end;
   }
-  text += raw.slice(from);
+  text += source.slice(from);
   let match: RegExpExecArray | null;
   for (const block of blocks) {
     const name = block.name;
     const body = block.body;
     const id = `call_t${++textCallCounter}`;
     if (!name) {
+      // Qwen native XML format: `<tool_call><function=edit_file><parameter=path>...</parameter></function></tool_call>`.
+      const qwenXml = parseQwenXmlCall(body);
+      if (qwenXml) {
+        calls.push({ id, name: qwenXml.name, input: qwenXml.input });
+        continue;
+      }
       // Nameless `<tool_call>{"name":"edit_file","arguments":{...}}</tool_call>` format.
       const json = body.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
       try {
