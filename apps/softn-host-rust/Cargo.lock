@@ -3567,7 +3567,7 @@ dependencies = [
 
 [[package]]
 name = "softn-server"
-version = "0.0.53"
+version = "0.0.54"
 dependencies = [
  "aes-gcm",
  "axum",

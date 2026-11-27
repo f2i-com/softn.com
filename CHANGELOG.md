@@ -6,6 +6,20 @@ notes, above the downloads table; it refuses to package a tag that has no
 section here. Write the section before tagging. Headings are the tag
 (`## v1.2.3`); anything after the tag on the heading line is ignored.
 
+## v0.0.54
+
+- Adds reusable **SoftN v2 app-builder platform capabilities** so sandboxed applications can create, populate, preview, export, and offer other sandboxed `.softn` apps:
+  - Extends `softn:sqlite` with `create()`, `importBytes()`, `createWorkspace()`, a lossless 64-bit integer/decimal/BLOB codec, schema introspection, `integrityCheck()`, `exportBytes()` / `exportSnapshot()`, `flush()`, and `dispose()` while keeping direct frontend access to backend-owned databases disabled.
+  - Hardens `LocalBackendTransport` persistence with versioned envelopes, explicit persistence states, error/quota/conflict propagation, flush acknowledgement, and transferable `ArrayBuffer`s.
+  - Adds declarative manifest database schema migrations with a `_softn_migrations` checksum ledger and automatic pre-upgrade snapshot rollback on failure.
+  - Adds the `@softn/bundle-format` builder and validation SDK alongside guest `softn:bundle`, `softn:files` (chunked file picker + streaming writer), `softn:apps` (host-managed `softn-artifact` dynamic previews + `offerToHost`), and `softn:runtime` capability discovery.
+  - Syncs **capability schema v5** (`sqlite-workspace`, `app-preview`, `app-deploy`) across `@softn/bundle-format`, `@softn/core`, `@softn/runtime-shell`, `softn-api` PHP, the Android packager, and the FormLogic host bridge (`formlogicOfferBundle`).
+  - Adds the official React TSX + PHP Slim full-stack CRUD reference profile (`examples/fullstack-crud/`), interactive local workbench, engineering documentation (`docs/engineering/APP-BUILDER-PLATFORM.md`), and verification test suites.
+- Improves hosted **AI Studio** recovery and **Resume / Continue** with OAIY and thinking models:
+  - Maps hosted bridge `reasoning-only`, `output-truncated`, and `refused` errors (both by error code and fallback message matching for older hosts) into recoverable `AgentReply` states instead of pausing runs as false `'network'` failures.
+  - Tracks `emptyReplies` independently of prose nudges so a reasoning-only reply after an opening prose line automatically retries with a brief-reasoning prompt, resets `nudged` / `emptyReplies` on Resume/Continue with a fresh continuation turn, adds a dedicated reasoning-only guidance card, and forwards `maxOutputTokens` on hosted text requests.
+- Hardens `@softn/container`'s ZIPP WASM loader: validates WebAssembly magic bytes before `WebAssembly.compile()` for clearer diagnostics on non-WASM responses, and falls back to `fallbackGlueFactory` if a strict `script-src 'self'` CSP blocks `blob:` glue imports.
+
 ## v0.0.53
 
 - Upgrades the browser engines, FormLogic runtime package, vendored model stack, Android runtime, and Rust/WASI backend runners to **ZIPP v0.0.42** (`5ccb7a96`), ZIPP's audit release: applications run 2–22% faster than under v0.0.41.
