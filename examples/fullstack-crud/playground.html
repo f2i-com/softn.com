@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SoftN App-Builder Platform — Local Test Workbench</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #020617;
+      color: #f8fafc;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 20px; max-width: 1320px; margin-inline: auto; }
+    header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 18px; }
+    h1 { margin: 0; font-size: 1.45rem; }
+    .sub { color: #94a3b8; font-size: 0.9rem; margin: 4px 0 0; }
+    .tabs { display: flex; gap: 8px; }
+    .tab-btn { padding: 8px 14px; border-radius: 8px; border: 1px solid #334155; background: #0f172a; color: #cbd5e1; cursor: pointer; font-weight: 600; }
+    .tab-btn.active { background: #2563eb; border-color: #3b82f6; color: #fff; }
+    .stage { border: 1px solid #1e293b; border-radius: 12px; overflow: hidden; background: #0f172a; min-height: 760px; display: flex; flex-direction: column; }
+    .stage-bar { padding: 8px 14px; background: #090d16; border-bottom: 1px solid #1e293b; font-size: 0.8rem; color: #94a3b8; display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+    .mount { flex: 1; min-height: 700px; }
+    dialog { background: #0f172a; color: #f8fafc; border: 1px solid #334155; border-radius: 12px; max-width: 520px; width: 92vw; padding: 18px; }
+    dialog::backdrop { background: rgba(2, 6, 23, 0.72); }
+    .dlg-meta { background: #020617; border: 1px solid #1e293b; border-radius: 8px; padding: 10px; font-size: 0.82rem; font-family: ui-monospace, monospace; white-space: pre-wrap; margin: 12px 0; color: #93c5fd; }
+    .dlg-actions { display: flex; justify-content: flex-end; gap: 8px; }
+    .dlg-actions button { padding: 8px 14px; border-radius: 7px; border: 1px solid #475569; background: #1e293b; color: #f8fafc; cursor: pointer; font-weight: 600; }
+    .dlg-actions button.primary { background: #059669; border-color: #10b981; }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>SoftN App-Builder Platform Workbench</h1>
+      <p class="sub">Test both the App Factory capabilities (<code>softn:sqlite</code>, <code>softn:bundle</code>, <code>softn:files</code>, <code>softn:apps</code>, <code>softn:runtime</code>) and the official React TSX + PHP Slim + SQLite CRUD profile.</p>
+    </div>
+    <div class="tabs">
+      <button id="tab-factory" class="tab-btn active" type="button">App Factory Playground</button>
+      <button id="tab-crud" class="tab-btn" type="button">Full-Stack CRUD Profile (React TSX + PHP Slim)</button>
+    </div>
+  </header>
+
+  <div class="stage">
+    <div class="stage-bar">
+      <span id="stage-label">Loading App Factory Playground…</span>
+      <span id="stage-status">Booting</span>
+    </div>
+    <div id="mount" class="mount"></div>
+  </div>
+
+  <dialog id="offer-dialog">
+    <h3 style="margin:0 0 6px">Host Deployment Confirmation (FormLogic Bridge Simulation)</h3>
+    <p style="margin:0;color:#94a3b8;font-size:0.86rem">An application inside SoftN is offering to publish a validated <code>.softn</code> bundle to this host.</p>
+    <div id="offer-meta" class="dlg-meta"></div>
+    <div class="dlg-actions">
+      <button id="offer-cancel" type="button">Decline</button>
+      <button id="offer-accept" class="primary" type="button">Accept & Publish</button>
+    </div>
+  </dialog>
+
+  <script type="module">
+    import { mountSoftNContainer } from '/runtime/softn.js';
+
+    const mountEl = document.getElementById('mount');
+    const stageLabel = document.getElementById('stage-label');
+    const stageStatus = document.getElementById('stage-status');
+    const tabFactory = document.getElementById('tab-factory');
+    const tabCrud = document.getElementById('tab-crud');
+    const offerDialog = document.getElementById('offer-dialog');
+    const offerMeta = document.getElementById('offer-meta');
+    const offerCancel = document.getElementById('offer-cancel');
+    const offerAccept = document.getElementById('offer-accept');
+
+    let activeHandle = null;
+
+    function askOfferConfirmation(offer) {
+      return new Promise((resolve) => {
+        offerMeta.textContent = JSON.stringify({
+          name: offer.name,
+          operation: offer.operation,
+          size: offer.size,
+          sha256: offer.sha256,
+          summary: offer.summary,
+        }, null, 2);
+        const onCancel = () => {
+          cleanup();
+          resolve({ ok: false, status: 'cancelled', message: 'User declined host deployment.' });
+        };
+        const onAccept = () => {
+          cleanup();
+          resolve({
+            ok: true,
+            status: 'accepted',
+            appId: 'local-' + offer.sha256.slice(0, 8),
+            url: location.origin + '/deployed/' + offer.sha256.slice(0, 8),
+            message: 'Accepted by local demo host.',
+          });
+        };
+        const cleanup = () => {
+          offerCancel.removeEventListener('click', onCancel);
+          offerAccept.removeEventListener('click', onAccept);
+          if (offerDialog.open) offerDialog.close();
+        };
+        offerCancel.addEventListener('click', onCancel);
+        offerAccept.addEventListener('click', onAccept);
+        offerDialog.showModal();
+      });
+    }
+
+    async function loadApp(kind) {
+      if (activeHandle) {
+        activeHandle.dispose();
+        activeHandle = null;
+      }
+      mountEl.replaceChildren();
+      const isFactory = kind === 'factory';
+      tabFactory.classList.toggle('active', isFactory);
+      tabCrud.classList.toggle('active', !isFactory);
+      stageLabel.textContent = isFactory
+        ? 'bundles/app-factory.softn — SQLite Workspaces + Bundle Builder + Nested Preview + Host Offer'
+        : 'bundles/fullstack-crud.softn — React TSX + PHP Slim PSR-4/PSR-7 + Versioned SQLite Migrations';
+      stageStatus.textContent = 'Booting…';
+
+      activeHandle = await mountSoftNContainer(mountEl, {
+        source: isFactory ? '/bundles/app-factory.softn' : '/bundles/fullstack-crud.softn',
+        appId: isFactory ? 'local-demo-app-factory' : 'local-demo-fullstack-crud',
+        runtimeUrl: '/runtime/',
+        hostName: 'softn-local-workbench',
+        permissionMode: 'preapproved',
+        nestedApps: 'allow',
+        dynamicPreviews: 'allow',
+        onOfferApp: askOfferConfirmation,
+        onStatus: (s) => { stageStatus.textContent = s.message + ' (' + s.percent + '%)'; },
+        onPersistenceChange: (st) => { stageStatus.textContent = 'SQLite [' + st.dbKey + ']: ' + st.state + ' (rev ' + st.revision + ')'; },
+        onError: (err) => { stageStatus.textContent = 'Error: ' + err.message; },
+      });
+      stageStatus.textContent = 'Ready · engine=' + activeHandle.engineTier;
+    }
+
+    tabFactory.addEventListener('click', () => { void loadApp('factory'); });
+    tabCrud.addEventListener('click', () => { void loadApp('crud'); });
+
+    void loadApp('factory');
+  </script>
+</body>
+</html>

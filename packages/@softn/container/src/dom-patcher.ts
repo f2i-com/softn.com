@@ -348,6 +348,8 @@ export class HostDomPatcher {
   private readonly embeds: EmbedAllowance;
   /** What this page and the others of its tree hold between them (host-policy.ts). */
   private readonly budget: EmbedBudget;
+  /** Checks whether a host-registered `softn-artifact:<id>` exists for this container. */
+  private readonly hasArtifact?: (id: string) => boolean;
   /** The frames the app's page has, each with the address the app last asked it for (as written). */
   private readonly frames = new Map<HTMLIFrameElement, string>();
   /** The frames made in the turn being applied: on no page yet, and not ones to let go of for room. */
@@ -395,6 +397,8 @@ export class HostDomPatcher {
     embeds?: EmbedAllowance;
     /** What the tree's pages hold between them: the mount's, shared with the apps nested in it. This page's alone when none is given. */
     embedBudget?: EmbedBudget;
+    /** Checks whether a host-registered `softn-artifact:<id>` exists for this container. */
+    hasArtifact?: (id: string) => boolean;
     callbacks: DomPatcherCallbacks;
   }) {
     this.viewportEl = params.viewportEl;
@@ -408,6 +412,7 @@ export class HostDomPatcher {
     this.sweepNodesEvery = Math.max(1, params.sweepNodesEvery ?? SWEEP_NODES_EVERY);
     this.embeds = { frames: params.embeds?.frames === true, apps: params.embeds?.apps === true };
     this.budget = params.embedBudget ?? newEmbedBudget();
+    this.hasArtifact = params.hasArtifact;
     this.callbacks = params.callbacks;
     if (params.headEl) this.nodes.set(GUEST_HEAD_ID, params.headEl);
 
@@ -1204,6 +1209,7 @@ export class HostDomPatcher {
             netGranted: this.netGranted,
             ns: el.namespaceURI === MATH_NS ? 'math' : el.namespaceURI === SVG_NS ? 'svg' : undefined,
             fontScope: this.fontScope,
+            hasArtifact: this.hasArtifact,
           });
     // An address of another site's refused (or a part of the value taken out) before the app
     // was allowed the network: kept, to be read again when it is (applyRefusedForNet).
@@ -1290,6 +1296,28 @@ export class HostDomPatcher {
     if (isExternalHref(href)) {
       el.setAttribute('target', '_blank');
     }
+  }
+
+  /** Locate a guest-owned HTMLElement inside this container's viewport by node id or element id. */
+  getElementByNodeOrId(nodeId?: number, elementId?: string): HTMLElement | null {
+    if (typeof nodeId === 'number' && Number.isInteger(nodeId) && nodeId > 1) {
+      const node = this.nodes.get(nodeId);
+      if (node instanceof HTMLElement && this.viewportEl.contains(node)) return node;
+    }
+    if (typeof elementId === 'string' && elementId.trim()) {
+      const wanted = elementId.trim();
+      for (const node of this.nodes.values()) {
+        if (node instanceof HTMLElement && node.id === wanted && this.viewportEl.contains(node)) {
+          return node;
+        }
+      }
+      const root = this.viewportEl.getRootNode();
+      if (root && typeof (root as ShadowRoot).getElementById === 'function') {
+        const found = (root as ShadowRoot).getElementById(wanted);
+        if (found instanceof HTMLElement && this.viewportEl.contains(found)) return found;
+      }
+    }
+    return null;
   }
 
   /** Consume a recent in-container user activation (single-use for sensitive host actions like clipboard/share). */

@@ -16,7 +16,28 @@
  * - Dirty-tracking & SQLite `.db` binary export (`export_bytes()`) for IndexedDB persistence
  */
 
-import type { DatabaseConfig, ZippEngineSource } from './types';
+import { sha256 } from '@softn/bundle-format/sha256';
+import {
+  bytesToHex,
+  normalizeSqlParamsJson,
+  parseXdbResultJson,
+  type SqlParamEncodeOptions,
+} from './sqlite-codec';
+import type {
+  DatabaseConfig,
+  SqlColumnInfo,
+  SqlForeignKeyInfo,
+  SqlIndexInfo,
+  SqlIntegrityReport,
+  SqlMigrationStatus,
+  SqlSchemaMetadata,
+  SqlSnapshotResult,
+  SqlTableSchema,
+  SqlValue,
+  SqlValueMode,
+  SqliteWorkspaceBudget,
+  ZippEngineSource,
+} from './types';
 
 export interface XdbWasmConnection {
   execute_json(sql: string, params_json?: string | null): string;
@@ -52,6 +73,12 @@ export interface XdbBudgetHooks {
   hostChargeSteps?: (steps: number) => void;
 }
 
+export interface XdbPersistMeta {
+  revision: number;
+  checksum: string;
+  schemaVersion: number;
+}
+
 export interface XdbSqlManagerOptions {
   bindings: LoadedXdbBindings;
   /** Declared databases from `manifest.json` or auto-discovered from the archive. */
@@ -62,26 +89,175 @@ export interface XdbSqlManagerOptions {
   binaryFiles?: Readonly<Record<string, Uint8Array>>;
   /** Persisted database images previously saved to host IndexedDB, keyed by normalized `dbKey`. */
   initialPersistedDbs?: Readonly<Record<string, Uint8Array>>;
+  /** Initial persisted metadata (revision, schemaVersion) restored from host IndexedDB. */
+  initialPersistedMeta?: Readonly<Record<string, { revision?: number; schemaVersion?: number; checksum?: string }>>;
   /** Sandbox resource ceilings per connection (`0` = unlimited). */
   maxStepsPerConnection?: bigint;
   maxMemoryBytes?: bigint;
   maxPageReads?: bigint;
+  /** Host-configurable ceiling on distinct named databases (clamped to platform cap). */
+  maxOpenDbs?: number;
+  /** Host-configurable ceiling on databases per temporary workspace (clamped to platform cap). */
+  maxWorkspaceDbs?: number;
+  /** Host-configurable max SQLite import image size in bytes (clamped to platform cap). */
+  maxImportBytes?: number;
   /** Called whenever a database is modified and ready to persist. */
-  onPersist?: (dbKey: string, bytes: Uint8Array) => void;
+  onPersist?: (dbKey: string, bytes: Uint8Array, meta: XdbPersistMeta) => void;
   /** Called whenever a sandboxed database is removed via `remove()`. */
   onRemove?: (dbKey: string) => void;
 }
 
+export interface SqlExecuteOptions extends SqlParamEncodeOptions {
+  valueMode?: SqlValueMode;
+}
+
+export interface SqlErrorResult {
+  error: string;
+  code: number;
+  unique: boolean;
+}
+
 const XDB_ENCODER = new TextEncoder();
 const XDB_DECODER = new TextDecoder();
+const SQLITE_MAGIC = 'SQLite format 3\0';
 const MAX_SQL_RESULT_JSON_CHARS = 16 * 1024 * 1024;
 const MAX_SQL_RESULT_ROWS = 50_000;
-const MAX_EPHEMERAL_DBS = 4;
-const EPHEMERAL_MAX_MEMORY_BYTES = BigInt(32 * 1024 * 1024);
+const MAX_EPHEMERAL_DBS = 8;
+const EPHEMERAL_MAX_MEMORY_BYTES = BigInt(64 * 1024 * 1024);
 const DEFAULT_MAX_STEPS_PER_CONN = 2_000_000_000n;
 const DEFAULT_MAX_PAGE_READS = 50_000_000n;
-const EPHEMERAL_MAX_STEPS = 50_000_000n;
-const EPHEMERAL_MAX_PAGE_READS = 500_000n;
+const EPHEMERAL_MAX_STEPS = 200_000_000n;
+const EPHEMERAL_MAX_PAGE_READS = 2_000_000n;
+const PLATFORM_MAX_OPEN_DBS = 32;
+const PLATFORM_MAX_WORKSPACES = 8;
+const PLATFORM_MAX_WORKSPACE_DBS = 16;
+const PLATFORM_MAX_IMPORT_BYTES = 128 * 1024 * 1024;
+const DEFAULT_MAX_IMPORT_BYTES = 64 * 1024 * 1024;
+const PLATFORM_MAX_WORKSPACE_MEMORY = BigInt(128 * 1024 * 1024);
+const PLATFORM_MAX_WORKSPACE_STEPS = 500_000_000n;
+const PLATFORM_MAX_WORKSPACE_PAGE_READS = 5_000_000n;
+
+function sha256HexSync(bytes: Uint8Array): string {
+  return bytesToHex(sha256(bytes));
+}
+
+function validateSqliteHeader(bytes: Uint8Array): { valid: boolean; reason?: string; pageSize?: number } {
+  if (bytes.byteLength === 0) return { valid: true, pageSize: 4096 };
+  if (bytes.byteLength < 100) {
+    return { valid: false, reason: `SQLite file too small (${bytes.byteLength} bytes, expected >= 100)` };
+  }
+  for (let i = 0; i < 16; i++) {
+    if (bytes[i] !== SQLITE_MAGIC.charCodeAt(i)) {
+      return { valid: false, reason: 'Invalid SQLite file header magic (expected "SQLite format 3\\0")' };
+    }
+  }
+  const rawPageSize = (bytes[16] << 8) | bytes[17];
+  const pageSize = rawPageSize === 1 ? 65536 : rawPageSize;
+  const isPow2 = pageSize >= 512 && pageSize <= 65536 && (pageSize & (pageSize - 1)) === 0;
+  if (!isPow2) {
+    return { valid: false, reason: `Invalid SQLite page size in header (${pageSize})` };
+  }
+  if (bytes.byteLength % pageSize !== 0) {
+    return {
+      valid: false,
+      reason: `SQLite file length (${bytes.byteLength}) is not a multiple of page size (${pageSize})`,
+    };
+  }
+  return { valid: true, pageSize };
+}
+
+function quoteIdent(name: string): string {
+  return `"${String(name).replace(/"/g, '""')}"`;
+}
+
+/**
+ * Fallback parser for SQLite `REFERENCES` clauses inside `CREATE TABLE` DDL
+ * when an engine's `PRAGMA foreign_key_list` returns empty results.
+ */
+function parseForeignKeysFromCreateTableSql(sql: string | null): SqlForeignKeyInfo[] {
+  if (!sql) return [];
+  const open = sql.indexOf('(');
+  const close = sql.lastIndexOf(')');
+  if (open < 0 || close <= open) return [];
+  const body = sql.slice(open + 1, close);
+  // Split top-level comma-separated column/constraint definitions
+  const parts: string[] = [];
+  let depth = 0;
+  let inSingle = false;
+  let inDouble = false;
+  let start = 0;
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i];
+    if (inSingle) {
+      if (ch === "'") inSingle = false;
+    } else if (inDouble) {
+      if (ch === '"') inDouble = false;
+    } else if (ch === "'") {
+      inSingle = true;
+    } else if (ch === '"') {
+      inDouble = true;
+    } else if (ch === '(') {
+      depth++;
+    } else if (ch === ')') {
+      depth = Math.max(0, depth - 1);
+    } else if (ch === ',' && depth === 0) {
+      parts.push(body.slice(start, i).trim());
+      start = i + 1;
+    }
+  }
+  const last = body.slice(start).trim();
+  if (last) parts.push(last);
+
+  const unquote = (ident: string) => ident.trim().replace(/^["`[]|["`\]]$/g, '');
+  const fks: SqlForeignKeyInfo[] = [];
+  let fkId = 0;
+  for (const part of parts) {
+    // Table-level: [CONSTRAINT name] FOREIGN KEY (a, b) REFERENCES parent (x, y) [ON DELETE ...] [ON UPDATE ...]
+    const tblMatch = /(?:CONSTRAINT\s+(?:"[^"]+"|`[^`]+`|\[[^\]]+\]|\w+)\s+)?FOREIGN\s+KEY\s*\(([^)]+)\)\s*REFERENCES\s+("[^"]+"|`[^`]+`|\[[^\]]+\]|\w+)\s*(?:\(([^)]+)\))?([\s\S]*)/i.exec(part);
+    if (tblMatch) {
+      const fromCols = tblMatch[1].split(',').map(unquote).filter(Boolean);
+      const refTable = unquote(tblMatch[2]);
+      const toCols = tblMatch[3] ? tblMatch[3].split(',').map(unquote).filter(Boolean) : fromCols;
+      const tail = tblMatch[4] ?? '';
+      const onDelete = (/ON\s+DELETE\s+(CASCADE|SET\s+NULL|SET\s+DEFAULT|RESTRICT|NO\s+ACTION)/i.exec(tail)?.[1] ?? 'NO ACTION').toUpperCase().replace(/\s+/g, ' ');
+      const onUpdate = (/ON\s+UPDATE\s+(CASCADE|SET\s+NULL|SET\s+DEFAULT|RESTRICT|NO\s+ACTION)/i.exec(tail)?.[1] ?? 'NO ACTION').toUpperCase().replace(/\s+/g, ' ');
+      for (let seq = 0; seq < fromCols.length; seq++) {
+        fks.push({
+          id: fkId,
+          seq,
+          table: refTable,
+          from: fromCols[seq],
+          to: toCols[seq] ?? fromCols[seq],
+          onUpdate,
+          onDelete,
+        });
+      }
+      fkId++;
+      continue;
+    }
+    // Column-level: col_name TYPE ... REFERENCES parent(col) [ON DELETE ...] [ON UPDATE ...]
+    const colMatch = /^("[^"]+"|`[^`]+`|\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_$]*)\b[\s\S]*?\bREFERENCES\s+("[^"]+"|`[^`]+`|\[[^\]]+\]|\w+)\s*(?:\(([^)]+)\))?([\s\S]*)/i.exec(part);
+    if (colMatch) {
+      const fromCol = unquote(colMatch[1]);
+      if (/^(?:PRIMARY|UNIQUE|CHECK|CONSTRAINT|FOREIGN)$/i.test(fromCol)) continue;
+      const refTable = unquote(colMatch[2]);
+      const toCol = colMatch[3] ? unquote(colMatch[3].split(',')[0]) : 'id';
+      const tail = colMatch[4] ?? '';
+      const onDelete = (/ON\s+DELETE\s+(CASCADE|SET\s+NULL|SET\s+DEFAULT|RESTRICT|NO\s+ACTION)/i.exec(tail)?.[1] ?? 'NO ACTION').toUpperCase().replace(/\s+/g, ' ');
+      const onUpdate = (/ON\s+UPDATE\s+(CASCADE|SET\s+NULL|SET\s+DEFAULT|RESTRICT|NO\s+ACTION)/i.exec(tail)?.[1] ?? 'NO ACTION').toUpperCase().replace(/\s+/g, ' ');
+      fks.push({
+        id: fkId++,
+        seq: 0,
+        table: refTable,
+        from: fromCol,
+        to: toCol,
+        onUpdate,
+        onDelete,
+      });
+    }
+  }
+  return fks;
+}
 
 const cachedXdbPromise: Map<string, Promise<LoadedXdbBindings>> = new Map();
 const cachedXdbByModule = new WeakMap<WebAssembly.Module, Promise<LoadedXdbBindings>>();
@@ -393,6 +569,23 @@ interface ManagedDb {
   persistent: boolean;
   dirty: boolean;
   ephemeral: boolean;
+  readOnly: boolean;
+  workspaceId?: string;
+  revision: number;
+  schemaVersion: number;
+  lastChecksum?: string;
+  migrationStatus?: SqlMigrationStatus;
+}
+
+interface WorkspaceState {
+  id: string;
+  maxDatabases: number;
+  maxMemoryBytes: bigint;
+  maxSteps: bigint;
+  maxPageReads: bigint;
+  maxImportBytes: number;
+  handleIds: Set<number>;
+  cancelled: boolean;
 }
 
 /** One backend request's view of the SQL handles (`XdbSqlManager.beginRequestScope`). */
@@ -402,8 +595,8 @@ export interface SqlRequestScope {
   ended: boolean;
 }
 
-const MAX_OPEN_DBS = 8;
-const MAX_OPEN_HANDLES = 32;
+const DEFAULT_MAX_OPEN_DBS = 8;
+const MAX_OPEN_HANDLES = 64;
 
 export class XdbSqlManager {
   private readonly bindings: LoadedXdbBindings;
@@ -411,16 +604,22 @@ export class XdbSqlManager {
   private readonly textFiles: Readonly<Record<string, string>>;
   private readonly binaryFiles: Readonly<Record<string, Uint8Array>>;
   private readonly initialPersistedDbs: Readonly<Record<string, Uint8Array>>;
+  private readonly initialPersistedMeta: Readonly<Record<string, { revision?: number; schemaVersion?: number; checksum?: string }>>;
   private readonly maxSteps: bigint;
   private readonly maxMemory: bigint;
   private readonly maxPageReads: bigint;
-  private readonly onPersist?: (dbKey: string, bytes: Uint8Array) => void;
+  private readonly maxOpenDbs: number;
+  private readonly maxWorkspaceDbs: number;
+  private readonly maxImportBytes: number;
+  private readonly onPersist?: (dbKey: string, bytes: Uint8Array, meta: XdbPersistMeta) => void;
   private readonly onRemove?: (dbKey: string) => void;
 
   /** Shared live persistent databases keyed by normalized `dbKey`. */
   private readonly byKey = new Map<string, ManagedDb>();
   /** Handle table (`connId -> ManagedDb`) exposed to ZIPP guests. */
   private readonly handles = new Map<number, ManagedDb>();
+  /** Isolated temporary database workspaces (`workspaceId -> WorkspaceState`). */
+  private readonly workspaces = new Map<string, WorkspaceState>();
   /**
    * The one handle of each persistent database. Its connection is shared by every open, so
    * every open of it is the same handle, and closing it leaves it open for the others: code
@@ -430,6 +629,7 @@ export class XdbSqlManager {
   private readonly sharedHandleByKey = new Map<string, number>();
   private ephemeralCount = 0;
   private nextHandleId = 1;
+  private nextWorkspaceSeq = 1;
   private disposed = false;
 
   constructor(options: XdbSqlManagerOptions) {
@@ -438,9 +638,22 @@ export class XdbSqlManager {
     this.textFiles = options.textFiles ?? {};
     this.binaryFiles = options.binaryFiles ?? {};
     this.initialPersistedDbs = options.initialPersistedDbs ?? {};
+    this.initialPersistedMeta = options.initialPersistedMeta ?? {};
     this.maxSteps = options.maxStepsPerConnection ?? DEFAULT_MAX_STEPS_PER_CONN;
     this.maxMemory = options.maxMemoryBytes ?? BigInt(128 * 1024 * 1024);
     this.maxPageReads = options.maxPageReads ?? DEFAULT_MAX_PAGE_READS;
+    this.maxOpenDbs =
+      typeof options.maxOpenDbs === 'number' && Number.isInteger(options.maxOpenDbs) && options.maxOpenDbs > 0
+        ? Math.min(options.maxOpenDbs, PLATFORM_MAX_OPEN_DBS)
+        : DEFAULT_MAX_OPEN_DBS;
+    this.maxWorkspaceDbs =
+      typeof options.maxWorkspaceDbs === 'number' && Number.isInteger(options.maxWorkspaceDbs) && options.maxWorkspaceDbs > 0
+        ? Math.min(options.maxWorkspaceDbs, PLATFORM_MAX_WORKSPACE_DBS)
+        : 8;
+    this.maxImportBytes =
+      typeof options.maxImportBytes === 'number' && Number.isFinite(options.maxImportBytes) && options.maxImportBytes > 0
+        ? Math.min(Math.floor(options.maxImportBytes), PLATFORM_MAX_IMPORT_BYTES)
+        : DEFAULT_MAX_IMPORT_BYTES;
     this.onPersist = options.onPersist;
     this.onRemove = options.onRemove;
   }
@@ -489,18 +702,216 @@ export class XdbSqlManager {
     return null;
   }
 
+  private readUserVersion(conn: XdbWasmConnection): number {
+    try {
+      const parsed = parseXdbResultJson(conn.execute_json('PRAGMA user_version', null), 'legacy');
+      const v = Number(parsed.rows[0]?.[0] ?? 0);
+      return Number.isInteger(v) && v >= 0 ? v : 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
+   * Apply versioned, non-destructive schema migrations declared in `DatabaseConfig.migrations`.
+   * Captures a pre-upgrade binary snapshot and restores it cleanly if any migration fails.
+   */
+  private applyDeclaredMigrations(
+    dbKey: string,
+    conn: XdbWasmConnection,
+    cfg: DatabaseConfig,
+    hydratedFromPersisted: boolean,
+    connSteps: bigint,
+    connMem: bigint,
+    connPageReads: bigint
+  ): { conn: XdbWasmConnection; migrated: boolean; schemaVersion: number; status: SqlMigrationStatus } {
+    const migrations = [...(cfg.migrations ?? [])].sort((a, b) => a.version - b.version);
+    const highestMigration = migrations.length > 0 ? migrations[migrations.length - 1].version : 0;
+    const targetVersion = Math.max(cfg.schemaVersion ?? 0, highestMigration);
+
+    if (migrations.length === 0) {
+      const userVer = this.readUserVersion(conn);
+      const effectiveVer = userVer || cfg.schemaVersion || 1;
+      return {
+        conn,
+        migrated: false,
+        schemaVersion: effectiveVer,
+        status: { dbKey, targetVersion: targetVersion || effectiveVer, currentVersion: effectiveVer, applied: [] },
+      };
+    }
+
+    // Read existing ledger if `_softn_migrations` already exists
+    const appliedMap = new Map<number, { version: number; checksum: string; file?: string; appliedAt: string }>();
+    let hasLedger = false;
+    try {
+      const tbl = parseXdbResultJson(
+        conn.execute_json("SELECT name FROM sqlite_master WHERE type='table' AND name='_softn_migrations'", null),
+        'legacy'
+      );
+      if (tbl.rows.length > 0) {
+        hasLedger = true;
+        const ledger = parseXdbResultJson(
+          conn.execute_json('SELECT version, checksum, file, applied_at FROM _softn_migrations ORDER BY version ASC', null),
+          'legacy'
+        );
+        for (const row of ledger.rows) {
+          const v = Number(row[0]);
+          if (Number.isInteger(v) && v > 0) {
+            appliedMap.set(v, {
+              version: v,
+              checksum: String(row[1] ?? ''),
+              file: row[2] != null ? String(row[2]) : undefined,
+              appliedAt: String(row[3] ?? ''),
+            });
+          }
+        }
+      }
+    } catch {
+      hasLedger = false;
+    }
+
+    const userVersion = this.readUserVersion(conn);
+    const maxAppliedLedger = appliedMap.size > 0 ? Math.max(...appliedMap.keys()) : 0;
+    const minDeclaredVersion = migrations[0].version;
+    let currentVersion = Math.max(maxAppliedLedger, userVersion);
+    if (!hasLedger && currentVersion === 0 && hydratedFromPersisted && minDeclaredVersion > 1) {
+      // Upgrading an existing persisted v1 database that pre-dates the migration ledger.
+      currentVersion = 1;
+    }
+
+    // Verify checksums of already-applied migrations to catch accidental tampering
+    for (const mig of migrations) {
+      const prev = appliedMap.get(mig.version);
+      if (!prev) continue;
+      const sqlText = mig.file ? this.findArchiveText(mig.file) : (mig.sql ?? null);
+      if (sqlText !== null) {
+        const expectedChecksum = sha256HexSync(XDB_ENCODER.encode(sqlText));
+        if (prev.checksum && prev.checksum !== expectedChecksum) {
+          throw new Error(
+            `Migration v${mig.version} checksum mismatch for database "${dbKey}" (already applied with ${prev.checksum.slice(0, 12)}, manifest provides ${expectedChecksum.slice(0, 12)})`
+          );
+        }
+      }
+    }
+
+    const pending = migrations.filter((m) => m.version > currentVersion && !appliedMap.has(m.version));
+    if (pending.length === 0) {
+      const finalVersion = Math.max(currentVersion, targetVersion > 0 && currentVersion >= targetVersion ? currentVersion : currentVersion);
+      return {
+        conn,
+        migrated: false,
+        schemaVersion: finalVersion || 1,
+        status: {
+          dbKey,
+          targetVersion: targetVersion || finalVersion || 1,
+          currentVersion: finalVersion || 1,
+          applied: [...appliedMap.values()].sort((a, b) => a.version - b.version),
+        },
+      };
+    }
+
+    // Capture a full recoverable snapshot before applying any migration statements
+    const preUpgradeSnapshot = conn.export_bytes();
+    const activeConn = conn;
+    let appliedCount = 0;
+
+    try {
+      activeConn.execute_json(
+        'CREATE TABLE IF NOT EXISTS _softn_migrations (version INTEGER PRIMARY KEY, checksum TEXT NOT NULL, file TEXT, applied_at TEXT NOT NULL)',
+        null
+      );
+
+      for (const mig of pending) {
+        const sqlText = mig.file ? this.findArchiveText(mig.file) : (mig.sql ?? null);
+        if (sqlText === null || !sqlText.trim()) {
+          throw new Error(`Migration v${mig.version} for database "${dbKey}" has missing or empty SQL${mig.file ? ` (${mig.file})` : ''}`);
+        }
+        const checksum = sha256HexSync(XDB_ENCODER.encode(sqlText));
+        const appliedAt = new Date().toISOString();
+
+        activeConn.execute_json('BEGIN', null);
+        try {
+          activeConn.execute_json(sqlText, null);
+          activeConn.execute_json(
+            'INSERT INTO _softn_migrations (version, checksum, file, applied_at) VALUES (?, ?, ?, ?)',
+            JSON.stringify([mig.version, checksum, mig.file ?? null, appliedAt])
+          );
+          activeConn.execute_json(`PRAGMA user_version = ${mig.version}`, null);
+          activeConn.execute_json('COMMIT', null);
+        } catch (migErr) {
+          try {
+            if (activeConn.in_transaction()) activeConn.execute_json('ROLLBACK', null);
+          } catch {
+            // ignore rollback error; full snapshot restore follows below
+          }
+          throw migErr;
+        }
+        appliedMap.set(mig.version, { version: mig.version, checksum, file: mig.file, appliedAt });
+        currentVersion = mig.version;
+        appliedCount++;
+      }
+
+      if (targetVersion > currentVersion) {
+        activeConn.execute_json(`PRAGMA user_version = ${targetVersion}`, null);
+        currentVersion = targetVersion;
+      }
+
+      return {
+        conn: activeConn,
+        migrated: appliedCount > 0,
+        schemaVersion: currentVersion || 1,
+        status: {
+          dbKey,
+          targetVersion: targetVersion || currentVersion || 1,
+          currentVersion: currentVersion || 1,
+          applied: [...appliedMap.values()].sort((a, b) => a.version - b.version),
+        },
+      };
+    } catch (err) {
+      // Restore the exact pre-upgrade snapshot so user records are never lost or half-migrated
+      try { activeConn.close(); } catch { /* ignore */ }
+      try { activeConn.free(); } catch { /* ignore */ }
+      const restored = new this.bindings.WasmConnection(
+        preUpgradeSnapshot,
+        null,
+        null,
+        4096,
+        connSteps,
+        connMem,
+        connPageReads
+      );
+      const message = err instanceof Error ? err.message : String(err);
+      const status: SqlMigrationStatus = {
+        dbKey,
+        targetVersion: targetVersion || 1,
+        currentVersion: currentVersion || 1,
+        applied: [...appliedMap.values()].sort((a, b) => a.version - b.version),
+        lastError: message,
+      };
+      // Wrap wasm-bindgen string errors in a real Error object so recovery metadata attaches cleanly.
+      const wrapped = err instanceof Error ? err : new Error(`Migration failed for "${dbKey}": ${message}`);
+      (wrapped as { _restoredConn?: XdbWasmConnection; _migrationStatus?: SqlMigrationStatus })._restoredConn = restored;
+      (wrapped as { _restoredConn?: XdbWasmConnection; _migrationStatus?: SqlMigrationStatus })._migrationStatus = status;
+      throw wrapped;
+    }
+  }
+
   private createConnection(dbKey: string, ephemeral: boolean): ManagedDb {
     if (ephemeral && this.ephemeralCount >= MAX_EPHEMERAL_DBS) {
       throw new Error(`Too many ephemeral in-memory SQLite databases open (max ${MAX_EPHEMERAL_DBS})`);
     }
-    if (!ephemeral && !this.byKey.has(dbKey) && this.byKey.size >= MAX_OPEN_DBS) {
-      throw new Error(`Too many distinct SQLite databases open (max ${MAX_OPEN_DBS})`);
+    if (!ephemeral && !this.byKey.has(dbKey) && this.byKey.size >= this.maxOpenDbs) {
+      throw new Error(`Too many distinct SQLite databases open (max ${this.maxOpenDbs})`);
     }
     const cfg = ephemeral ? undefined : this.findConfigForKey(dbKey);
     const persisted = ephemeral
       ? undefined
       : (Object.hasOwn(this.initialPersistedDbs, dbKey) ? this.initialPersistedDbs[dbKey] : undefined) ??
         (cfg && Object.hasOwn(this.initialPersistedDbs, cfg.name) ? this.initialPersistedDbs[cfg.name] : undefined);
+    const persistedMeta = ephemeral
+      ? undefined
+      : (Object.hasOwn(this.initialPersistedMeta, dbKey) ? this.initialPersistedMeta[dbKey] : undefined) ??
+        (cfg && Object.hasOwn(this.initialPersistedMeta, cfg.name) ? this.initialPersistedMeta[cfg.name] : undefined);
 
     let initialBytes: Uint8Array | null = null;
     let walBytes: Uint8Array | null = null;
@@ -524,7 +935,7 @@ export class XdbSqlManager {
     const connSteps = ephemeral ? EPHEMERAL_MAX_STEPS : this.maxSteps;
     const connMem = ephemeral ? (this.maxMemory < EPHEMERAL_MAX_MEMORY_BYTES ? this.maxMemory : EPHEMERAL_MAX_MEMORY_BYTES) : this.maxMemory;
     const connPageReads = ephemeral ? EPHEMERAL_MAX_PAGE_READS : this.maxPageReads;
-    const conn = new this.bindings.WasmConnection(
+    let conn = new this.bindings.WasmConnection(
       initialBytes,
       walBytes,
       journalBytes,
@@ -561,12 +972,52 @@ export class XdbSqlManager {
       }
     }
 
+    let schemaVersion = persistedMeta?.schemaVersion ?? this.readUserVersion(conn);
+    let migrationStatus: SqlMigrationStatus | undefined;
+    let migrated = false;
+    if (!ephemeral && cfg && Array.isArray(cfg.migrations) && cfg.migrations.length > 0) {
+      try {
+        const res = this.applyDeclaredMigrations(dbKey, conn, cfg, hydratedFromPersisted, connSteps, connMem, connPageReads);
+        conn = res.conn;
+        migrated = res.migrated;
+        schemaVersion = res.schemaVersion;
+        migrationStatus = res.status;
+      } catch (err) {
+        const restored = (err as { _restoredConn?: XdbWasmConnection })._restoredConn;
+        const failedStatus = (err as { _migrationStatus?: SqlMigrationStatus })._migrationStatus;
+        if (restored) {
+          // Keep the pre-upgrade database intact and queryable on recovery while surfacing the error!
+          const recovered: ManagedDb = {
+            key: dbKey,
+            conn: restored,
+            persistent: cfg.persist ?? true,
+            dirty: false,
+            ephemeral: false,
+            readOnly: false,
+            revision: persistedMeta?.revision ?? 0,
+            schemaVersion: failedStatus?.currentVersion ?? (schemaVersion || 1),
+            lastChecksum: persistedMeta?.checksum,
+            migrationStatus: failedStatus,
+          };
+          this.byKey.set(dbKey, recovered);
+        }
+        throw err;
+      }
+    } else if (schemaVersion === 0) {
+      schemaVersion = cfg?.schemaVersion ?? 1;
+    }
+
     const managed: ManagedDb = {
       key: dbKey,
       conn,
       persistent: !ephemeral && (cfg?.persist ?? true),
-      dirty: seeded,
+      dirty: seeded || migrated,
       ephemeral,
+      readOnly: false,
+      revision: persistedMeta?.revision ?? 0,
+      schemaVersion,
+      lastChecksum: persistedMeta?.checksum,
+      migrationStatus,
     };
 
     if (ephemeral) {
@@ -601,12 +1052,16 @@ export class XdbSqlManager {
   }
 
   /** Open a SQLite connection handle (returning `{ id }` or `{ error, code, unique }`). */
-  open(rawUrl: string): { id: number } | { error: string; code: number; unique: boolean } {
+  open(
+    rawUrl: string,
+    options?: { readOnly?: boolean }
+  ): { id: number; readOnly?: boolean } | SqlErrorResult {
     if (this.disposed) return { error: 'SQLite manager is disposed', code: 21, unique: false };
     try {
       const { key, inMemory } = normalizeDbKey(rawUrl);
       const canonical = inMemory ? ':memory:' : this.resolveCanonicalKey(key);
-      if (!inMemory) {
+      const wantsReadOnly = options?.readOnly === true;
+      if (!inMemory && !wantsReadOnly) {
         const shared = this.sharedHandleByKey.get(canonical);
         const live = this.byKey.get(canonical);
         if (shared !== undefined && live && this.handles.get(shared) === live) return { id: shared };
@@ -614,19 +1069,329 @@ export class XdbSqlManager {
       if (this.handles.size >= MAX_OPEN_HANDLES) {
         return { error: `Too many open SQLite connection handles (max ${MAX_OPEN_HANDLES})`, code: 14, unique: false };
       }
-      if (!inMemory && !this.byKey.has(canonical) && this.byKey.size >= MAX_OPEN_DBS) {
-        return { error: `Too many distinct SQLite databases open (max ${MAX_OPEN_DBS})`, code: 14, unique: false };
+      if (!inMemory && !this.byKey.has(canonical) && this.byKey.size >= this.maxOpenDbs) {
+        return { error: `Too many distinct SQLite databases open (max ${this.maxOpenDbs})`, code: 14, unique: false };
       }
-      const managed = inMemory
+      const base = inMemory
         ? this.createConnection(':memory:', true)
         : this.byKey.get(canonical) ?? this.createConnection(canonical, false);
+      if (wantsReadOnly && !inMemory) {
+        // Return an independent read-only view wrapper around the live connection so writers stay unaffected
+        const id = this.nextHandleId++;
+        this.handles.set(id, { ...base, readOnly: true });
+        return { id, readOnly: true };
+      }
+      if (wantsReadOnly) {
+        base.readOnly = true;
+        try { base.conn.execute_json('PRAGMA query_only = ON', null); } catch { /* enforced by host too */ }
+      }
       const id = this.nextHandleId++;
-      this.handles.set(id, managed);
-      if (!managed.ephemeral) this.sharedHandleByKey.set(managed.key, id);
-      return { id };
+      this.handles.set(id, base);
+      if (!base.ephemeral && !wantsReadOnly) this.sharedHandleByKey.set(base.key, id);
+      return { id, ...(wantsReadOnly ? { readOnly: true } : {}) };
     } catch (err) {
       return classifySqlError(err);
     }
+  }
+
+  /** Create a new isolated temporary (or named non-aliased) database handle. */
+  createDatabase(options?: {
+    temporary?: boolean;
+    name?: string;
+    readOnly?: boolean;
+    workspaceId?: string;
+  }): { id: number; readOnly: boolean; temporary: boolean; workspaceId?: string } | SqlErrorResult {
+    if (this.disposed) return { error: 'SQLite manager is disposed', code: 21, unique: false };
+    try {
+      const workspaceId = options?.workspaceId;
+      const ws = workspaceId ? this.workspaces.get(workspaceId) : undefined;
+      if (workspaceId && !ws) {
+        return { error: `Invalid SQLite workspace: ${workspaceId}`, code: 21, unique: false };
+      }
+      if (ws?.cancelled) {
+        return { error: 'SQLite workspace operation was cancelled', code: 9, unique: false };
+      }
+      if (this.handles.size >= MAX_OPEN_HANDLES) {
+        return { error: `Too many open SQLite connection handles (max ${MAX_OPEN_HANDLES})`, code: 14, unique: false };
+      }
+      const isTemporary = Boolean(ws) || options?.temporary !== false;
+      if (!isTemporary && options?.name) {
+        const opened = this.open(options.name, { readOnly: options.readOnly });
+        if ('error' in opened) return opened;
+        return { id: opened.id, readOnly: options.readOnly === true, temporary: false };
+      }
+      if (ws) {
+        if (ws.handleIds.size >= ws.maxDatabases) {
+          return { error: `Workspace database limit reached (max ${ws.maxDatabases})`, code: 14, unique: false };
+        }
+      } else if (this.ephemeralCount >= MAX_EPHEMERAL_DBS) {
+        return { error: `Too many temporary SQLite databases open (max ${MAX_EPHEMERAL_DBS})`, code: 14, unique: false };
+      }
+      const connSteps = ws ? ws.maxSteps : EPHEMERAL_MAX_STEPS;
+      const connMem = ws ? ws.maxMemoryBytes : (this.maxMemory < EPHEMERAL_MAX_MEMORY_BYTES ? this.maxMemory : EPHEMERAL_MAX_MEMORY_BYTES);
+      const connPageReads = ws ? ws.maxPageReads : EPHEMERAL_MAX_PAGE_READS;
+      const conn = new this.bindings.WasmConnection(null, null, null, 4096, connSteps, connMem, connPageReads);
+      const readOnly = options?.readOnly === true;
+      if (readOnly) {
+        try { conn.execute_json('PRAGMA query_only = ON', null); } catch { /* host enforces too */ }
+      }
+      const id = this.nextHandleId++;
+      const managed: ManagedDb = {
+        key: ws ? `workspace:${ws.id}:${id}` : `temp:${id}`,
+        conn,
+        persistent: false,
+        dirty: false,
+        ephemeral: true,
+        readOnly,
+        workspaceId: ws?.id,
+        revision: 0,
+        schemaVersion: 1,
+      };
+      this.handles.set(id, managed);
+      if (ws) ws.handleIds.add(id);
+      else this.ephemeralCount++;
+      return { id, readOnly, temporary: true, ...(ws ? { workspaceId: ws.id } : {}) };
+    } catch (err) {
+      return classifySqlError(err);
+    }
+  }
+
+  /** Open an uploaded/provided binary SQLite database image as an isolated handle (zero aliasing). */
+  importBytes(
+    bytes: Uint8Array,
+    options?: { readOnly?: boolean; temporary?: boolean; workspaceId?: string }
+  ): { id: number; readOnly: boolean; temporary: boolean; byteLength: number; workspaceId?: string } | SqlErrorResult {
+    if (this.disposed) return { error: 'SQLite manager is disposed', code: 21, unique: false };
+    try {
+      if (!(bytes instanceof Uint8Array)) {
+        return { error: 'importBytes requires a Uint8Array SQLite database image', code: 21, unique: false };
+      }
+      const workspaceId = options?.workspaceId;
+      const ws = workspaceId ? this.workspaces.get(workspaceId) : undefined;
+      if (workspaceId && !ws) {
+        return { error: `Invalid SQLite workspace: ${workspaceId}`, code: 21, unique: false };
+      }
+      if (ws?.cancelled) {
+        return { error: 'SQLite workspace operation was cancelled', code: 9, unique: false };
+      }
+      const limit = ws ? ws.maxImportBytes : this.maxImportBytes;
+      if (bytes.byteLength > limit) {
+        return {
+          error: `SQLite import (${bytes.byteLength} bytes) exceeds maximum allowed size (${limit} bytes)`,
+          code: 18,
+          unique: false,
+        };
+      }
+      if (bytes.byteLength > 0) {
+        const hdr = validateSqliteHeader(bytes);
+        if (!hdr.valid) {
+          return { error: hdr.reason ?? 'Invalid SQLite database header', code: 26, unique: false };
+        }
+      }
+      if (this.handles.size >= MAX_OPEN_HANDLES) {
+        return { error: `Too many open SQLite connection handles (max ${MAX_OPEN_HANDLES})`, code: 14, unique: false };
+      }
+      if (ws) {
+        if (ws.handleIds.size >= ws.maxDatabases) {
+          return { error: `Workspace database limit reached (max ${ws.maxDatabases})`, code: 14, unique: false };
+        }
+      } else if (this.ephemeralCount >= MAX_EPHEMERAL_DBS) {
+        return { error: `Too many temporary SQLite databases open (max ${MAX_EPHEMERAL_DBS})`, code: 14, unique: false };
+      }
+      const connSteps = ws ? ws.maxSteps : EPHEMERAL_MAX_STEPS;
+      const connMem = ws ? ws.maxMemoryBytes : (this.maxMemory < EPHEMERAL_MAX_MEMORY_BYTES ? this.maxMemory : EPHEMERAL_MAX_MEMORY_BYTES);
+      const connPageReads = ws ? ws.maxPageReads : EPHEMERAL_MAX_PAGE_READS;
+      const copy = bytes.byteLength > 0 ? bytes.slice() : null;
+      const conn = new this.bindings.WasmConnection(copy, null, null, 4096, connSteps, connMem, connPageReads);
+      const readOnly = options?.readOnly === true;
+      if (readOnly) {
+        try { conn.execute_json('PRAGMA query_only = ON', null); } catch { /* host enforces too */ }
+      }
+      const id = this.nextHandleId++;
+      const managed: ManagedDb = {
+        key: ws ? `workspace:${ws.id}:${id}` : `import:${id}`,
+        conn,
+        persistent: false,
+        dirty: false,
+        ephemeral: true,
+        readOnly,
+        workspaceId: ws?.id,
+        revision: 0,
+        schemaVersion: this.readUserVersion(conn) || 1,
+      };
+      this.handles.set(id, managed);
+      if (ws) ws.handleIds.add(id);
+      else this.ephemeralCount++;
+      return {
+        id,
+        readOnly,
+        temporary: options?.temporary !== false,
+        byteLength: bytes.byteLength,
+        ...(ws ? { workspaceId: ws.id } : {}),
+      };
+    } catch (err) {
+      return classifySqlError(err);
+    }
+  }
+
+  /** Create an isolated workspace with host-enforced database, memory, and execution budgets. */
+  createWorkspace(
+    budget?: SqliteWorkspaceBudget
+  ): { id: string; workspaceId: string; limits: Required<SqliteWorkspaceBudget> } | SqlErrorResult {
+    if (this.disposed) return { error: 'SQLite manager is disposed', code: 21, unique: false };
+    if (this.workspaces.size >= PLATFORM_MAX_WORKSPACES) {
+      return { error: `Too many active SQLite workspaces (max ${PLATFORM_MAX_WORKSPACES})`, code: 14, unique: false };
+    }
+    const maxDatabases = Math.max(
+      1,
+      Math.min(
+        typeof budget?.maxDatabases === 'number' && Number.isInteger(budget.maxDatabases) && budget.maxDatabases > 0
+          ? budget.maxDatabases
+          : this.maxWorkspaceDbs,
+        this.maxWorkspaceDbs,
+        PLATFORM_MAX_WORKSPACE_DBS
+      )
+    );
+    const maxMemoryNum = Math.max(
+      4 * 1024 * 1024,
+      Math.min(
+        typeof budget?.maxMemoryBytes === 'number' && Number.isFinite(budget.maxMemoryBytes) && budget.maxMemoryBytes > 0
+          ? Math.floor(budget.maxMemoryBytes)
+          : Number(EPHEMERAL_MAX_MEMORY_BYTES),
+        Number(PLATFORM_MAX_WORKSPACE_MEMORY)
+      )
+    );
+    const maxStepsNum = Math.max(
+      100_000,
+      Math.min(
+        typeof budget?.maxSteps === 'number' && Number.isFinite(budget.maxSteps) && budget.maxSteps > 0
+          ? Math.floor(budget.maxSteps)
+          : Number(EPHEMERAL_MAX_STEPS),
+        Number(PLATFORM_MAX_WORKSPACE_STEPS)
+      )
+    );
+    const maxPageReadsNum = Math.max(
+      10_000,
+      Math.min(
+        typeof budget?.maxPageReads === 'number' && Number.isFinite(budget.maxPageReads) && budget.maxPageReads > 0
+          ? Math.floor(budget.maxPageReads)
+          : Number(EPHEMERAL_MAX_PAGE_READS),
+        Number(PLATFORM_MAX_WORKSPACE_PAGE_READS)
+      )
+    );
+    const maxImportBytes = Math.max(
+      64 * 1024,
+      Math.min(
+        typeof budget?.maxImportBytes === 'number' && Number.isFinite(budget.maxImportBytes) && budget.maxImportBytes > 0
+          ? Math.floor(budget.maxImportBytes)
+          : this.maxImportBytes,
+        this.maxImportBytes,
+        PLATFORM_MAX_IMPORT_BYTES
+      )
+    );
+    const id = `ws_${this.nextWorkspaceSeq++}`;
+    this.workspaces.set(id, {
+      id,
+      maxDatabases,
+      maxMemoryBytes: BigInt(maxMemoryNum),
+      maxSteps: BigInt(maxStepsNum),
+      maxPageReads: BigInt(maxPageReadsNum),
+      maxImportBytes,
+      handleIds: new Set<number>(),
+      cancelled: false,
+    });
+    return {
+      id,
+      workspaceId: id,
+      limits: {
+        maxDatabases,
+        maxMemoryBytes: maxMemoryNum,
+        maxSteps: maxStepsNum,
+        maxPageReads: maxPageReadsNum,
+        maxImportBytes,
+      },
+    };
+  }
+
+  /** Mark a workspace cancelled so subsequent migration batches fail fast cleanly. */
+  cancelWorkspace(workspaceId: string): { ok: true; cancelled: boolean } | SqlErrorResult {
+    const ws = this.workspaces.get(workspaceId);
+    if (!ws) return { error: `Invalid SQLite workspace: ${workspaceId}`, code: 21, unique: false };
+    ws.cancelled = true;
+    return { ok: true, cancelled: true };
+  }
+
+  /** Dispose an entire workspace and release every database connection it owns. */
+  disposeWorkspace(workspaceId: string): { ok: true; disposed: true; disposedHandles: number; closedHandles: number } {
+    const ws = this.workspaces.get(workspaceId);
+    if (!ws) return { ok: true, disposed: true, disposedHandles: 0, closedHandles: 0 };
+    let count = 0;
+    for (const hid of [...ws.handleIds]) {
+      const res = this.disposeHandle(hid);
+      if (res.disposed) count++;
+    }
+    this.workspaces.delete(workspaceId);
+    return { ok: true, disposed: true, disposedHandles: count, closedHandles: count };
+  }
+
+  /** Create an isolated copy of an existing handle's committed database image. */
+  cloneHandle(
+    handleId: number,
+    options?: { readOnly?: boolean; workspaceId?: string }
+  ): { id: number; readOnly: boolean; temporary: boolean; byteLength: number; workspaceId?: string } | SqlErrorResult {
+    const source = this.handles.get(handleId);
+    if (!source) return { error: `invalid sqlite connection handle ${handleId}`, code: 21, unique: false };
+    if (source.workspaceId && this.workspaces.get(source.workspaceId)?.cancelled) {
+      return { error: 'SQLite workspace operation was cancelled', code: 9, unique: false };
+    }
+    try {
+      if (source.conn.in_transaction()) {
+        return { error: 'Cannot clone database while a transaction is active; commit or rollback first', code: 5, unique: false };
+      }
+      const bytes = source.conn.export_bytes();
+      return this.importBytes(bytes, {
+        readOnly: options?.readOnly === true,
+        temporary: true,
+        workspaceId: options?.workspaceId ?? source.workspaceId,
+      });
+    } catch (err) {
+      return classifySqlError(err);
+    }
+  }
+
+  /** Explicitly release a handle (frees WASM resources immediately for temporary/workspace handles). */
+  disposeHandle(handleId: number): { ok: true; disposed: boolean } {
+    const managed = this.handles.get(handleId);
+    if (!managed) return { ok: true, disposed: false };
+    // Never destroy a persistent database's shared live backing connection on handle dispose;
+    // flush dirty state and keep shared named DB intact for other callers.
+    if (!managed.ephemeral && this.sharedHandleByKey.get(managed.key) === handleId) {
+      return { ok: true, disposed: false };
+    }
+    this.handles.delete(handleId);
+    if (managed.workspaceId) {
+      const ws = this.workspaces.get(managed.workspaceId);
+      ws?.handleIds.delete(handleId);
+    }
+    if (managed.ephemeral) {
+      if (!managed.workspaceId) {
+        this.ephemeralCount = Math.max(0, this.ephemeralCount - 1);
+      }
+      try { managed.conn.close(); } catch { /* ignore */ }
+      try { managed.conn.free(); } catch { /* ignore */ }
+      return { ok: true, disposed: true };
+    }
+    return { ok: true, disposed: true };
+  }
+
+  private checkHandleUsable(managed: ManagedDb, sql: string): SqlErrorResult | null {
+    if (managed.workspaceId && this.workspaces.get(managed.workspaceId)?.cancelled) {
+      return { error: 'SQLite workspace operation was cancelled', code: 9, unique: false };
+    }
+    if (managed.readOnly && isWriteStatement(sql)) {
+      return { error: 'attempt to write a readonly database', code: 8, unique: false };
+    }
+    return null;
   }
 
   /** Execute a statement (`INSERT`/`UPDATE`/`DELETE`/`CREATE`/`PRAGMA`/etc.). */
@@ -634,25 +1399,36 @@ export class XdbSqlManager {
     handleId: number,
     sql: string,
     paramsJson?: string,
-    hooks?: XdbBudgetHooks
-  ): { rows_affected: number; last_insert_rowid: number } | { error: string; code: number; unique: boolean } {
+    hooks?: XdbBudgetHooks,
+    options?: SqlExecuteOptions
+  ): { rows_affected: number; last_insert_rowid: number; lastInsertRowid: string } | SqlErrorResult {
     const managed = this.handles.get(handleId);
     if (!managed) return { error: `invalid sqlite connection handle ${handleId}`, code: 21, unique: false };
+    const blocked = this.checkHandleUsable(managed, sql);
+    if (blocked) return blocked;
     const before = hooks?.hostChargeSteps ? readMeterSteps(managed.conn) : 0;
     const changesBefore = Number(managed.conn.total_changes());
     try {
-      const raw = managed.conn.execute_json(sql, paramsJson && paramsJson.trim() ? paramsJson : null);
+      const encodedParams = normalizeSqlParamsJson(paramsJson, options);
+      const raw = managed.conn.execute_json(sql, encodedParams);
       this.chargeDelta(managed.conn, before, hooks);
       if (raw.length > MAX_SQL_RESULT_JSON_CHARS) {
         return { error: 'SQLite result exceeds maximum serialized size limit', code: 18, unique: false };
       }
-      const parsed = JSON.parse(raw) as { changes?: number; lastInsertRowid?: number };
+      const parsed = parseXdbResultJson(raw, options?.valueMode ?? 'legacy');
       if (isWriteStatement(sql) || Number(managed.conn.total_changes()) !== changesBefore) {
         managed.dirty = true;
       }
+      let exactRowid = parsed.lastInsertRowid;
+      try {
+        exactRowid = BigInt(managed.conn.last_insert_rowid()).toString();
+      } catch {
+        // fallback to parsed token
+      }
       return {
-        rows_affected: Number(parsed.changes ?? 0),
-        last_insert_rowid: Number(parsed.lastInsertRowid ?? 0),
+        rows_affected: parsed.changes,
+        last_insert_rowid: Number(exactRowid),
+        lastInsertRowid: exactRowid,
       };
     } catch (err) {
       this.chargeDelta(managed.conn, before, hooks);
@@ -666,6 +1442,7 @@ export class XdbSqlManager {
    * (each commits on its own outside a transaction), so the saved image must take them.
    */
   private markDirtyAfterFailure(managed: ManagedDb, sql: string, changesBefore: number): void {
+    if (managed.readOnly) return;
     try {
       if (Number(managed.conn.total_changes()) !== changesBefore || (isWriteStatement(sql) && hasFollowingStatement(sql))) {
         managed.dirty = true;
@@ -680,29 +1457,33 @@ export class XdbSqlManager {
     handleId: number,
     sql: string,
     paramsJson?: string,
-    hooks?: XdbBudgetHooks
-  ): { columns: string[]; rows: unknown[][] } | { error: string; code: number; unique: boolean } {
+    hooks?: XdbBudgetHooks,
+    options?: SqlExecuteOptions
+  ): { columns: string[]; rows: SqlValue[][] } | SqlErrorResult {
     const managed = this.handles.get(handleId);
     if (!managed) return { error: `invalid sqlite connection handle ${handleId}`, code: 21, unique: false };
+    const blocked = this.checkHandleUsable(managed, sql);
+    if (blocked) return blocked;
     const before = hooks?.hostChargeSteps ? readMeterSteps(managed.conn) : 0;
     const changesBefore = Number(managed.conn.total_changes());
     try {
-      const raw = managed.conn.execute_json(sql, paramsJson && paramsJson.trim() ? paramsJson : null);
+      const encodedParams = normalizeSqlParamsJson(paramsJson, options);
+      const raw = managed.conn.execute_json(sql, encodedParams);
       this.chargeDelta(managed.conn, before, hooks);
       if (raw.length > MAX_SQL_RESULT_JSON_CHARS) {
         return { error: 'SQLite query result exceeds maximum serialized size limit', code: 18, unique: false };
       }
-      const parsed = JSON.parse(raw) as { columns?: string[]; rows?: unknown[][] };
-      const rows = Array.isArray(parsed.rows) ? parsed.rows : [];
-      if (rows.length > MAX_SQL_RESULT_ROWS) {
+      const mode: SqlValueMode = options?.valueMode ?? 'legacy';
+      const parsed = parseXdbResultJson(raw, mode);
+      if (parsed.rows.length > MAX_SQL_RESULT_ROWS) {
         return { error: `SQLite query returned more than ${MAX_SQL_RESULT_ROWS} rows`, code: 18, unique: false };
       }
       if (isWriteStatement(sql) || Number(managed.conn.total_changes()) !== changesBefore) {
         managed.dirty = true;
       }
       return {
-        columns: parsed.columns ?? [],
-        rows,
+        columns: parsed.columns,
+        rows: parsed.rows,
       };
     } catch (err) {
       this.chargeDelta(managed.conn, before, hooks);
@@ -711,12 +1492,341 @@ export class XdbSqlManager {
     }
   }
 
+  /** Inspect structured database metadata (tables, columns, keys, foreign keys, indexes, views, triggers). */
+  getSchema(handleId: number): SqlSchemaMetadata | SqlErrorResult {
+    const managed = this.handles.get(handleId);
+    if (!managed) return { error: `invalid sqlite connection handle ${handleId}`, code: 21, unique: false };
+    if (managed.workspaceId && this.workspaces.get(managed.workspaceId)?.cancelled) {
+      return { error: 'SQLite workspace operation was cancelled', code: 9, unique: false };
+    }
+    try {
+      const master = parseXdbResultJson(
+        managed.conn.execute_json(
+          "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name",
+          null
+        ),
+        'lossless'
+      );
+      const tables: SqlTableSchema[] = [];
+      const allIndexes: SqlIndexInfo[] = [];
+      const views: Array<{ name: string; sql: string | null }> = [];
+      const triggers: Array<{ name: string; table: string; sql: string | null }> = [];
+      const indexSqlByName = new Map<string, string | null>();
+
+      for (const row of master.rows) {
+        const type = String(row[0] ?? '').toLowerCase();
+        const name = String(row[1] ?? '');
+        const tblName = String(row[2] ?? '');
+        const sql = row[3] != null ? String(row[3]) : null;
+        if (type === 'index') {
+          indexSqlByName.set(name, sql);
+        } else if (type === 'view') {
+          views.push({ name, sql });
+        } else if (type === 'trigger') {
+          triggers.push({ name, table: tblName, sql });
+        }
+      }
+
+      for (const row of master.rows) {
+        const type = String(row[0] ?? '').toLowerCase();
+        if (type !== 'table') continue;
+        const tableName = String(row[1] ?? '');
+        const tableSql = row[3] != null ? String(row[3]) : null;
+
+        const colsRes = parseXdbResultJson(
+          managed.conn.execute_json(`PRAGMA table_info(${quoteIdent(tableName)})`, null),
+          'lossless'
+        );
+        const columns: SqlColumnInfo[] = colsRes.rows.map((r) => ({
+          cid: Number(r[0] ?? 0),
+          name: String(r[1] ?? ''),
+          type: String(r[2] ?? ''),
+          notNull: Number(r[3] ?? 0) !== 0,
+          defaultValue: (r[4] ?? null) as SqlValue,
+          primaryKey: Number(r[5] ?? 0),
+        }));
+        const primaryKey = columns
+          .filter((c) => c.primaryKey > 0)
+          .sort((a, b) => a.primaryKey - b.primaryKey)
+          .map((c) => c.name);
+
+        // Foreign keys via PRAGMA foreign_key_list with DDL fallback
+        let foreignKeys: SqlForeignKeyInfo[] = [];
+        try {
+          const fkRes = parseXdbResultJson(
+            managed.conn.execute_json(`PRAGMA foreign_key_list(${quoteIdent(tableName)})`, null),
+            'legacy'
+          );
+          foreignKeys = fkRes.rows.map((r) => ({
+            id: Number(r[0] ?? 0),
+            seq: Number(r[1] ?? 0),
+            table: String(r[2] ?? ''),
+            from: String(r[3] ?? ''),
+            to: String(r[4] ?? ''),
+            onUpdate: String(r[5] ?? 'NO ACTION'),
+            onDelete: String(r[6] ?? 'NO ACTION'),
+          }));
+        } catch {
+          foreignKeys = [];
+        }
+        if (foreignKeys.length === 0 && tableSql) {
+          foreignKeys = parseForeignKeysFromCreateTableSql(tableSql);
+        }
+
+        // Indexes via PRAGMA index_list + PRAGMA index_info
+        const tableIndexes: SqlIndexInfo[] = [];
+        try {
+          const idxList = parseXdbResultJson(
+            managed.conn.execute_json(`PRAGMA index_list(${quoteIdent(tableName)})`, null),
+            'legacy'
+          );
+          for (const idxRow of idxList.rows) {
+            const idxName = String(idxRow[1] ?? '');
+            const unique = Number(idxRow[2] ?? 0) !== 0;
+            const idxCols: string[] = [];
+            try {
+              const info = parseXdbResultJson(
+                managed.conn.execute_json(`PRAGMA index_info(${quoteIdent(idxName)})`, null),
+                'legacy'
+              );
+              for (const infoRow of info.rows) {
+                if (infoRow[2] != null) idxCols.push(String(infoRow[2]));
+              }
+            } catch {
+              // ignore
+            }
+            const idxMeta: SqlIndexInfo = {
+              name: idxName,
+              table: tableName,
+              unique,
+              columns: idxCols,
+              sql: indexSqlByName.get(idxName) ?? null,
+            };
+            tableIndexes.push(idxMeta);
+            allIndexes.push(idxMeta);
+          }
+        } catch {
+          // ignore
+        }
+
+        tables.push({
+          name: tableName,
+          sql: tableSql,
+          columns,
+          primaryKey,
+          foreignKeys,
+          indexes: tableIndexes,
+        });
+      }
+
+      // Include any standalone CREATE INDEX entries not surfaced by PRAGMA index_list
+      for (const row of master.rows) {
+        if (String(row[0] ?? '').toLowerCase() !== 'index') continue;
+        const idxName = String(row[1] ?? '');
+        const tblName = String(row[2] ?? '');
+        const sql = row[3] != null ? String(row[3]) : null;
+        if (!allIndexes.some((idx) => idx.name === idxName)) {
+          const unique = Boolean(sql && /\bCREATE\s+UNIQUE\s+INDEX\b/i.test(sql));
+          const colMatch = sql ? /\(([^)]+)\)/.exec(sql) : null;
+          const cols = colMatch
+            ? colMatch[1].split(',').map((s) => s.trim().replace(/^["`[]|["`\]]$/g, '').split(/\s+/)[0]).filter(Boolean)
+            : [];
+          const meta: SqlIndexInfo = { name: idxName, table: tblName, unique, columns: cols, sql };
+          allIndexes.push(meta);
+          const tbl = tables.find((t) => t.name === tblName);
+          if (tbl) tbl.indexes.push(meta);
+        }
+      }
+
+      return {
+        tables,
+        indexes: allIndexes,
+        views,
+        triggers,
+        pageSize: managed.conn.page_size(),
+        pageCount: managed.conn.page_count(),
+        userVersion: this.readUserVersion(managed.conn),
+        schemaVersion: managed.schemaVersion,
+      };
+    } catch (err) {
+      return classifySqlError(err);
+    }
+  }
+
+  /** Perform structural, B-tree, and optional relational integrity checks on a handle. */
+  integrityCheck(
+    handleId: number,
+    options?: { checkForeignKeys?: boolean }
+  ): SqlIntegrityReport | SqlErrorResult {
+    const managed = this.handles.get(handleId);
+    if (!managed) return { error: `invalid sqlite connection handle ${handleId}`, code: 21, unique: false };
+    const messages: string[] = [];
+    let headerValid = true;
+    let pragmaOk = true;
+
+    try {
+      const bytes = managed.conn.export_bytes();
+      const hdr = validateSqliteHeader(bytes);
+      if (!hdr.valid) {
+        headerValid = false;
+        messages.push(hdr.reason ?? 'Invalid SQLite file header');
+      }
+    } catch (err) {
+      headerValid = false;
+      messages.push(`Failed to export database image: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    try {
+      const res = parseXdbResultJson(managed.conn.execute_json('PRAGMA integrity_check', null), 'legacy');
+      const vals = res.rows.map((r) => String(r[0] ?? ''));
+      if (vals.length === 0 || (vals.length === 1 && vals[0].toLowerCase() === 'ok')) {
+        pragmaOk = true;
+      } else {
+        pragmaOk = false;
+        messages.push(...vals);
+      }
+    } catch (err) {
+      pragmaOk = false;
+      messages.push(`PRAGMA integrity_check failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    const foreignKeyViolations: SqlIntegrityReport['foreignKeyViolations'] = [];
+    let foreignKeysChecked = false;
+    const schema = this.getSchema(handleId);
+    if (!('error' in schema)) {
+      for (const tbl of schema.tables) {
+        try {
+          managed.conn.execute_json(`SELECT COUNT(*) FROM ${quoteIdent(tbl.name)}`, null);
+        } catch (err) {
+          pragmaOk = false;
+          messages.push(`Table "${tbl.name}" failed scan: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+      if (options?.checkForeignKeys !== false) {
+        foreignKeysChecked = true;
+        const tableNames = new Set(schema.tables.map((t) => t.name.toLowerCase()));
+        for (const tbl of schema.tables) {
+          for (const fk of tbl.foreignKeys) {
+            if (!tableNames.has(fk.table.toLowerCase())) {
+              foreignKeyViolations.push({
+                table: tbl.name,
+                column: fk.from,
+                referencesTable: fk.table,
+                referencesColumn: fk.to,
+                count: 1,
+              });
+              messages.push(`Foreign key on ${tbl.name}.${fk.from} references missing table ${fk.table}`);
+              continue;
+            }
+            try {
+              const orphanSql = `SELECT COUNT(*) FROM ${quoteIdent(tbl.name)} c LEFT JOIN ${quoteIdent(fk.table)} p ON c.${quoteIdent(fk.from)} = p.${quoteIdent(fk.to)} WHERE c.${quoteIdent(fk.from)} IS NOT NULL AND p.${quoteIdent(fk.to)} IS NULL`;
+              const orphanRes = parseXdbResultJson(managed.conn.execute_json(orphanSql, null), 'legacy');
+              const count = Number(orphanRes.rows[0]?.[0] ?? 0);
+              if (count > 0) {
+                foreignKeyViolations.push({
+                  table: tbl.name,
+                  column: fk.from,
+                  referencesTable: fk.table,
+                  referencesColumn: fk.to,
+                  count,
+                });
+                messages.push(`Foreign key violation: ${count} row(s) in ${tbl.name}.${fk.from} reference missing ${fk.table}.${fk.to}`);
+              }
+            } catch (err) {
+              messages.push(`Foreign key check on ${tbl.name}.${fk.from} failed: ${err instanceof Error ? err.message : String(err)}`);
+            }
+          }
+        }
+      }
+    } else {
+      pragmaOk = false;
+      messages.push(`Schema inspection failed: ${schema.error}`);
+    }
+
+    const ok = headerValid && pragmaOk && foreignKeyViolations.length === 0;
+    if (ok && messages.length === 0) messages.push('ok');
+    return {
+      ok,
+      headerValid,
+      pragmaOk,
+      messages,
+      foreignKeysChecked,
+      foreignKeyViolations,
+    };
+  }
+
+  /** Export a consistent binary SQLite snapshot with revision, checksum, and schema metadata. */
+  exportSnapshot(
+    handleOrKey: number | string,
+    options?: { consistency?: 'committed' | 'immediate' }
+  ): SqlSnapshotResult | SqlErrorResult {
+    const managed = typeof handleOrKey === 'number'
+      ? this.handles.get(handleOrKey)
+      : this.byKey.get(this.resolveCanonicalKey(handleOrKey));
+    if (!managed) return { error: `SQLite database or handle '${handleOrKey}' not found`, code: 21, unique: false };
+    const consistency = options?.consistency ?? 'committed';
+    if (consistency === 'committed' && managed.conn.in_transaction()) {
+      return {
+        error: 'Cannot export committed SQLite snapshot while a transaction is active; commit or rollback first',
+        code: 5,
+        unique: false,
+      };
+    }
+    try {
+      const bytes = managed.conn.export_bytes();
+      const checksum = sha256HexSync(bytes);
+      return {
+        bytes,
+        byteLength: bytes.byteLength,
+        checksum,
+        revision: managed.revision,
+        schemaVersion: managed.schemaVersion,
+        consistency,
+        pageSize: managed.conn.page_size(),
+        pageCount: managed.conn.page_count(),
+      };
+    } catch (err) {
+      return classifySqlError(err);
+    }
+  }
+
+  /** Export raw SQLite `.db` bytes from an open handle ID (supports temporary, workspace, and named DBs). */
+  exportBytesByHandle(
+    handleId: number,
+    options?: { consistency?: 'committed' | 'immediate' }
+  ): { bytes: Uint8Array } | SqlErrorResult {
+    const snap = this.exportSnapshot(handleId, options);
+    if ('error' in snap) return snap;
+    return { bytes: snap.bytes };
+  }
+
+  /** Return the migration status ledger for a named database or handle. */
+  getMigrationStatus(handleOrKey: number | string): SqlMigrationStatus | SqlErrorResult {
+    const managed = typeof handleOrKey === 'number'
+      ? this.handles.get(handleOrKey)
+      : this.byKey.get(this.resolveCanonicalKey(handleOrKey));
+    if (!managed) return { error: `SQLite database or handle '${handleOrKey}' not found`, code: 21, unique: false };
+    if (managed.migrationStatus) return managed.migrationStatus;
+    return {
+      dbKey: managed.key,
+      targetVersion: managed.schemaVersion,
+      currentVersion: managed.schemaVersion,
+      applied: [],
+    };
+  }
+
+  /** Resolve a handle's canonical dbKey (for flush/persistence queries). */
+  getKeyForHandle(handleId: number): string | null {
+    const managed = this.handles.get(handleId);
+    return managed ? managed.key : null;
+  }
+
   /** Apply declarative JSON seed data to an open handle or named database. */
   seedJson(
     handleOrKey: number | string,
     seedJson: string | Record<string, unknown>,
     hooks?: XdbBudgetHooks
-  ): { tablesCreated: number; tablesSeeded: number; rowsInserted: number; statementsExecuted: number } | { error: string; code: number; unique: boolean } {
+  ): { tablesCreated: number; tablesSeeded: number; rowsInserted: number; statementsExecuted: number } | SqlErrorResult {
     let managed: ManagedDb | undefined;
     if (typeof handleOrKey === 'number') {
       managed = this.handles.get(handleOrKey);
@@ -732,6 +1842,7 @@ export class XdbSqlManager {
       }
     }
     if (!managed) return { error: `database '${handleOrKey}' not found`, code: 21, unique: false };
+    if (managed.readOnly) return { error: 'attempt to write a readonly database', code: 8, unique: false };
     const payload = typeof seedJson === 'string' ? seedJson : JSON.stringify(seedJson);
     const before = hooks?.hostChargeSteps ? readMeterSteps(managed.conn) : 0;
     try {
@@ -752,26 +1863,9 @@ export class XdbSqlManager {
     }
   }
 
-  /** Close a connection handle (ephemeral `:memory:` handles are freed immediately; persistent ones flush via `BackendWorkerSession`). */
+  /** Close a connection handle (ephemeral/workspace handles are freed immediately; persistent ones flush via `BackendWorkerSession`). */
   close(handleId: number): { ok: true } {
-    const managed = this.handles.get(handleId);
-    if (!managed) return { ok: true };
-    // A persistent database's handle is shared by everyone who opened it (see `sharedHandleByKey`).
-    if (!managed.ephemeral && this.sharedHandleByKey.get(managed.key) === handleId) return { ok: true };
-    this.handles.delete(handleId);
-    if (managed.ephemeral) {
-      this.ephemeralCount = Math.max(0, this.ephemeralCount - 1);
-      try {
-        managed.conn.close();
-      } catch {
-        // ignore
-      }
-      try {
-        managed.conn.free();
-      } catch {
-        // ignore
-      }
-    }
+    this.disposeHandle(handleId);
     return { ok: true };
   }
 
@@ -809,17 +1903,18 @@ export class XdbSqlManager {
     }
     if (!releaseHandles) return;
     for (const [id, m] of this.handles) {
-      if (id >= scope.firstHandleId && m.ephemeral) this.close(id);
+      if (id >= scope.firstHandleId && m.ephemeral && !m.workspaceId) this.close(id);
     }
   }
 
   /** Flush all dirty persistent databases that are not mid-transaction, returning snapshots. */
-  flushDirty(): Array<{ dbKey: string; bytes: Uint8Array }> {
-    const flushed: Array<{ dbKey: string; bytes: Uint8Array }> = [];
+  flushDirty(onlyDbKey?: string): Array<{ dbKey: string; bytes: Uint8Array; meta: XdbPersistMeta }> {
+    const flushed: Array<{ dbKey: string; bytes: Uint8Array; meta: XdbPersistMeta }> = [];
     for (const managed of this.byKey.values()) {
+      if (onlyDbKey && managed.key !== onlyDbKey) continue;
       if (managed.dirty && managed.persistent && !managed.conn.in_transaction()) {
         const snap = this.flushOne(managed);
-        if (snap) flushed.push({ dbKey: managed.key, bytes: snap });
+        if (snap) flushed.push({ dbKey: managed.key, bytes: snap.bytes, meta: snap.meta });
       }
     }
     return flushed;
@@ -840,7 +1935,7 @@ export class XdbSqlManager {
   copy(
     fromUrl: string,
     toUrl: string
-  ): { bytes: number } | { error: string; code: number; unique: boolean } {
+  ): { bytes: number } | SqlErrorResult {
     if (this.disposed) return { error: 'SQLite manager is disposed', code: 21, unique: false };
     try {
       const fromNorm = normalizeDbKey(fromUrl);
@@ -856,8 +1951,8 @@ export class XdbSqlManager {
       if (dstKey === srcKey) {
         return { bytes: bytes.byteLength };
       }
-      if (!this.byKey.has(dstKey) && this.byKey.size >= MAX_OPEN_DBS) {
-        return { error: `Too many distinct SQLite databases open (max ${MAX_OPEN_DBS})`, code: 14, unique: false };
+      if (!this.byKey.has(dstKey) && this.byKey.size >= this.maxOpenDbs) {
+        return { error: `Too many distinct SQLite databases open (max ${this.maxOpenDbs})`, code: 14, unique: false };
       }
 
       const existing = this.byKey.get(dstKey);
@@ -889,6 +1984,9 @@ export class XdbSqlManager {
         persistent: isDeclaredTarget,
         dirty: isDeclaredTarget,
         ephemeral: false,
+        readOnly: false,
+        revision: 0,
+        schemaVersion: srcManaged.schemaVersion,
       });
       return { bytes: bytes.byteLength };
     } catch (err) {
@@ -901,16 +1999,13 @@ export class XdbSqlManager {
    * Deliberately does NOT fall back to single-DB aliasing so removing a scratch DB
    * like `pit-sim.db` or sidecars (`-wal`, `-shm`) can never touch the primary DB.
    */
-  remove(rawUrl: string): { ok: true; removed: boolean } | { error: string; code: number; unique: boolean } {
+  remove(rawUrl: string): { ok: true; removed: boolean } | SqlErrorResult {
     if (this.disposed) return { ok: true, removed: false };
     const { key, inMemory } = normalizeDbKey(rawUrl);
     if (inMemory) return { ok: true, removed: false };
     if (/(?:-wal|-shm|-journal)$/i.test(key)) {
       return { ok: true, removed: true };
     }
-    // A database the app declares is not removed, as the native hosts refuse it (by its path or
-    // its file name): removed here, the next open brought back the image the visit began with,
-    // and what had been written since was gone.
     const lower = key.toLowerCase();
     const baseOf = (k: string) => k.slice(k.lastIndexOf('/') + 1);
     const configured = this.databases.some((cfg) => {
@@ -933,12 +2028,20 @@ export class XdbSqlManager {
     return { ok: true, removed: true };
   }
 
-  private flushOne(managed: ManagedDb): Uint8Array | null {
+  private flushOne(managed: ManagedDb): { bytes: Uint8Array; meta: XdbPersistMeta } | null {
     try {
       const bytes = managed.conn.export_bytes();
+      const checksum = sha256HexSync(bytes);
+      managed.revision += 1;
+      managed.lastChecksum = checksum;
       managed.dirty = false;
-      this.onPersist?.(managed.key, bytes);
-      return bytes;
+      const meta: XdbPersistMeta = {
+        revision: managed.revision,
+        checksum,
+        schemaVersion: managed.schemaVersion,
+      };
+      this.onPersist?.(managed.key, bytes, meta);
+      return { bytes, meta };
     } catch {
       return null;
     }
@@ -1008,6 +2111,7 @@ export class XdbSqlManager {
     }
     this.byKey.clear();
     this.handles.clear();
+    this.workspaces.clear();
     this.sharedHandleByKey.clear();
     this.ephemeralCount = 0;
   }

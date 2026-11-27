@@ -30,7 +30,40 @@ export {
   type BackendRoutingConfig,
   type ParsedBackendTarget,
 } from './backend-transport';
-export { LocalBackendTransport, clearBackendPersistedBlobs, type LocalBackendTransportOptions } from './local-backend-transport';
+export {
+  LocalBackendTransport,
+  clearBackendPersistedBlobs,
+  SqlitePersistenceError,
+  PLATFORM_MAX_PERSISTED_SQLITE_DBS,
+  PLATFORM_MAX_SINGLE_SQLITE_BYTES,
+  PLATFORM_MAX_TOTAL_PERSISTED_SQLITE_BYTES,
+  type LocalBackendTransportOptions,
+  type PersistedSqliteMeta,
+  type PersistedSqliteRecord,
+} from './local-backend-transport';
+export {
+  SQLITE_I64_MIN,
+  SQLITE_I64_MAX,
+  SQLITE_U64_MAX,
+  sqlInt,
+  sqlDecimal,
+  sqlBlob,
+  sqlValueToBigInt,
+  bytesToHex,
+  hexToBytes,
+  encodeSqlParams,
+  normalizeSqlParamsJson,
+  parseXdbResultJson,
+} from './sqlite-codec';
+export {
+  ContainerArtifactRegistry,
+  BundleBuilderService,
+  summarizeBundleArtifact,
+  ARTIFACT_SCHEME,
+  ARTIFACT_ID_RE,
+  type RegisteredArtifact,
+  type BundleArtifactSummary,
+} from './bundle-service';
 export { loadContainerSession, saveContainerSession, clearContainerSession, type PersistedContainerSession } from './session-store';
 export { BackendWorkerSession } from './backend-runtime';
 export {

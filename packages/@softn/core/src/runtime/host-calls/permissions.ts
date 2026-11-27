@@ -142,6 +142,18 @@ export function requirePermission(config: PermissionConfig | null, capability: s
       if (perms.notifications?.enabled !== true)
         throw new Error('Notifications not permitted. Add notifications.enabled to permission.json');
       break;
+    case 'sqlite-workspace':
+      if (perms['sqlite-workspace']?.enabled !== true)
+        throw new Error('Temporary SQLite workspaces not permitted. Add sqlite-workspace.enabled to permission.json');
+      break;
+    case 'app-preview':
+      if (perms['app-preview']?.enabled !== true)
+        throw new Error('Dynamic app previews not permitted. Add app-preview.enabled to permission.json');
+      break;
+    case 'app-deploy':
+      if (perms['app-deploy']?.enabled !== true)
+        throw new Error('Application publishing not permitted. Add app-deploy.enabled to permission.json');
+      break;
     default:
       throw new Error(`Unknown capability: ${capability}. Add it to permission.json`);
   }

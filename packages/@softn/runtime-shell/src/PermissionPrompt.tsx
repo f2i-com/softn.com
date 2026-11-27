@@ -205,6 +205,38 @@ export const PERMISSION_INFO: Record<string, { label: string; description: strin
       </>,
     ),
   },
+  'sqlite-workspace': {
+    label: 'Temporary databases',
+    description: 'Create isolated temporary SQLite databases in memory for local data migration and processing.',
+    icon: svg(
+      <>
+        <ellipse cx="12" cy="5" rx="8" ry="3" />
+        <path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5" />
+        <path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3" />
+      </>,
+    ),
+  },
+  'app-preview': {
+    label: 'App previews',
+    description: 'Run generated SoftN applications inside an isolated temporary preview sandbox.',
+    icon: svg(
+      <>
+        <rect x="3" y="4" width="18" height="16" rx="2" />
+        <polygon points="10 9 16 12 10 15 10 9" />
+      </>,
+    ),
+  },
+  'app-deploy': {
+    label: 'App publishing',
+    description: 'Offer generated applications to the host platform. The host always asks for your confirmation before installing.',
+    icon: svg(
+      <>
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+        <polyline points="17 8 12 3 7 8" />
+        <line x1="12" y1="3" x2="12" y2="15" />
+      </>,
+    ),
+  },
 };
 
 /** The sentence under the list when a bundle asks for the camera or microphone, in a browser. */

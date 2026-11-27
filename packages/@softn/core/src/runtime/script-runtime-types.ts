@@ -370,6 +370,9 @@ export interface PermissionConfig {
     location?: { enabled?: boolean; precision?: 'coarse' | 'fine' };
     haptics?: { enabled?: boolean };
     notifications?: { enabled?: boolean };
+    'sqlite-workspace'?: { enabled?: boolean };
+    'app-preview'?: { enabled?: boolean };
+    'app-deploy'?: { enabled?: boolean };
   };
   /**
    * The bundle declared capabilities and the user has not answered yet.

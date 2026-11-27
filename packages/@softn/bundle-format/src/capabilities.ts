@@ -28,8 +28,9 @@
  * 2: `storage.collections`, a policy per collection (see STORAGE_POLICIES).
  * 3: `sync.roomCollections`, the collections a peer-to-peer room carries.
  * 4: mobile & device hardware capabilities (`bluetooth`, `location`, `haptics`, `notifications`).
+ * 5: programmable app-factory capabilities (`sqlite-workspace`, `app-preview`, `app-deploy`).
  */
-export const CAPABILITY_SCHEMA_VERSION = 4;
+export const CAPABILITY_SCHEMA_VERSION = 5;
 
 /** Every capability, in the order the consent bar and the app page list them. */
 export const CAPABILITIES = [
@@ -47,6 +48,9 @@ export const CAPABILITIES = [
   'location',
   'haptics',
   'notifications',
+  'sqlite-workspace',
+  'app-preview',
+  'app-deploy',
 ] as const;
 
 export type Capability = (typeof CAPABILITIES)[number];
@@ -105,6 +109,21 @@ export const CAPABILITY_INFO: Record<Capability, CapabilityInfo> = {
     label: 'Notifications',
     summary: 'displays local notifications on your device',
     sensitive: false,
+  },
+  'sqlite-workspace': {
+    label: 'Temporary databases',
+    summary: 'creates isolated temporary SQLite databases for local data processing and migration',
+    sensitive: false,
+  },
+  'app-preview': {
+    label: 'App previews',
+    summary: 'runs generated SoftN applications inside an isolated temporary preview sandbox',
+    sensitive: false,
+  },
+  'app-deploy': {
+    label: 'App publishing',
+    summary: 'offers generated applications to the host platform with your confirmation',
+    sensitive: true,
   },
 };
 

@@ -1051,6 +1051,46 @@ export const GUEST_EXTENSIONS_SOURCE = String.raw`
 
     // 'softn:sqlite' — Sandboxed XDB SQLite 3 database capability (async host RPC)
     __softnModules.define('softn:sqlite', async function (__exports) {
+      function toHexBytes(input) {
+        var u8 = input instanceof Uint8Array
+          ? input
+          : (input instanceof ArrayBuffer
+            ? new Uint8Array(input)
+            : (ArrayBuffer.isView(input)
+              ? new Uint8Array(input.buffer, input.byteOffset, input.byteLength)
+              : null));
+        if (!u8) throw new TypeError('Expected Uint8Array or ArrayBuffer for SQLite blob');
+        var out = '';
+        for (var i = 0; i < u8.length; i++) {
+          var h = u8[i].toString(16);
+          out += h.length === 1 ? '0' + h : h;
+        }
+        return out;
+      }
+      function sqlInt(value) {
+        return { type: 'integer', value: typeof value === 'bigint' ? value.toString() : String(value) };
+      }
+      function sqlDecimal(value) {
+        return { type: 'decimal', value: String(value) };
+      }
+      function sqlBlob(input) {
+        if (typeof input === 'string') {
+          return { type: 'blob', hex: input.replace(/^0x/i, '').toLowerCase() };
+        }
+        return { type: 'blob', hex: toHexBytes(input) };
+      }
+      function serializeParams(params) {
+        if (params === undefined) return '';
+        return JSON.stringify(params, function (_key, val) {
+          if (typeof val === 'bigint') {
+            return { type: 'integer', value: val.toString() };
+          }
+          if (val instanceof Uint8Array || val instanceof ArrayBuffer || ArrayBuffer.isView(val)) {
+            return { type: 'blob', hex: toHexBytes(val) };
+          }
+          return val;
+        });
+      }
       function sqlRpc(op, args) {
         return new Promise(function (resolve, reject) {
           host.call('sqlite.op', [op, JSON.stringify(args || [])], function (reply) {
@@ -1062,59 +1102,209 @@ export const GUEST_EXTENSIONS_SOURCE = String.raw`
           });
         });
       }
-      function open(name) {
-        return sqlRpc('open', [name || 'app.db']).then(function (opened) {
-          if (opened && opened.error) throw new Error(opened.error);
-          var id = opened.id;
-          return {
-            id: id,
-            query: function (sql, params) {
-              return sqlRpc('query', [id, String(sql), params !== undefined ? JSON.stringify(params) : '']).then(function (res) {
-                if (res && res.error) throw new Error(res.error);
-                var cols = (res && res.columns) || [];
-                var rawRows = (res && res.rows) || [];
-                var rows = rawRows.map(function (arr) {
-                  var obj = {};
-                  for (var i = 0; i < cols.length; i++) obj[cols[i]] = arr[i];
-                  return obj;
-                });
-                return { columns: cols, rows: rows, rawRows: rawRows };
+      function resolveExecOpts(defaultMode, opts) {
+        var o = opts && typeof opts === 'object' ? opts : {};
+        var mode = o.valueMode;
+        if (!mode) {
+          if (o.lossless === true) mode = 'lossless';
+          else if (o.lossless === false) mode = 'legacy';
+          else mode = defaultMode;
+        }
+        var out = { valueMode: mode };
+        if (o.unsignedOverflow) out.unsignedOverflow = o.unsignedOverflow;
+        return out;
+      }
+      function wrapDbHandle(opened, defaultValueMode) {
+        if (opened && opened.error) throw new Error(opened.error);
+        var id = opened.id;
+        var mode = defaultValueMode || 'legacy';
+        var handle = {
+          id: id,
+          readOnly: Boolean(opened.readOnly),
+          temporary: Boolean(opened.temporary),
+          workspaceId: opened.workspaceId || null,
+          schemaVersion: typeof opened.schemaVersion === 'number' ? opened.schemaVersion : 0,
+          query: function (sql, params, opts) {
+            return sqlRpc('query', [id, String(sql), serializeParams(params), resolveExecOpts(mode, opts)]).then(function (res) {
+              if (res && res.error) throw new Error(res.error);
+              var cols = (res && res.columns) || [];
+              var rawRows = (res && res.rows) || [];
+              var rows = rawRows.map(function (arr) {
+                var obj = {};
+                for (var i = 0; i < cols.length; i++) obj[cols[i]] = arr[i];
+                return obj;
               });
-            },
-            execute: function (sql, params) {
-              return sqlRpc('execute', [id, String(sql), params !== undefined ? JSON.stringify(params) : '']).then(function (res) {
-                if (res && res.error) throw new Error(res.error);
-                return res;
-              });
-            },
-            all: function (sql, params) {
-              return this.query(sql, params).then(function (res) { return res.rows; });
-            },
-            first: function (sql, params) {
-              return this.query(sql, params).then(function (res) { return res.rows.length > 0 ? res.rows[0] : null; });
-            },
-            get: function (sql, params) {
-              return this.first(sql, params);
-            },
-            run: function (sql, params) {
-              return this.execute(sql, params);
-            },
-            seedJson: function (seed) {
-              var payload = typeof seed === 'string' ? seed : JSON.stringify(seed);
-              return sqlRpc('seed_json', [id, payload]).then(function (res) {
-                if (res && res.error) throw new Error(res.error);
-                return res;
-              });
-            },
-            close: function () {
-              return sqlRpc('close', [id]);
-            },
-          };
+              return { columns: cols, rows: rows, rawRows: rawRows };
+            });
+          },
+          execute: function (sql, params, opts) {
+            return sqlRpc('execute', [id, String(sql), serializeParams(params), resolveExecOpts(mode, opts)]).then(function (res) {
+              if (res && res.error) throw new Error(res.error);
+              return res;
+            });
+          },
+          all: function (sql, params, opts) {
+            return this.query(sql, params, opts).then(function (res) { return res.rows; });
+          },
+          first: function (sql, params, opts) {
+            return this.query(sql, params, opts).then(function (res) { return res.rows.length > 0 ? res.rows[0] : null; });
+          },
+          get: function (sql, params, opts) {
+            return this.first(sql, params, opts);
+          },
+          run: function (sql, params, opts) {
+            return this.execute(sql, params, opts);
+          },
+          transaction: async function (fn) {
+            if (typeof fn !== 'function') throw new TypeError('db.transaction expects a function');
+            await handle.execute('BEGIN');
+            try {
+              var out = await fn(handle);
+              await handle.execute('COMMIT');
+              return out;
+            } catch (err) {
+              await handle.execute('ROLLBACK').catch(function () {});
+              throw err;
+            }
+          },
+          getSchema: function () {
+            return sqlRpc('get_schema', [id]);
+          },
+          integrityCheck: function (opts) {
+            return sqlRpc('integrity_check', [id, opts || {}]);
+          },
+          clone: function (opts) {
+            return sqlRpc('clone', [id, opts || {}]).then(function (cloned) {
+              return wrapDbHandle(cloned, 'lossless');
+            });
+          },
+          exportBytes: async function (opts) {
+            var res = await sqlRpc('export_bytes', [id, opts || {}]);
+            if (res && res.readToken) {
+              return g.__softnReadStagedBytes(res.readToken, res.byteLength);
+            }
+            if (res && typeof res.base64 === 'string') {
+              return typeof g.__softnBytesFrom64 === 'function' ? g.__softnBytesFrom64(res.base64) : new Uint8Array(0);
+            }
+            throw new Error('Failed to export SQLite database bytes');
+          },
+          exportSnapshot: async function (opts) {
+            var res = await sqlRpc('export_snapshot', [id, opts || {}]);
+            var bytes = res && res.readToken
+              ? await g.__softnReadStagedBytes(res.readToken, res.byteLength)
+              : new Uint8Array(0);
+            return {
+              bytes: bytes,
+              byteLength: res.byteLength,
+              checksum: res.checksum,
+              revision: res.revision,
+              schemaVersion: res.schemaVersion,
+              consistency: res.consistency,
+              pageSize: res.pageSize,
+              pageCount: res.pageCount,
+            };
+          },
+          flush: function () {
+            return sqlRpc('flush', [id]);
+          },
+          getPersistenceStatus: function () {
+            return sqlRpc('persistence_status', [id]);
+          },
+          getMigrationStatus: function () {
+            return sqlRpc('migration_status', [id]);
+          },
+          seedJson: function (seed) {
+            var payload = typeof seed === 'string' ? seed : JSON.stringify(seed);
+            return sqlRpc('seed_json', [id, payload]).then(function (res) {
+              if (res && res.error) throw new Error(res.error);
+              return res;
+            });
+          },
+          dispose: function () {
+            return sqlRpc('dispose', [id]);
+          },
+          close: function () {
+            return sqlRpc('close', [id]);
+          },
+        };
+        return handle;
+      }
+      function open(name, opts) {
+        var o = opts && typeof opts === 'object' ? opts : {};
+        var mode = o.valueMode || (o.lossless === true ? 'lossless' : 'legacy');
+        return sqlRpc('open', [name || 'app.db', o]).then(function (opened) {
+          return wrapDbHandle(opened, mode);
         });
       }
-      var api = { open: open };
+      function create(opts) {
+        var o = opts && typeof opts === 'object' ? opts : { temporary: true };
+        var mode = o.valueMode || (o.lossless === false ? 'legacy' : 'lossless');
+        return sqlRpc('create', [o]).then(function (opened) {
+          return wrapDbHandle(opened, mode);
+        });
+      }
+      async function importBytes(bytes, opts) {
+        var o = opts && typeof opts === 'object' ? opts : {};
+        var mode = o.valueMode || (o.lossless === false ? 'legacy' : 'lossless');
+        var stageToken = await g.__softnStageBytes(bytes);
+        var opened = await sqlRpc('import_bytes', [{ stageToken: stageToken }, o]);
+        return wrapDbHandle(opened, mode);
+      }
+      async function createWorkspace(budget) {
+        var ws = await sqlRpc('workspace_create', [budget || {}]);
+        var wsId = ws.id;
+        var disposed = false;
+        return {
+          id: wsId,
+          limits: ws.limits,
+          create: async function (opts) {
+            if (disposed) throw new Error('Workspace has been disposed');
+            var o = opts && typeof opts === 'object' ? opts : {};
+            var mode = o.valueMode || (o.lossless === false ? 'legacy' : 'lossless');
+            var opened = await sqlRpc('workspace_create_db', [wsId, o]);
+            return wrapDbHandle(opened, mode);
+          },
+          import: async function (bytes, opts) {
+            if (disposed) throw new Error('Workspace has been disposed');
+            var o = opts && typeof opts === 'object' ? opts : {};
+            var mode = o.valueMode || (o.lossless === false ? 'legacy' : 'lossless');
+            var stageToken = await g.__softnStageBytes(bytes);
+            var opened = await sqlRpc('workspace_import_bytes', [wsId, { stageToken: stageToken }, o]);
+            return wrapDbHandle(opened, mode);
+          },
+          importBytes: function (bytes, opts) {
+            return this.import(bytes, opts);
+          },
+          cancel: function () {
+            return sqlRpc('workspace_cancel', [wsId]);
+          },
+          dispose: async function () {
+            if (disposed) return { disposed: true, closedHandles: 0 };
+            disposed = true;
+            return sqlRpc('workspace_dispose', [wsId]);
+          },
+        };
+      }
+      var sqlite = {
+        open: open,
+        create: create,
+        importBytes: importBytes,
+        createWorkspace: createWorkspace,
+        sqlInt: sqlInt,
+        sqlDecimal: sqlDecimal,
+        sqlBlob: sqlBlob,
+      };
+      g.softn = g.softn || {};
+      g.softn.sqlite = sqlite;
+      __exports.sqlite = sqlite;
       __exports.open = open;
-      __exports.default = api;
+      __exports.create = create;
+      __exports.importBytes = importBytes;
+      __exports.createWorkspace = createWorkspace;
+      __exports.sqlInt = sqlInt;
+      __exports.sqlDecimal = sqlDecimal;
+      __exports.sqlBlob = sqlBlob;
+      __exports.default = sqlite;
     });
 
     // Cross-platform Device & Hardware Bridges ('softn:device', 'softn:camera',

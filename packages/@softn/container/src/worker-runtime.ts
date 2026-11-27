@@ -33,8 +33,11 @@ import {
   utf8Length,
 } from './esm-linker';
 import { GUEST_EXTENSIONS_SOURCE } from './guest-canvas-and-ext';
+import { GUEST_BUNDLE_MODULES_SOURCE } from './guest-bundle';
 import { GUEST_BROWSER_GLOBALS_SOURCE } from './guest-browser-globals';
 import { GUEST_WEB_APIS_SOURCE } from './guest-web-apis';
+import { BundleBuilderService } from './bundle-service';
+import { inspectBundle, validateBundleBytes } from '@softn/bundle-format';
 import { blobWithin, bytesWithin, textWithin } from './capped-body';
 import { isExternalUrlAllowed, sameSite } from './sanitize';
 import { isSafeVirtualRoute } from './session-store';
@@ -259,6 +262,10 @@ const BUILTIN_MODULES = [
   'softn:backend',
   'softn:api',
   'softn:sqlite',
+  'softn:bundle',
+  'softn:files',
+  'softn:apps',
+  'softn:runtime',
   'softn:device',
   'softn:camera',
   'softn:bluetooth',
@@ -266,6 +273,43 @@ const BUILTIN_MODULES = [
   'softn:haptics',
   'softn:notifications',
 ];
+
+const ALLOWED_SQLITE_OPS = new Set([
+  'open',
+  'create',
+  'import_bytes',
+  'execute',
+  'query',
+  'seed_json',
+  'get_schema',
+  'export_bytes',
+  'export_snapshot',
+  'clone',
+  'integrity_check',
+  'flush',
+  'persistence_status',
+  'migration_status',
+  'dispose',
+  'close',
+  'workspace_create',
+  'workspace_create_db',
+  'workspace_import_bytes',
+  'workspace_cancel',
+  'workspace_dispose',
+]);
+
+const WORKSPACE_SQLITE_OPS = new Set([
+  'workspace_create',
+  'workspace_create_db',
+  'workspace_import_bytes',
+  'workspace_cancel',
+  'workspace_dispose',
+  'import_bytes',
+]);
+
+const MAX_STAGED_UPLOADS = 16;
+const MAX_STAGED_READS = 16;
+const MAX_STAGED_TOTAL_BYTES = 192 * 1024 * 1024;
 
 /** On-demand hosted React 18 compat modules loaded only when an app uses JSX/TSX or imports React. */
 const REACT_VENDOR_MODULES = [
@@ -341,7 +385,7 @@ let fixedBytes = 0;
 /** The bytes of the base layers every program has (optional layers like IndexedDB/Three are added only when loaded). */
 function fixedProgramBytes(): number {
   if (fixedBytes === 0) {
-    fixedBytes = [ESM_REGISTRY_PREAMBLE, GUEST_EXTENSIONS_SOURCE, GUEST_BROWSER_GLOBALS_SOURCE, GUEST_WEB_APIS_SOURCE, CLASSIC_GLOBALS_HELPER, WARNINGS_MARKED].reduce((sum, part) => sum + utf8Length(part), 0);
+    fixedBytes = [ESM_REGISTRY_PREAMBLE, GUEST_EXTENSIONS_SOURCE, GUEST_BUNDLE_MODULES_SOURCE, GUEST_BROWSER_GLOBALS_SOURCE, GUEST_WEB_APIS_SOURCE, CLASSIC_GLOBALS_HELPER, WARNINGS_MARKED].reduce((sum, part) => sum + utf8Length(part), 0);
   }
   return fixedBytes;
 }
@@ -801,6 +845,16 @@ export class ContainerWorkerSession {
   private readonly heldIdbTicks: number[] = [];
   private backendRouting?: BackendRoutingConfig;
   private hasSqlite = false;
+  private hasSqliteWorkspace = false;
+  private maxBundleBytes = 64 * 1024 * 1024;
+  private maxSqliteBytes = 64 * 1024 * 1024;
+  private bundleService = new BundleBuilderService();
+  private readonly workspaceSqliteHandles = new Set<number>();
+  private readonly stagedUploads = new Map<string, { chunks: Uint8Array[]; expected: number; received: number; complete: boolean }>();
+  private stagedUploadBytes = 0;
+  private readonly stagedReads = new Map<string, Uint8Array>();
+  private stagedReadBytes = 0;
+  private nextStageSeq = 1;
   private pageBaseUrl = `${VIRTUAL_ORIGIN}/`;
   /** High base so Worker-initiated host requests never collide with guest callback IDs. */
   private nextHostReqId = 1_000_000_000;
@@ -837,6 +891,7 @@ export class ContainerWorkerSession {
       case 'permissions-updated': {
         const hadNet = this.grantedCapabilities.has('net');
         this.grantedCapabilities = new Set(msg.grantedCapabilities);
+        this.hasSqliteWorkspace = this.grantedCapabilities.has('sqlite-workspace');
         if (hadNet && !this.grantedCapabilities.has('net')) {
           this.revokeExternalNet();
         }
@@ -930,6 +985,11 @@ export class ContainerWorkerSession {
     this.grantedCapabilities = new Set(msg.grantedCapabilities);
     this.backendRouting = msg.backendRouting;
     this.hasSqlite = Boolean(msg.hasSqlite);
+    this.hasSqliteWorkspace = Boolean(msg.hasSqliteWorkspace);
+    this.maxBundleBytes = Math.min(Math.max(1024 * 1024, msg.limits.maxBundleBytes ?? 64 * 1024 * 1024), 128 * 1024 * 1024);
+    this.maxSqliteBytes = Math.min(Math.max(1024 * 1024, msg.limits.sqliteMaxDatabaseBytes ?? 64 * 1024 * 1024), 256 * 1024 * 1024);
+    this.bundleService.dispose();
+    this.bundleService = new BundleBuilderService(this.maxBundleBytes);
     this.pageBaseUrl = msg.seed.url || `${VIRTUAL_ORIGIN}/`;
     this.instructionsPerTurn = msg.limits.instructionsPerTurn;
     this.storageQuotaBytes = msg.limits.storageQuotaBytes;
@@ -1312,6 +1372,7 @@ export class ContainerWorkerSession {
         `globalThis.__softnSubtle = ${typeof crypto !== 'undefined' && typeof crypto.subtle === 'object' && crypto.subtle !== null};`,
         prelude,
         GUEST_EXTENSIONS_SOURCE,
+        GUEST_BUNDLE_MODULES_SOURCE,
         ...(webglGuestSource ? [webglGuestSource] : []),
         ...(reactVendorSource ? [reactVendorSource] : []),
         ...(this.externalThreeLoaded && this.guestThreeNativeSource ? [this.guestThreeNativeSource] : []),
@@ -2913,11 +2974,189 @@ export class ContainerWorkerSession {
         return;
       }
 
+      case 'bytes.stage.open': {
+        const expected = Math.max(0, Math.floor(Number(args[0] ?? 0)));
+        const maxSingle = Math.max(this.maxBundleBytes, this.maxSqliteBytes);
+        if (!Number.isFinite(expected) || expected > maxSingle) {
+          this.resolveCallbackAndFlush(callId, { error: `Staged binary (${expected} bytes) exceeds maximum allowed size (${maxSingle} bytes)` });
+          return;
+        }
+        if (this.stagedUploads.size >= MAX_STAGED_UPLOADS || this.stagedUploadBytes + expected > MAX_STAGED_TOTAL_BYTES) {
+          this.resolveCallbackAndFlush(callId, { error: 'Too many staged binary transfers in progress' });
+          return;
+        }
+        const token = `stg_${this.nextStageSeq++}_${Math.random().toString(36).slice(2, 10)}`;
+        this.stagedUploads.set(token, { chunks: [], expected, received: 0, complete: false });
+        this.resolveCallbackAndFlush(callId, { ok: true, result: { token } });
+        return;
+      }
+
+      case 'bytes.stage.chunk': {
+        const token = String(args[0] ?? '');
+        const b64 = String(args[1] ?? '');
+        const isLast = String(args[2] ?? '0') === '1';
+        const entry = this.stagedUploads.get(token);
+        if (!entry) {
+          this.resolveCallbackAndFlush(callId, { error: 'Unknown binary staging token' });
+          return;
+        }
+        const maxSingle = Math.max(this.maxBundleBytes, this.maxSqliteBytes);
+        const chunk = b64 ? base64ToBytes(b64) : new Uint8Array(0);
+        if (entry.received + chunk.byteLength > maxSingle || this.stagedUploadBytes + chunk.byteLength > MAX_STAGED_TOTAL_BYTES) {
+          this.stagedUploads.delete(token);
+          this.stagedUploadBytes = Math.max(0, this.stagedUploadBytes - entry.received);
+          this.resolveCallbackAndFlush(callId, { error: `Staged binary exceeds maximum allowed size (${maxSingle} bytes)` });
+          return;
+        }
+        if (chunk.byteLength > 0) {
+          entry.chunks.push(chunk);
+          entry.received += chunk.byteLength;
+          this.stagedUploadBytes += chunk.byteLength;
+        }
+        if (isLast) entry.complete = true;
+        this.resolveCallbackAndFlush(callId, { ok: true, result: { received: entry.received, complete: entry.complete } });
+        return;
+      }
+
+      case 'bytes.read.chunk': {
+        const token = String(args[0] ?? '');
+        const offset = Math.max(0, Math.floor(Number(args[1] ?? 0)));
+        const length = Math.max(0, Math.min(4 * 1024 * 1024, Math.floor(Number(args[2] ?? 0))));
+        const bytes = this.stagedReads.get(token);
+        if (!bytes) {
+          this.resolveCallbackAndFlush(callId, { error: 'Unknown or expired binary read token' });
+          return;
+        }
+        const slice = bytes.subarray(Math.min(offset, bytes.byteLength), Math.min(offset + length, bytes.byteLength));
+        this.resolveCallbackAndFlush(callId, { ok: true, result: { base64: bytesToBase64(slice), byteLength: slice.byteLength } });
+        return;
+      }
+
+      case 'bytes.read.close': {
+        const token = String(args[0] ?? '');
+        const bytes = this.stagedReads.get(token);
+        if (bytes) {
+          this.stagedReads.delete(token);
+          this.stagedReadBytes = Math.max(0, this.stagedReadBytes - bytes.byteLength);
+        }
+        this.resolveCallbackAndFlush(callId, { ok: true, result: { closed: true } });
+        return;
+      }
+
       case 'sqlite.op': {
-        if (!this.hasSqlite) {
+        const op = String(args[0] ?? '');
+        if (!ALLOWED_SQLITE_OPS.has(op)) {
+          this.resolveCallbackAndFlush(callId, { error: `Unsupported SQLite op: ${op}` });
+          return;
+        }
+        let opArgs: unknown[] = [];
+        try {
+          const parsed = JSON.parse(args[1] ?? '[]');
+          if (Array.isArray(parsed)) opArgs = parsed;
+        } catch {
+          opArgs = [];
+        }
+        const isCreateTemp =
+          op === 'create' &&
+          !(opArgs[0] && typeof opArgs[0] === 'object' && (opArgs[0] as { temporary?: unknown }).temporary === false);
+        const firstHandle = typeof opArgs[0] === 'number' ? opArgs[0] : Number.NaN;
+        const targetsWorkspaceHandle = Number.isInteger(firstHandle) && this.workspaceSqliteHandles.has(firstHandle);
+        const isWorkspaceOp = WORKSPACE_SQLITE_OPS.has(op) || isCreateTemp || targetsWorkspaceHandle;
+        if (!this.hasSqlite && !isWorkspaceOp) {
           this.resolveCallbackAndFlush(callId, { error: 'SQLite is not enabled in this container' });
           return;
         }
+        if ((WORKSPACE_SQLITE_OPS.has(op) || isCreateTemp) && !this.hasSqliteWorkspace && !this.grantedCapabilities.has('sqlite-workspace')) {
+          this.resolveCallbackAndFlush(callId, {
+            error: 'Permission "sqlite-workspace" is required to create temporary SQLite databases or import SQLite binaries',
+          });
+          return;
+        }
+        const transfer: Transferable[] = [];
+        try {
+          if (op === 'import_bytes' && opArgs[0] && typeof opArgs[0] === 'object' && typeof (opArgs[0] as { stageToken?: unknown }).stageToken === 'string') {
+            const bytes = this.consumeStagedUpload((opArgs[0] as { stageToken: string }).stageToken);
+            opArgs = [bytes, ...opArgs.slice(1)];
+            if (bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength) {
+              transfer.push(bytes.buffer);
+            }
+          } else if (
+            op === 'workspace_import_bytes' &&
+            opArgs[1] &&
+            typeof opArgs[1] === 'object' &&
+            typeof (opArgs[1] as { stageToken?: unknown }).stageToken === 'string'
+          ) {
+            const bytes = this.consumeStagedUpload((opArgs[1] as { stageToken: string }).stageToken);
+            opArgs = [opArgs[0], bytes, ...opArgs.slice(2)];
+            if (bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength) {
+              transfer.push(bytes.buffer);
+            }
+          }
+        } catch (err) {
+          this.resolveCallbackAndFlush(callId, { error: err instanceof Error ? err.message : String(err) });
+          return;
+        }
+        void this.requestHost('sqlite.op', { op, args: opArgs, isWorkspace: isWorkspaceOp }, transfer).then(
+          (result) => {
+            if (result && typeof result === 'object' && typeof (result as { error?: unknown }).error === 'string') {
+              this.resolveCallbackAndFlush(callId, { error: (result as { error: string }).error });
+              return;
+            }
+            if (
+              (op === 'workspace_create_db' || op === 'workspace_import_bytes' || op === 'create' || op === 'import_bytes' || op === 'clone') &&
+              result &&
+              typeof result === 'object' &&
+              typeof (result as { id?: unknown }).id === 'number' &&
+              ((result as { temporary?: unknown }).temporary === true || Boolean((result as { workspaceId?: unknown }).workspaceId) || isWorkspaceOp)
+            ) {
+              this.workspaceSqliteHandles.add((result as { id: number }).id);
+            } else if ((op === 'dispose' || op === 'close') && Number.isInteger(firstHandle)) {
+              this.workspaceSqliteHandles.delete(firstHandle);
+            }
+            if (op === 'export_bytes') {
+              const exportedBytes =
+                result instanceof Uint8Array
+                  ? result
+                  : result && typeof result === 'object' && (result as { bytes?: unknown }).bytes instanceof Uint8Array
+                    ? (result as { bytes: Uint8Array }).bytes
+                    : null;
+              if (exportedBytes) {
+                const staged = this.openStagedRead(exportedBytes);
+                this.resolveCallbackAndFlush(callId, { ok: true, result: staged });
+                return;
+              }
+            }
+            if (
+              op === 'export_snapshot' &&
+              result &&
+              typeof result === 'object' &&
+              (result as { bytes?: unknown }).bytes instanceof Uint8Array
+            ) {
+              const snap = result as Record<string, unknown> & { bytes: Uint8Array };
+              const staged = this.openStagedRead(snap.bytes);
+              this.resolveCallbackAndFlush(callId, {
+                ok: true,
+                result: {
+                  readToken: staged.readToken,
+                  byteLength: snap.byteLength ?? staged.byteLength,
+                  checksum: snap.checksum,
+                  revision: snap.revision,
+                  schemaVersion: snap.schemaVersion,
+                  consistency: snap.consistency,
+                  pageSize: snap.pageSize,
+                  pageCount: snap.pageCount,
+                },
+              });
+              return;
+            }
+            this.resolveCallbackAndFlush(callId, { ok: true, result });
+          },
+          (err) => this.resolveCallbackAndFlush(callId, { error: err instanceof Error ? err.message : String(err) })
+        );
+        return;
+      }
+
+      case 'bundle.op': {
         const op = String(args[0] ?? '');
         let opArgs: unknown[] = [];
         try {
@@ -2926,7 +3165,81 @@ export class ContainerWorkerSession {
         } catch {
           opArgs = [];
         }
-        void this.requestHost('sqlite.op', { op, args: opArgs }).then(
+        void this.handleBundleOp(op, opArgs).then(
+          (result) => this.resolveCallbackAndFlush(callId, { ok: true, result }),
+          (err) => this.resolveCallbackAndFlush(callId, { error: err instanceof Error ? err.message : String(err) })
+        );
+        return;
+      }
+
+      case 'files.op': {
+        const op = String(args[0] ?? '');
+        let opArgs: unknown[] = [];
+        try {
+          const parsed = JSON.parse(args[1] ?? '[]');
+          if (Array.isArray(parsed)) opArgs = parsed;
+        } catch {
+          opArgs = [];
+        }
+        const transfer: Transferable[] = [];
+        if (op === 'writer_write' && typeof opArgs[1] === 'string') {
+          const chunk = base64ToBytes(opArgs[1]);
+          opArgs = [opArgs[0], chunk];
+          if (chunk.byteOffset === 0 && chunk.byteLength === chunk.buffer.byteLength) {
+            transfer.push(chunk.buffer);
+          }
+        }
+        void this.requestHost('files.op', { op, args: opArgs }, transfer).then(
+          (result) => this.resolveCallbackAndFlush(callId, { ok: true, result }),
+          (err) => this.resolveCallbackAndFlush(callId, { error: err instanceof Error ? err.message : String(err) })
+        );
+        return;
+      }
+
+      case 'apps.op': {
+        const op = String(args[0] ?? '');
+        let opArgs: unknown[] = [];
+        try {
+          const parsed = JSON.parse(args[1] ?? '[]');
+          if (Array.isArray(parsed)) opArgs = parsed;
+        } catch {
+          opArgs = [];
+        }
+        const transfer: Transferable[] = [];
+        try {
+          if ((op === 'preview_mount' || op === 'offer_to_host') && opArgs[0] && typeof opArgs[0] === 'object') {
+            const spec = { ...(opArgs[0] as Record<string, unknown>) };
+            let bundleBytes: Uint8Array | undefined;
+            if (typeof spec.artifactToken === 'string' && spec.artifactToken) {
+              const built = this.bundleService.getBuilt(spec.artifactToken);
+              if (!built) throw new Error('Unknown or disposed bundle artifact');
+              bundleBytes = built.bytes.slice();
+            } else if (typeof spec.stageToken === 'string' && spec.stageToken) {
+              bundleBytes = this.consumeStagedUpload(spec.stageToken);
+            } else {
+              throw new Error(`${op} requires a built bundle artifact or Uint8Array`);
+            }
+            delete spec.artifactToken;
+            delete spec.stageToken;
+            spec.bytes = bundleBytes;
+            if (bundleBytes.byteOffset === 0 && bundleBytes.byteLength === bundleBytes.buffer.byteLength) {
+              transfer.push(bundleBytes.buffer);
+            }
+            opArgs = [spec];
+          }
+        } catch (err) {
+          this.resolveCallbackAndFlush(callId, { error: err instanceof Error ? err.message : String(err) });
+          return;
+        }
+        void this.requestHost('apps.op', { op, args: opArgs }, transfer).then(
+          (result) => this.resolveCallbackAndFlush(callId, { ok: true, result }),
+          (err) => this.resolveCallbackAndFlush(callId, { error: err instanceof Error ? err.message : String(err) })
+        );
+        return;
+      }
+
+      case 'runtime.capabilities': {
+        void this.requestHost('runtime.capabilities', {}).then(
           (result) => this.resolveCallbackAndFlush(callId, { ok: true, result }),
           (err) => this.resolveCallbackAndFlush(callId, { error: err instanceof Error ? err.message : String(err) })
         );
@@ -2977,12 +3290,112 @@ export class ContainerWorkerSession {
     }
   }
 
-  private requestHost(kind: string, payload: Record<string, unknown>): Promise<unknown> {
+  private consumeStagedUpload(token: string): Uint8Array {
+    const entry = this.stagedUploads.get(token);
+    if (!entry) throw new Error('Unknown or expired staged binary token');
+    this.stagedUploads.delete(token);
+    this.stagedUploadBytes = Math.max(0, this.stagedUploadBytes - entry.received);
+    const out = new Uint8Array(entry.received);
+    let offset = 0;
+    for (const chunk of entry.chunks) {
+      out.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return out;
+  }
+
+  private openStagedRead(bytes: Uint8Array): { readToken: string; byteLength: number } {
+    if (this.stagedReads.size >= MAX_STAGED_READS) {
+      const oldest = this.stagedReads.keys().next().value;
+      if (oldest !== undefined) {
+        const oldBytes = this.stagedReads.get(oldest);
+        this.stagedReads.delete(oldest);
+        if (oldBytes) this.stagedReadBytes = Math.max(0, this.stagedReadBytes - oldBytes.byteLength);
+      }
+    }
+    if (this.stagedReadBytes + bytes.byteLength > MAX_STAGED_TOTAL_BYTES) {
+      throw new Error('Too many buffered binary exports; read or close existing exports first');
+    }
+    const readToken = `rd_${this.nextStageSeq++}_${Math.random().toString(36).slice(2, 10)}`;
+    this.stagedReads.set(readToken, bytes);
+    this.stagedReadBytes += bytes.byteLength;
+    return { readToken, byteLength: bytes.byteLength };
+  }
+
+  private async handleBundleOp(op: string, args: unknown[]): Promise<unknown> {
+    switch (op) {
+      case 'create':
+        return this.bundleService.createSession((args[0] ?? {}) as Parameters<BundleBuilderService['createSession']>[0]);
+      case 'add_text':
+        return this.bundleService.addText(String(args[0] ?? ''), String(args[1] ?? ''), String(args[2] ?? ''));
+      case 'add_json':
+        return this.bundleService.addJson(String(args[0] ?? ''), String(args[1] ?? ''), args[2]);
+      case 'add_binary_chunk': {
+        const b64 = String(args[2] ?? '');
+        const chunk = b64 ? base64ToBytes(b64) : new Uint8Array(0);
+        return this.bundleService.appendBinaryChunk(String(args[0] ?? ''), String(args[1] ?? ''), chunk, Boolean(args[3]));
+      }
+      case 'remove':
+        return this.bundleService.remove(String(args[0] ?? ''), String(args[1] ?? ''));
+      case 'set_permissions':
+        return this.bundleService.setPermissions(
+          String(args[0] ?? ''),
+          (args[1] && typeof args[1] === 'object' ? args[1] : {}) as Record<string, unknown>
+        );
+      case 'validate':
+        return this.bundleService.validate(String(args[0] ?? ''));
+      case 'build':
+        return this.bundleService.build(
+          String(args[0] ?? ''),
+          (args[1] && typeof args[1] === 'object' ? args[1] : undefined) as { level?: 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9; strict?: boolean } | undefined
+        );
+      case 'open_bytes': {
+        const built = this.bundleService.getBuilt(String(args[0] ?? ''));
+        if (!built) throw new Error('Unknown or disposed bundle artifact');
+        return this.openStagedRead(built.bytes);
+      }
+      case 'download': {
+        const token = String(args[0] ?? '');
+        const filename = String(args[1] ?? 'app.softn');
+        const built = this.bundleService.getBuilt(token);
+        if (!built) throw new Error('Unknown or disposed bundle artifact');
+        const copy = built.bytes.slice();
+        const transfer: Transferable[] =
+          copy.byteOffset === 0 && copy.byteLength === copy.buffer.byteLength ? [copy.buffer] : [];
+        return this.requestHost(
+          'files.save_bytes',
+          {
+            name: filename,
+            type: 'application/octet-stream',
+            bytes: copy,
+            sha256: built.sha256,
+          },
+          transfer
+        );
+      }
+      case 'dispose_built':
+        return { disposed: this.bundleService.disposeBuilt(String(args[0] ?? '')) };
+      case 'dispose_session':
+        return { disposed: this.bundleService.disposeSession(String(args[0] ?? '')) };
+      case 'inspect_staged': {
+        const bytes = this.consumeStagedUpload(String(args[0] ?? ''));
+        return inspectBundle(bytes);
+      }
+      case 'validate_staged': {
+        const bytes = this.consumeStagedUpload(String(args[0] ?? ''));
+        return validateBundleBytes(bytes);
+      }
+      default:
+        throw new Error(`Unsupported bundle op: ${op}`);
+    }
+  }
+
+  private requestHost(kind: string, payload: Record<string, unknown>, transfer?: Transferable[]): Promise<unknown> {
     if (this.disposed) return Promise.reject(new Error('Container worker is disposed'));
     const requestId = this.nextHostReqId++;
     return new Promise<unknown>((resolve, reject) => {
       this.pendingHostReqs.set(requestId, { resolve, reject });
-      this.postToHost({ type: 'host-request', requestId, kind, payload });
+      this.postToHost({ type: 'host-request', requestId, kind, payload }, transfer);
     });
   }
 
@@ -5298,6 +5711,12 @@ export class ContainerWorkerSession {
     }
     this.streams.clear();
     this.bodies.clear();
+    this.bundleService.dispose();
+    this.workspaceSqliteHandles.clear();
+    this.stagedUploads.clear();
+    this.stagedUploadBytes = 0;
+    this.stagedReads.clear();
+    this.stagedReadBytes = 0;
     for (const p of this.pendingHostReqs.values()) {
       p.reject(new Error('Container worker disposed'));
     }

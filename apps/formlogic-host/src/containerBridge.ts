@@ -245,7 +245,40 @@ export function buildContainerSource(
  * Said here rather than left to the container's default: FormLogic keeps a hosted app's `.softn`
  * files so that its page can nest them.
  */
-export const FRAME_EMBEDS = Object.freeze({ frames: 'deny', nestedApps: 'allow' } as const);
+export const FRAME_EMBEDS = Object.freeze({ frames: 'deny', nestedApps: 'allow', dynamicPreviews: 'allow' } as const);
+
+/** Maximum `.softn` binary bundle offer size accepted across the FormLogic host bridge (64 MiB binary -> ~86 MiB base64). */
+export const MAX_BINARY_APP_OFFER_BYTES = 64 * 1024 * 1024;
+const MAX_BINARY_APP_OFFER_B64 = Math.ceil((MAX_BINARY_APP_OFFER_BYTES * 4) / 3) + 1024;
+const SHA256_HEX_RE = /^[a-f0-9]{64}$/i;
+
+export interface BinaryAppOfferInput {
+  name: string;
+  operation: 'create' | 'update';
+  targetAppId?: string;
+  bytes: Uint8Array;
+  size: number;
+  sha256: string;
+  manifest: Record<string, unknown>;
+  summary?: {
+    frontend?: string;
+    backend?: string | null;
+    database?: string | null;
+    fileCount: number;
+    size?: number;
+    tables?: number;
+    records?: number;
+  };
+  metadata?: Record<string, unknown>;
+}
+
+export interface BinaryAppOfferResponse {
+  ok: boolean;
+  status: 'accepted' | 'cancelled' | 'rejected' | 'unsupported';
+  appId?: string;
+  url?: string;
+  message?: string;
+}
 
 /**
  * The calls FormLogic's own page answers for an app itself (HostedAppFrame, NativeAppView), beside
@@ -300,6 +333,34 @@ export function frameBackendCall(call: FrameBackendCall): FrameBackendCall {
       }
       return call('formlogicUpload', input);
     }
+    if (action === 'formlogicOfferBundle') {
+      if (!input || typeof input !== 'object' || Array.isArray(input)) {
+        return Promise.resolve({ error: 'Invalid binary app offer request.' });
+      }
+      const op = input.op === undefined ? 'offer' : input.op;
+      if (op !== 'offer' && op !== 'status') {
+        return Promise.resolve({ error: 'Unsupported binary app offer operation.' });
+      }
+      if (op === 'offer') {
+        const name = typeof input.name === 'string' ? input.name.trim() : '';
+        const operation = input.operation === 'update' ? 'update' : input.operation === 'create' ? 'create' : '';
+        const bundleBase64 = typeof input.bundleBase64 === 'string' ? input.bundleBase64 : '';
+        const sha256 = typeof input.sha256 === 'string' ? input.sha256 : '';
+        const targetAppId = input.targetAppId;
+        if (
+          !name ||
+          name.length > 120 ||
+          !operation ||
+          !bundleBase64 ||
+          bundleBase64.length > MAX_BINARY_APP_OFFER_B64 ||
+          !SHA256_HEX_RE.test(sha256) ||
+          (targetAppId !== undefined && (typeof targetAppId !== 'string' || !/^[a-zA-Z0-9._-]{1,128}$/.test(targetAppId)))
+        ) {
+          return Promise.resolve({ error: 'Invalid binary app offer payload.' });
+        }
+      }
+      return call('formlogicOfferBundle', input);
+    }
     if (PAGE_ACTIONS.has(action)) return call(action, input);
     const pathOnly = typeof input.url === 'string' ? input.url.split('?')[0] : '';
     if (
@@ -329,6 +390,71 @@ export function grantedContainerCapabilities(permissions: { permissions?: Record
     if (isRecord(cfg) && cfg.enabled === true) granted.push(cap);
   }
   return granted.sort();
+}
+
+/**
+ * Bridge `@softn/container`'s `onOfferApp` callback (`softn:apps` `offerToHost()`) onto
+ * FormLogic's bounded `formlogicOfferBundle` host action without ever exposing FormLogic
+ * auth tokens, workspace internals, or arbitrary admin APIs to the guest application.
+ */
+export function createBinaryAppOfferHandler(
+  call: FrameBackendCall
+): (offer: BinaryAppOfferInput) => Promise<BinaryAppOfferResponse> {
+  return async (offer) => {
+    if (!(offer.bytes instanceof Uint8Array) || offer.bytes.byteLength === 0) {
+      return { ok: false, status: 'rejected', message: 'Empty application bundle.' };
+    }
+    if (offer.bytes.byteLength > MAX_BINARY_APP_OFFER_BYTES) {
+      return {
+        ok: false,
+        status: 'rejected',
+        message: `Application bundle exceeds FormLogic limit (${MAX_BINARY_APP_OFFER_BYTES} bytes).`,
+      };
+    }
+    const name = String(offer.name || offer.manifest?.name || 'Generated App').trim().slice(0, 120);
+    const operation = offer.operation === 'update' ? 'update' : 'create';
+    const payload: Record<string, unknown> = {
+      op: 'offer',
+      name,
+      operation,
+      ...(offer.targetAppId ? { targetAppId: offer.targetAppId } : {}),
+      size: offer.bytes.byteLength,
+      sha256: offer.sha256,
+      bundleBase64: encodeBase64(offer.bytes),
+      manifest: offer.manifest,
+      summary: offer.summary,
+      ...(offer.metadata ? { metadata: offer.metadata } : {}),
+    };
+    const raw = await call('formlogicOfferBundle', payload);
+    if (!isRecord(raw)) {
+      return { ok: false, status: 'rejected', message: 'Unexpected host response.' };
+    }
+    const inner = isRecord(raw.result) ? raw.result : raw;
+    if (typeof inner.error === 'string') {
+      const unsupported = /unknown|unsupported|not implemented|off/i.test(inner.error);
+      return {
+        ok: false,
+        status: unsupported ? 'unsupported' : 'rejected',
+        message: inner.error,
+      };
+    }
+    const status =
+      inner.status === 'accepted' ||
+      inner.status === 'cancelled' ||
+      inner.status === 'rejected' ||
+      inner.status === 'unsupported'
+        ? inner.status
+        : inner.ok === true
+          ? 'accepted'
+          : 'rejected';
+    return {
+      ok: status === 'accepted',
+      status,
+      ...(typeof inner.appId === 'string' ? { appId: inner.appId } : {}),
+      ...(typeof inner.url === 'string' ? { url: inner.url } : {}),
+      ...(typeof inner.message === 'string' ? { message: inner.message } : {}),
+    };
+  };
 }
 
 const MAX_PORT_HTTP_BODY_BYTES = 16 * 1024 * 1024;

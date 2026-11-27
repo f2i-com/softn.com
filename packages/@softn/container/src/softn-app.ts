@@ -10,14 +10,34 @@
  */
 
 import { inspectDeclaration, type Capability } from '@softn/bundle-format/capabilities';
+import { openBundleArchive, sha256Hex, validateBundleBytes } from '@softn/bundle-format';
 import { base64ToBytes, bytesToBase64, ContainerArchive, VIRTUAL_ORIGIN } from './archive';
 import { buildBackendRoutingConfig, matchBackendTarget, RemoteBackendTransport } from './backend-transport';
+import { ARTIFACT_SCHEME, ContainerArtifactRegistry, summarizeBundleArtifact } from './bundle-service';
 import { renderConsentBar, renderSaveBar, renderStoppedBar } from './consent-bar';
 import type { ContainerDeviceBridge } from './device-bridge';
 import { HostDomPatcher } from './dom-patcher';
 import { databaseOfPart, holdByLease, indexedDbBacking, localStorageBacking, partBytes, partPrefixes, type IdbBacking, type LeaseFence } from './idb-backing';
-import { MAX_NESTING_DEPTH, hostFileName, hostLabel, hostTitle, isNestedAppFile, newEmbedBudget, slotsAreContained, type EmbedAllowance, type EmbedBudget, type FontScopeContext } from './host-policy';
-import type { LocalBackendTransport } from './local-backend-transport';
+import {
+  MAX_NESTED_APPS,
+  MAX_NESTING_DEPTH,
+  MAX_TREE_NESTED_APPS,
+  hostFileName,
+  hostLabel,
+  hostTitle,
+  isNestedAppFile,
+  newEmbedBudget,
+  slotsAreContained,
+  type EmbedAllowance,
+  type EmbedBudget,
+  type FontScopeContext,
+} from './host-policy';
+import {
+  PLATFORM_MAX_PERSISTED_SQLITE_DBS,
+  PLATFORM_MAX_SINGLE_SQLITE_BYTES,
+  PLATFORM_MAX_TOTAL_PERSISTED_SQLITE_BYTES,
+  type LocalBackendTransport,
+} from './local-backend-transport';
 import { isSafeVirtualRoute, loadContainerSession, saveContainerSession, type PersistedContainerSession } from './session-store';
 import { extractSanitizedFontFaces, prepareHtmlDocument } from './sanitize';
 import { FRAME_BASE_CSS, PAGE_BASE_CSS } from './ui-css';
@@ -26,6 +46,7 @@ import type { VirtualNavBarController } from './virtual-nav-bar';
 import { selectEngineTier } from './zipp-loader';
 import {
   SoftNContainerError,
+  type AppDeploymentOffer,
   type BackendTransport,
   type BackendWsHandle,
   type ContainerBootStatus,
@@ -33,9 +54,13 @@ import {
   type ContainerManifest,
   type ContainerPermissions,
   type DatabaseConfig,
+  type HostPickedFile,
   type HostToWorkerMsg,
+  type RuntimeCapabilitiesInfo,
   type SaveRequest,
   type SoftNContainerOptions,
+  type SqliteOpName,
+  type SqlitePersistenceStatus,
   type ThreeSceneOp,
   type VirtualDirEntry,
   type WorkerToHostMsg,
@@ -44,6 +69,19 @@ import {
 } from './types';
 import type { SplitRealmSceneHost } from './vendor/webgl-scene-host';
 import { startModuleWorker } from './worker-start';
+
+const RUNTIME_VERSION = '0.0.53';
+const PLATFORM_MAX_BUNDLE_BYTES = 128 * 1024 * 1024;
+const PLATFORM_MAX_WORKSPACE_DBS = 32;
+
+const WORKSPACE_SQLITE_OP_SET = new Set<string>([
+  'workspace_create',
+  'workspace_create_db',
+  'workspace_import_bytes',
+  'workspace_cancel',
+  'workspace_dispose',
+  'import_bytes',
+]);
 
 const DEFAULT_LIMITS: Required<ContainerLimits> = {
   instructionsPerTurn: 100_000_000,
@@ -55,6 +93,11 @@ const DEFAULT_LIMITS: Required<ContainerLimits> = {
   // Its IndexedDB databases, kept in the page's own IndexedDB, where a browser gives a site
   // far more (and, where there is none, counted in the localStorage quota above instead).
   idbQuotaBytes: 64 * 1024 * 1024,
+  sqliteMaxDatabases: 8,
+  sqliteMaxDatabaseBytes: 64 * 1024 * 1024,
+  sqliteMaxTotalBytes: 64 * 1024 * 1024,
+  maxBundleBytes: 64 * 1024 * 1024,
+  maxWorkspaceDatabases: 8,
 };
 
 export interface SoftNContainerHandle {
@@ -85,6 +128,10 @@ export interface SoftNContainerHandle {
   seedDatabase(dbName: string, seedJson: string | Record<string, unknown>): Promise<Record<string, unknown>>;
   /** Export a named XDB SQLite database as standalone `.db` binary bytes. */
   exportDatabase(dbName: string): Promise<Uint8Array | null>;
+  /** Flush dirty SQLite databases and await persistent storage acknowledgement. */
+  flushDatabase(dbName?: string): Promise<SqlitePersistenceStatus | null>;
+  /** Read current SQLite persistence state (`saved` / `saving` / `unsaved-changes` / `storage-limit-reached`). */
+  getDatabaseStatus(dbName?: string): SqlitePersistenceStatus | Record<string, SqlitePersistenceStatus> | null;
   /** Grant or revoke capabilities dynamically. */
   setGrantedCapabilities(caps: Capability[]): void;
   /**
@@ -149,6 +196,11 @@ function nestedLimits(limits: Required<ContainerLimits>): ContainerLimits {
     ...limits,
     storageQuotaBytes: Math.min(limits.storageQuotaBytes, 1024 * 1024),
     idbQuotaBytes: Math.min(limits.idbQuotaBytes, 8 * 1024 * 1024),
+    sqliteMaxDatabases: Math.min(limits.sqliteMaxDatabases, 4),
+    sqliteMaxDatabaseBytes: Math.min(limits.sqliteMaxDatabaseBytes, 16 * 1024 * 1024),
+    sqliteMaxTotalBytes: Math.min(limits.sqliteMaxTotalBytes, 16 * 1024 * 1024),
+    maxBundleBytes: Math.min(limits.maxBundleBytes, 16 * 1024 * 1024),
+    maxWorkspaceDatabases: Math.min(limits.maxWorkspaceDatabases, 4),
   };
 }
 
@@ -162,7 +214,8 @@ const NESTED_STOPPED = 'The nested app was stopped before it had started.';
  * What a nested app declares, as far as the app it is nested in declared it too: for each
  * capability both ask for, the outer app's own terms (its hosts for `net`, not the nested
  * app's). The person was asked about the app they opened and what it named; an app inside it
- * is part of it, and is allowed nothing that was not in that question.
+ * is part of it, and is allowed nothing that was not in that question. Deployment privileges
+ * (`app-deploy`) are never delegated to nested or previewed apps.
  */
 export function nestedPermissions(declared: ContainerPermissions, outer: ContainerPermissions): ContainerPermissions {
   const asked = declared.permissions ?? {};
@@ -171,7 +224,7 @@ export function nestedPermissions(declared: ContainerPermissions, outer: Contain
     typeof entry === 'object' && entry !== null && (entry as { enabled?: unknown }).enabled === true;
   const permissions: NonNullable<ContainerPermissions['permissions']> = {};
   for (const name of Object.keys(asked)) {
-    if (BLOCKED_SESSION_KEYS.has(name)) continue;
+    if (BLOCKED_SESSION_KEYS.has(name) || name === 'app-deploy') continue;
     if (enabled(asked[name]) && Object.prototype.hasOwnProperty.call(had, name) && enabled(had[name])) permissions[name] = had[name];
   }
   return { permissions };
@@ -681,9 +734,23 @@ export async function mountSoftNContainer(
       runtimeUrl = givenRuntimeUrl;
     }
   }
-  const limits: Required<ContainerLimits> = {
+  const rawLimits: Required<ContainerLimits> = {
     ...DEFAULT_LIMITS,
     ...(options.limits ?? {}),
+  };
+  const limits: Required<ContainerLimits> = {
+    ...rawLimits,
+    sqliteMaxDatabases: Math.max(1, Math.min(rawLimits.sqliteMaxDatabases, PLATFORM_MAX_PERSISTED_SQLITE_DBS)),
+    sqliteMaxDatabaseBytes: Math.max(1024 * 1024, Math.min(rawLimits.sqliteMaxDatabaseBytes, PLATFORM_MAX_SINGLE_SQLITE_BYTES)),
+    sqliteMaxTotalBytes: Math.max(
+      1024 * 1024,
+      Math.min(
+        options.limits?.sqliteMaxTotalBytes ?? Math.max(rawLimits.sqliteMaxTotalBytes, rawLimits.idbQuotaBytes),
+        PLATFORM_MAX_TOTAL_PERSISTED_SQLITE_BYTES
+      )
+    ),
+    maxBundleBytes: Math.max(1024 * 1024, Math.min(rawLimits.maxBundleBytes, PLATFORM_MAX_BUNDLE_BYTES)),
+    maxWorkspaceDatabases: Math.max(1, Math.min(rawLimits.maxWorkspaceDatabases, PLATFORM_MAX_WORKSPACE_DBS)),
   };
 
   const emitStatus = (status: ContainerBootStatus) => {
@@ -802,6 +869,8 @@ export async function mountSoftNContainer(
       listVirtualDirectory: (dir) => archive.listVirtualDirectory(dir),
       seedDatabase: async () => { throw new Error('SQLite is unavailable in legacy-ui mode'); },
       exportDatabase: async () => null,
+      flushDatabase: async () => null,
+      getDatabaseStatus: () => ({}),
       setGrantedCapabilities: () => undefined,
       setActive: () => undefined,
       dispose() {
@@ -1333,16 +1402,52 @@ export async function mountSoftNContainer(
   };
 
   const backendSockets = new Map<string, BackendWsHandle>();
+  const artifactRegistry = new ContainerArtifactRegistry({ maxArtifactBytes: limits.maxBundleBytes });
+  const activePreviews = new Map<
+    string,
+    {
+      handle: SoftNContainerHandle;
+      artifactId: string;
+      box: HTMLElement;
+      target: HTMLElement;
+      dispose: () => void;
+    }
+  >();
+  let previewSeq = 1;
+  const pickedFiles = new Map<string, HostPickedFile>();
+  let pickedFileSeq = 1;
+  const fileWriters = new Map<
+    string,
+    { name: string; type: string; chunks: Uint8Array[]; totalBytes: number; maxBytes: number }
+  >();
+  let fileWriterSeq = 1;
+  const workspaceSqliteHandles = new Set<number>();
   let viewportResizeObserver: ResizeObserver | null = null;
   let hostFontStyleEl: HTMLStyleElement | null = null;
   const dynamicFontSheets = new Map<Element, string>();
   /** Reads the shown page's own stylesheets again once the network is allowed (loadPage). */
   let restylePageForNet: (() => void) | null = null;
 
+  const disposeAllPreviews = () => {
+    for (const preview of [...activePreviews.values()]) {
+      try {
+        preview.dispose();
+      } catch {
+        // Ignore
+      }
+    }
+    activePreviews.clear();
+  };
+
   const teardownPage = () => {
     clearRaf();
     clearInitWatchdog();
     onSessionStopped = null;
+    disposeAllPreviews();
+    artifactRegistry.dispose();
+    pickedFiles.clear();
+    fileWriters.clear();
+    workspaceSqliteHandles.clear();
     // Databases the session held are let go of, once what it wrote is kept: started again, it holds none.
     idbHoldEpoch++;
     idbHoldsAsked = 0;
@@ -1399,6 +1504,8 @@ export async function mountSoftNContainer(
   }
 
   let localBackendTransport: LocalBackendTransport | null = null;
+  let workspaceSqliteTransport: LocalBackendTransport | null = null;
+  let lazyWorkspaceSqliteBoot: Promise<LocalBackendTransport> | null = null;
   let ownedRemoteTransport: RemoteBackendTransport | null = null;
   let backendTransport: BackendTransport | undefined = options.backendTransport;
   if (!backendTransport && options.backendUrl) {
@@ -1455,7 +1562,12 @@ export async function mountSoftNContainer(
         xdbModule: xdbSource,
         xdbGlueUrl: options.xdbGlueUrl,
         instructionBudget: limits.instructionsPerTurn,
-        maxTotalSqliteBytes: limits.idbQuotaBytes,
+        maxPersistedSqliteDbs: limits.sqliteMaxDatabases,
+        maxSingleSqliteBytes: limits.sqliteMaxDatabaseBytes,
+        maxTotalSqliteBytes: limits.sqliteMaxTotalBytes,
+        maxWorkspaceDbs: limits.maxWorkspaceDatabases,
+        maxImportBytes: limits.sqliteMaxDatabaseBytes,
+        onPersistenceChange: options.onPersistenceChange,
         onConsole: options.onConsole,
         onStatus: emitStatus,
       });
@@ -1476,6 +1588,56 @@ export async function mountSoftNContainer(
       return await lazySqliteBoot;
     } catch (err) {
       lazySqliteBoot = null;
+      throw err;
+    }
+  };
+
+  /**
+   * Isolated, strictly ephemeral SQLite workspace transport with zero access to backend
+   * databases or backend VFS files. Used whenever a container with a configured backend
+   * creates temporary SQLite workspaces (`sqlite-workspace` capability).
+   */
+  const ensureWorkspaceSqliteTransport = async (): Promise<LocalBackendTransport> => {
+    if (workspaceSqliteTransport) return workspaceSqliteTransport;
+    if (lazyWorkspaceSqliteBoot) return lazyWorkspaceSqliteBoot;
+    lazyWorkspaceSqliteBoot = (async () => {
+      const [{ LocalBackendTransport: LocalTransportCtor }, xdbSource] = await Promise.all([
+        import('./local-backend-transport'),
+        resolveXdbSource(),
+      ]);
+      const transport = new LocalTransportCtor({
+        appId: `${appId}:workspace`,
+        storagePrefix: `${storageBase}ws:`,
+        persistStorage: false,
+        databases: [],
+        textFiles: {},
+        binaryFiles: {},
+        runtimeUrl,
+        isolation: useWorkerIsolation ? 'worker' : 'inline',
+        xdbModule: xdbSource,
+        xdbGlueUrl: options.xdbGlueUrl,
+        instructionBudget: limits.instructionsPerTurn,
+        maxWorkspaceDbs: limits.maxWorkspaceDatabases,
+        maxImportBytes: limits.sqliteMaxDatabaseBytes,
+        onConsole: options.onConsole,
+      });
+      try {
+        await transport.ready;
+      } catch (err) {
+        transport.dispose();
+        throw err;
+      }
+      if (disposed || !owns()) {
+        transport.dispose();
+        throw new Error('Container disposed while initializing SQLite workspace');
+      }
+      workspaceSqliteTransport = transport;
+      return transport;
+    })();
+    try {
+      return await lazyWorkspaceSqliteBoot;
+    } catch (err) {
+      lazyWorkspaceSqliteBoot = null;
       throw err;
     }
   };
@@ -1504,6 +1666,8 @@ export async function mountSoftNContainer(
     }
     localBackendTransport?.dispose();
     localBackendTransport = null;
+    workspaceSqliteTransport?.dispose();
+    workspaceSqliteTransport = null;
     ownedRemoteTransport?.dispose();
     ownedRemoteTransport = null;
     archive.dispose();
@@ -1597,7 +1761,12 @@ export async function mountSoftNContainer(
           xdbModule: xdbSource,
           xdbGlueUrl: options.xdbGlueUrl,
           instructionBudget: limits.instructionsPerTurn,
-          maxTotalSqliteBytes: limits.idbQuotaBytes,
+          maxPersistedSqliteDbs: limits.sqliteMaxDatabases,
+          maxSingleSqliteBytes: limits.sqliteMaxDatabaseBytes,
+          maxTotalSqliteBytes: limits.sqliteMaxTotalBytes,
+          maxWorkspaceDbs: limits.maxWorkspaceDatabases,
+          maxImportBytes: limits.sqliteMaxDatabaseBytes,
+          onPersistenceChange: options.onPersistenceChange,
           onConsole: options.onConsole,
           onStatus: emitStatus,
         });
@@ -2192,6 +2361,7 @@ export async function mountSoftNContainer(
       fontScope,
       embeds,
       embedBudget,
+      hasArtifact: (id) => artifactRegistry.has(id),
       callbacks: {
         // An app of the app's own (`<softn-app src>`), run in the box the page has for it: a
         // container like this one, made here with what this one was given. Nothing of how it
@@ -2199,15 +2369,28 @@ export async function mountSoftNContainer(
         // not where its data is kept.
         onNestedApp: (box, source, initialPath) => {
           if (disposed || !owns() || currentPatcher !== patcher) return null;
-          // Read by the file's own name, which reads as itself (host-policy.ts nestedAppSource).
-          const file = source.replace(/^\/+/, '');
-          if (!isNestedAppFile(archive, file)) return null;
-          const bytes = archive.readBytes(file);
+          let bytes: Uint8Array | null = null;
+          let isDynamicArtifact = false;
+          if (source.startsWith(ARTIFACT_SCHEME)) {
+            if (options.dynamicPreviews === 'deny' || !grantedCaps.has('app-preview')) return null;
+            const rec = artifactRegistry.get(source.slice(ARTIFACT_SCHEME.length));
+            if (!rec) return null;
+            bytes = rec.bytes;
+            isDynamicArtifact = true;
+          } else {
+            // Read by the file's own name, which reads as itself (host-policy.ts nestedAppSource).
+            const file = source.replace(/^\/+/, '');
+            if (!isNestedAppFile(archive, file)) return null;
+            bytes = archive.readBytes(file);
+          }
           if (!bytes) return null;
           if (bytes.byteLength > MAX_NESTED_ARCHIVE_BYTES) {
             options.onConsole?.('warn', `The nested app ${source} is larger than an app nests (${MAX_NESTED_ARCHIVE_BYTES / (1024 * 1024)} MB) and was not started.`);
             return null;
           }
+          const childGranted = [...grantedCaps].filter((cap) =>
+            cap !== 'app-deploy' && (!isDynamicArtifact || cap !== 'app-preview')
+          );
           const childOptions: SoftNContainerOptions = {
             // A copy: the archive's own bytes are this app's, and are let go of with it.
             source: bytes.slice(),
@@ -2227,7 +2410,8 @@ export async function mountSoftNContainer(
             persistStorage: false,
             limits: nestedLimits(limits),
             frames: options.frames,
-            nestedApps: options.nestedApps,
+            nestedApps: isDynamicArtifact ? 'deny' : options.nestedApps,
+            dynamicPreviews: 'deny',
             initialPath,
             // A name of its own under this app's: never the one the same archive has when it is
             // opened by itself, whose data this app would then be drawn around.
@@ -2235,7 +2419,7 @@ export async function mountSoftNContainer(
             storagePrefix: `${storageBase}nested:${safeStorageAppId(source)}:`,
             // It asks the person nothing itself: it has what this app was allowed.
             permissionMode: 'deny',
-            initialGrantedCapabilities: [...grantedCaps],
+            initialGrantedCapabilities: childGranted,
             onConsole: options.onConsole,
             onExternalLink: options.onExternalLink,
             onError: (error) => options.onError?.(error),
@@ -2535,11 +2719,13 @@ export async function mountSoftNContainer(
           if (msg.kind !== 'backend.call' || !options.backendCall) throw new Error('This app has no connected backend.');
           // FormLogic's native JSON route accepts up to 6 MiB; sandboxed file uploads accept up to 25 MiB binary (~34 MiB base64).
           const limit =
-            action === 'formlogicUpload'
-              ? 35 * 1024 * 1024
-              : action === 'nativeRequest'
-                ? 6 * 1024 * 1024
-                : 32768;
+            action === 'formlogicOfferBundle'
+              ? 88 * 1024 * 1024
+              : action === 'formlogicUpload'
+                ? 35 * 1024 * 1024
+                : action === 'nativeRequest'
+                  ? 6 * 1024 * 1024
+                  : 32768;
           if (typeof action !== 'string' || !/^[a-z][a-zA-Z0-9_-]{0,63}$/.test(action) || typeof input !== 'string' || input.length > limit) {
             throw new Error('Invalid backend request.');
           }
@@ -2982,21 +3168,589 @@ export async function mountSoftNContainer(
               break;
             }
             if (msg.kind === 'sqlite.op') {
-              // Frontend direct SQLite access (`softn:sqlite`) is only permitted when no backend
-              // owns the database; otherwise untrusted frontend JS would bypass backend isolation.
+              // Security boundary: direct frontend access to named/persistent databases stays
+              // strictly disabled whenever a backend owns the database. Isolated temporary
+              // workspaces (`sqlite-workspace` capability) run in a separate ephemeral XDB instance
+              // with zero access to backend databases or backend VFS files.
               const allowFrontendSqlite = !archive.manifest.backend && !options.backendTransport && !options.backendUrl;
-              if (!allowFrontendSqlite) {
+              const op = String(msg.payload?.op ?? '') as SqliteOpName;
+              const opArgs = Array.isArray(msg.payload?.args) ? msg.payload.args : [];
+              const firstHandle = typeof opArgs[0] === 'number' ? opArgs[0] : Number.NaN;
+              const isCreateTemp =
+                op === 'create' &&
+                !(opArgs[0] && typeof opArgs[0] === 'object' && (opArgs[0] as { temporary?: unknown }).temporary === false);
+              const targetsWorkspaceHandle = Number.isInteger(firstHandle) && workspaceSqliteHandles.has(firstHandle);
+              const isWorkspaceRequest =
+                WORKSPACE_SQLITE_OP_SET.has(op) ||
+                isCreateTemp ||
+                (targetsWorkspaceHandle && !allowFrontendSqlite) ||
+                (Boolean(msg.payload?.isWorkspace) && targetsWorkspaceHandle);
+
+              if (op === 'open' || op === 'seed_json' || (op === 'create' && !isCreateTemp)) {
+                if (!allowFrontendSqlite) {
+                  reply(false, undefined, 'Direct frontend SQLite access is disabled when a backend is configured');
+                  break;
+                }
+              } else if (WORKSPACE_SQLITE_OP_SET.has(op) || isCreateTemp) {
+                if (!grantedCaps.has('sqlite-workspace')) {
+                  reply(false, undefined, 'Permission "sqlite-workspace" is required to create temporary SQLite databases or import SQLite binaries');
+                  break;
+                }
+              } else if (!allowFrontendSqlite && !targetsWorkspaceHandle) {
                 reply(false, undefined, 'Direct frontend SQLite access is disabled when a backend is configured');
                 break;
               }
-              const op = String(msg.payload?.op ?? '') as 'open' | 'query' | 'execute' | 'close' | 'seed_json';
-              const opArgs = Array.isArray(msg.payload?.args) ? msg.payload.args : [];
-              void ensureLocalSqliteTransport()
-                .then((transport) => transport.sqliteOp(op, opArgs))
+
+              const useIsolatedWorkspace = !allowFrontendSqlite && (isWorkspaceRequest || targetsWorkspaceHandle);
+              const transportPromise = useIsolatedWorkspace
+                ? ensureWorkspaceSqliteTransport()
+                : ensureLocalSqliteTransport();
+
+              void transportPromise
+                .then(async (transport) => {
+                  if (op === 'flush') {
+                    if (targetsWorkspaceHandle || useIsolatedWorkspace) {
+                      return {
+                        dbKey: 'temporary',
+                        state: 'saved',
+                        revision: 0,
+                        checksum: '',
+                        bytes: 0,
+                        updatedAt: Date.now(),
+                        temporary: true,
+                      };
+                    }
+                    return transport.flushAndAck(Number.isInteger(firstHandle) ? { handleId: firstHandle } : undefined);
+                  }
+                  if (op === 'persistence_status') {
+                    if (targetsWorkspaceHandle || useIsolatedWorkspace) {
+                      return {
+                        dbKey: 'temporary',
+                        state: 'saved',
+                        revision: 0,
+                        checksum: '',
+                        bytes: 0,
+                        updatedAt: Date.now(),
+                      };
+                    }
+                    return transport.getPersistenceStatus();
+                  }
+                  const res = await transport.sqliteOp(op, opArgs);
+                  if (
+                    (op === 'workspace_create_db' ||
+                      op === 'workspace_import_bytes' ||
+                      op === 'import_bytes' ||
+                      isCreateTemp ||
+                      (op === 'clone' && (useIsolatedWorkspace || targetsWorkspaceHandle))) &&
+                    res &&
+                    typeof res === 'object' &&
+                    typeof (res as { id?: unknown }).id === 'number'
+                  ) {
+                    workspaceSqliteHandles.add((res as { id: number }).id);
+                  } else if ((op === 'dispose' || op === 'close') && Number.isInteger(firstHandle)) {
+                    workspaceSqliteHandles.delete(firstHandle);
+                  }
+                  return res;
+                })
                 .then(
                   (res) => reply(true, res),
                   (err) => reply(false, undefined, err instanceof Error ? err.message : String(err))
                 );
+              break;
+            }
+            if (msg.kind === 'files.save_bytes' || msg.kind === 'files.op') {
+              const confirmAndSaveBytes = async (
+                rawName: string,
+                rawType: string,
+                bytes: Uint8Array,
+                providedSha256?: string
+              ): Promise<{ saved: boolean; cancelled?: boolean; name: string; size: number; sha256: string }> => {
+                if (disposed || options.downloads === 'deny') {
+                  throw new Error('File saving is disabled by this host');
+                }
+                if (bytes.byteLength > limits.maxBundleBytes) {
+                  throw new Error(`File (${bytes.byteLength} bytes) exceeds maximum export size (${limits.maxBundleBytes} bytes)`);
+                }
+                const cleanName = hostFileName(rawName);
+                const sha256 = providedSha256 || (await sha256Hex(bytes));
+                const request: SaveRequest = {
+                  name: cleanName,
+                  type: rawType || 'application/octet-stream',
+                  size: bytes.byteLength,
+                  bytes,
+                };
+                let approved = false;
+                if (options.onSaveRequest) {
+                  approved = (await Promise.resolve().then(() => options.onSaveRequest!(request))) === true;
+                } else {
+                  if (saveEl || saveAsked) {
+                    throw new Error('Another save confirmation is already pending');
+                  }
+                  saveAsked = true;
+                  approved = await new Promise<boolean>((resolveSave) => {
+                    const holder = document.createElement('div');
+                    holder.setAttribute('data-softn-container-save', '');
+                    holder.style.cssText = CONSENT_STYLE;
+                    holder.attachShadow({ mode: 'closed' }).appendChild(
+                      renderSaveBar(hostLabel(archive.manifest.name) || 'This app', request.name, request.size, (yes) => {
+                        holder.remove();
+                        if (saveEl === holder) saveEl = null;
+                        saveAsked = false;
+                        resolveSave(yes === true && !disposed);
+                      })
+                    );
+                    frameEl.insertBefore(holder, boxEl);
+                    saveEl = holder;
+                  });
+                }
+                if (approved && !disposed) {
+                  saveToDisk(request);
+                  return { saved: true, name: request.name, size: request.size, sha256 };
+                }
+                return { saved: false, cancelled: true, name: request.name, size: request.size, sha256 };
+              };
+
+              if (msg.kind === 'files.save_bytes') {
+                const rawBytes = msg.payload?.bytes;
+                const bytes =
+                  rawBytes instanceof Uint8Array
+                    ? rawBytes
+                    : rawBytes instanceof ArrayBuffer
+                      ? new Uint8Array(rawBytes)
+                      : null;
+                if (!bytes) {
+                  reply(false, undefined, 'Expected binary payload for save');
+                  break;
+                }
+                void confirmAndSaveBytes(
+                  String(msg.payload?.name ?? 'download.bin'),
+                  String(msg.payload?.type ?? 'application/octet-stream'),
+                  bytes,
+                  typeof msg.payload?.sha256 === 'string' ? msg.payload.sha256 : undefined
+                ).then(
+                  (res) => reply(true, res),
+                  (err) => reply(false, undefined, err instanceof Error ? err.message : String(err))
+                );
+                break;
+              }
+
+              const fop = String(msg.payload?.op ?? '');
+              const fargs = Array.isArray(msg.payload?.args) ? msg.payload.args : [];
+              void (async () => {
+                switch (fop) {
+                  case 'pick': {
+                    if (!grantedCaps.has('files')) {
+                      throw new Error('Permission "files" is required to pick files from the host');
+                    }
+                    const pickOpts =
+                      fargs[0] && typeof fargs[0] === 'object' && !Array.isArray(fargs[0])
+                        ? (fargs[0] as { accept?: string[]; multiple?: boolean; maxBytes?: number })
+                        : {};
+                    let chosen: HostPickedFile[];
+                    if (options.onPickFiles) {
+                      chosen = (await options.onPickFiles(pickOpts)) ?? [];
+                    } else if (typeof document !== 'undefined') {
+                      if (!currentPatcher?.consumeActivation()) {
+                        throw new Error('Picking files requires a direct user click or key press inside the app');
+                      }
+                      chosen = await new Promise<HostPickedFile[]>((resolvePick) => {
+                        const input = document.createElement('input');
+                        input.type = 'file';
+                        if (pickOpts.multiple) input.multiple = true;
+                        if (Array.isArray(pickOpts.accept) && pickOpts.accept.length > 0) {
+                          input.accept = pickOpts.accept.map((s) => String(s)).join(',');
+                        }
+                        input.addEventListener('change', () => {
+                          const list = Array.from(input.files ?? []).map((f) => ({
+                            name: f.name,
+                            size: f.size,
+                            type: f.type || 'application/octet-stream',
+                            lastModified: f.lastModified || 0,
+                            slice: async (start: number, end: number) => new Uint8Array(await f.slice(start, end).arrayBuffer()),
+                          }));
+                          resolvePick(list);
+                        });
+                        input.addEventListener('cancel', () => resolvePick([]));
+                        input.click();
+                      });
+                    } else {
+                      chosen = [];
+                    }
+                    const metaList: Array<{ id: string; name: string; size: number; type: string; lastModified: number }> = [];
+                    for (const file of chosen) {
+                      if (pickedFiles.size >= 32) {
+                        const oldest = pickedFiles.keys().next().value;
+                        if (oldest !== undefined) pickedFiles.delete(oldest);
+                      }
+                      const id = `file_${pickedFileSeq++}`;
+                      pickedFiles.set(id, file);
+                      metaList.push({
+                        id,
+                        name: file.name,
+                        size: file.size,
+                        type: file.type || 'application/octet-stream',
+                        lastModified: file.lastModified ?? 0,
+                      });
+                    }
+                    return { files: metaList };
+                  }
+                  case 'read_chunk': {
+                    const id = String(fargs[0] ?? '');
+                    const file = pickedFiles.get(id);
+                    if (!file) throw new Error('Unknown or closed file handle');
+                    const offset = Math.max(0, Math.floor(Number(fargs[1] ?? 0)));
+                    const length = Math.max(0, Math.min(4 * 1024 * 1024, Math.floor(Number(fargs[2] ?? 512 * 1024))));
+                    if (offset >= file.size || length === 0) {
+                      return { base64: '', byteLength: 0 };
+                    }
+                    const chunk = await file.slice(offset, Math.min(file.size, offset + length));
+                    return { base64: bytesToBase64(chunk), byteLength: chunk.byteLength };
+                  }
+                  case 'close': {
+                    pickedFiles.delete(String(fargs[0] ?? ''));
+                    return { closed: true };
+                  }
+                  case 'writer_open': {
+                    if (options.downloads === 'deny') {
+                      throw new Error('File export is disabled by this host');
+                    }
+                    if (fileWriters.size >= 8) {
+                      throw new Error('Too many open file writers (max 8)');
+                    }
+                    const wopts =
+                      fargs[0] && typeof fargs[0] === 'object' && !Array.isArray(fargs[0])
+                        ? (fargs[0] as { name?: string; type?: string; maxBytes?: number })
+                        : {};
+                    const writerId = `wr_${fileWriterSeq++}`;
+                    const name = hostFileName(wopts.name || 'export.bin');
+                    const maxBytes = Math.min(
+                      limits.maxBundleBytes,
+                      typeof wopts.maxBytes === 'number' && wopts.maxBytes > 0 ? Math.floor(wopts.maxBytes) : limits.maxBundleBytes
+                    );
+                    fileWriters.set(writerId, {
+                      name,
+                      type: typeof wopts.type === 'string' && wopts.type ? wopts.type : 'application/octet-stream',
+                      chunks: [],
+                      totalBytes: 0,
+                      maxBytes,
+                    });
+                    return { writerId, name, maxBytes };
+                  }
+                  case 'writer_write': {
+                    const writerId = String(fargs[0] ?? '');
+                    const writer = fileWriters.get(writerId);
+                    if (!writer) throw new Error('Unknown or closed file writer');
+                    const raw = fargs[1];
+                    const chunk =
+                      raw instanceof Uint8Array
+                        ? raw
+                        : raw instanceof ArrayBuffer
+                          ? new Uint8Array(raw)
+                          : typeof raw === 'string'
+                            ? base64ToBytes(raw)
+                            : new Uint8Array(0);
+                    if (writer.totalBytes + chunk.byteLength > writer.maxBytes) {
+                      fileWriters.delete(writerId);
+                      throw new Error(`Export exceeds maximum size limit (${writer.maxBytes} bytes)`);
+                    }
+                    if (chunk.byteLength > 0) {
+                      writer.chunks.push(chunk.slice());
+                      writer.totalBytes += chunk.byteLength;
+                    }
+                    return { bytesWritten: writer.totalBytes };
+                  }
+                  case 'writer_close': {
+                    const writerId = String(fargs[0] ?? '');
+                    const writer = fileWriters.get(writerId);
+                    if (!writer) throw new Error('Unknown or closed file writer');
+                    fileWriters.delete(writerId);
+                    const merged = new Uint8Array(writer.totalBytes);
+                    let off = 0;
+                    for (const c of writer.chunks) {
+                      merged.set(c, off);
+                      off += c.byteLength;
+                    }
+                    return confirmAndSaveBytes(writer.name, writer.type, merged);
+                  }
+                  case 'writer_abort': {
+                    fileWriters.delete(String(fargs[0] ?? ''));
+                    return { aborted: true };
+                  }
+                  default:
+                    throw new Error(`Unsupported files op: ${fop}`);
+                }
+              })().then(
+                (res) => reply(true, res),
+                (err) => reply(false, undefined, err instanceof Error ? err.message : String(err))
+              );
+              break;
+            }
+            if (msg.kind === 'apps.op') {
+              const aop = String(msg.payload?.op ?? '');
+              const aargs = Array.isArray(msg.payload?.args) ? msg.payload.args : [];
+              void (async () => {
+                switch (aop) {
+                  case 'preview_mount': {
+                    if (disposed || !owns() || currentPatcher !== patcher) {
+                      throw new Error('Container disposed');
+                    }
+                    if (nested || options.dynamicPreviews === 'deny' || !embeds.apps || nestingDepth >= MAX_NESTING_DEPTH) {
+                      throw new Error('Dynamic app previews are disabled in this container');
+                    }
+                    if (!grantedCaps.has('app-preview')) {
+                      throw new Error('Permission "app-preview" is required to preview dynamically generated apps');
+                    }
+                    if (activePreviews.size >= MAX_NESTED_APPS || embedBudget.apps >= MAX_TREE_NESTED_APPS) {
+                      throw new Error(`Maximum concurrent app previews reached (${MAX_NESTED_APPS})`);
+                    }
+                    const spec = (aargs[0] && typeof aargs[0] === 'object' ? aargs[0] : {}) as {
+                      bytes?: Uint8Array | ArrayBuffer;
+                      targetId?: string;
+                      targetNodeId?: number;
+                      initialPath?: string;
+                    };
+                    const rawBytes =
+                      spec.bytes instanceof Uint8Array
+                        ? spec.bytes
+                        : spec.bytes instanceof ArrayBuffer
+                          ? new Uint8Array(spec.bytes)
+                          : null;
+                    if (!rawBytes) throw new Error('apps.preview requires a valid .softn bundle');
+                    const targetEl = patcher.getElementByNodeOrId(spec.targetNodeId, spec.targetId);
+                    if (!targetEl) {
+                      throw new Error('Preview target element not found inside this container');
+                    }
+                    // Dispose any existing preview mounted inside the same target element
+                    for (const [existingId, existing] of [...activePreviews]) {
+                      if (existing.target === targetEl) {
+                        existing.dispose();
+                        activePreviews.delete(existingId);
+                      }
+                    }
+                    const record = await artifactRegistry.register(rawBytes);
+                    const previewHostEl = document.createElement('div');
+                    previewHostEl.setAttribute('data-softn-dynamic-preview', record.id);
+                    previewHostEl.style.cssText = 'display:block;width:100%;height:100%;min-height:160px;';
+                    targetEl.replaceChildren(previewHostEl);
+
+                    const strippedOuter: ContainerPermissions = {
+                      permissions: Object.fromEntries(
+                        Object.entries(permissions.permissions ?? {}).filter(
+                          ([k]) => k !== 'app-deploy' && k !== 'app-preview'
+                        )
+                      ),
+                    };
+                    const childGranted = [...grantedCaps].filter((c) => c !== 'app-deploy' && c !== 'app-preview');
+                    const childOptions: SoftNContainerOptions = {
+                      source: record.bytes.slice(),
+                      runtimeUrl,
+                      workerUrl: options.workerUrl,
+                      engineWasm: options.engineWasm,
+                      xdbWasm: options.xdbWasm,
+                      xdbGlueUrl: options.xdbGlueUrl,
+                      hostThree: options.hostThree,
+                      deviceBridge: options.deviceBridge,
+                      downloads: options.downloads,
+                      onSaveRequest: askForNested,
+                      theme: options.theme,
+                      isolation: options.isolation,
+                      persistStorage: false,
+                      limits: nestedLimits(limits),
+                      frames: options.frames,
+                      nestedApps: 'deny',
+                      dynamicPreviews: 'deny',
+                      initialPath: typeof spec.initialPath === 'string' ? spec.initialPath : undefined,
+                      appId: `${appId}/preview/${record.id}`,
+                      storagePrefix: `${storageBase}preview:${record.id}:`,
+                      permissionMode: 'deny',
+                      initialGrantedCapabilities: childGranted,
+                      onConsole: options.onConsole,
+                      onExternalLink: options.onExternalLink,
+                      onError: (err) => options.onError?.(err),
+                    };
+                    let stopped = false;
+                    let controls: NestedControls | null = null;
+                    nestedMounts.set(childOptions, {
+                      depth: nestingDepth + 1,
+                      outer: strippedOuter,
+                      budget: embedBudget,
+                      stopped: () => stopped || disposed || !owns() || currentPatcher !== patcher,
+                      attach: (told) => {
+                        controls = told;
+                        nestedControls.add(told);
+                        if (paused) told.setActive(false);
+                      },
+                    });
+                    embedBudget.apps++;
+                    let childHandle: SoftNContainerHandle;
+                    try {
+                      childHandle = await mountSoftNContainer(previewHostEl, childOptions);
+                    } catch (err) {
+                      embedBudget.apps = Math.max(0, embedBudget.apps - 1);
+                      if (controls) nestedControls.delete(controls);
+                      artifactRegistry.remove(record.id);
+                      previewHostEl.remove();
+                      throw err;
+                    }
+                    const previewId = `prv_${previewSeq++}`;
+                    let previewDisposed = false;
+                    const disposePreview = () => {
+                      if (previewDisposed) return;
+                      previewDisposed = true;
+                      stopped = true;
+                      embedBudget.apps = Math.max(0, embedBudget.apps - 1);
+                      if (controls) nestedControls.delete(controls);
+                      try {
+                        childHandle.dispose();
+                      } catch {
+                        // Ignore
+                      }
+                      artifactRegistry.remove(record.id);
+                      previewHostEl.remove();
+                    };
+                    if (disposed || !owns() || currentPatcher !== patcher) {
+                      disposePreview();
+                      throw new Error('Container disposed during preview mount');
+                    }
+                    activePreviews.set(previewId, {
+                      handle: childHandle,
+                      artifactId: record.id,
+                      box: previewHostEl,
+                      target: targetEl,
+                      dispose: disposePreview,
+                    });
+                    return {
+                      previewId,
+                      artifactId: record.handle,
+                      manifest: record.manifest,
+                    };
+                  }
+                  case 'preview_navigate': {
+                    const previewId = String(aargs[0] ?? '');
+                    const path = String(aargs[1] ?? '/');
+                    const preview = activePreviews.get(previewId);
+                    if (!preview) throw new Error('Unknown or disposed app preview');
+                    await preview.handle.navigate(path);
+                    return { ok: true, currentPath: preview.handle.currentPath };
+                  }
+                  case 'preview_dispose': {
+                    const previewId = String(aargs[0] ?? '');
+                    const preview = activePreviews.get(previewId);
+                    if (preview) {
+                      activePreviews.delete(previewId);
+                      preview.dispose();
+                    }
+                    return { disposed: true };
+                  }
+                  case 'offer_to_host': {
+                    if (nested) {
+                      throw new Error('Nested or previewed applications cannot offer or deploy apps to the host');
+                    }
+                    if (!grantedCaps.has('app-deploy')) {
+                      throw new Error('Permission "app-deploy" is required to offer an application bundle to the host');
+                    }
+                    const spec = (aargs[0] && typeof aargs[0] === 'object' ? aargs[0] : {}) as {
+                      bytes?: Uint8Array | ArrayBuffer;
+                      name?: string;
+                      operation?: 'create' | 'update';
+                      targetAppId?: string;
+                      metadata?: Record<string, unknown>;
+                    };
+                    const rawBytes =
+                      spec.bytes instanceof Uint8Array
+                        ? spec.bytes
+                        : spec.bytes instanceof ArrayBuffer
+                          ? new Uint8Array(spec.bytes)
+                          : null;
+                    if (!rawBytes || rawBytes.byteLength === 0) {
+                      throw new Error('offerToHost requires a non-empty .softn bundle');
+                    }
+                    if (rawBytes.byteLength > limits.maxBundleBytes) {
+                      throw new Error(`Application bundle (${rawBytes.byteLength} bytes) exceeds maximum allowed size (${limits.maxBundleBytes} bytes)`);
+                    }
+                    const copy = rawBytes.slice();
+                    const checked = openBundleArchive(copy);
+                    checked.release();
+                    const validation = validateBundleBytes(copy);
+                    if (!validation.valid) {
+                      throw new Error(`Cannot offer invalid .softn bundle: ${validation.errors.join('; ')}`);
+                    }
+                    const sha256 = await sha256Hex(copy);
+                    const summary = summarizeBundleArtifact(copy, validation.inspection);
+                    if (!options.onOfferApp) {
+                      return {
+                        ok: false,
+                        status: 'unsupported',
+                        message: 'This host does not support application publishing.',
+                      };
+                    }
+                    const offer: AppDeploymentOffer = {
+                      name: hostLabel(spec.name || summary.manifest.name || 'Generated App') || 'Generated App',
+                      operation: spec.operation === 'update' ? 'update' : 'create',
+                      ...(typeof spec.targetAppId === 'string' && spec.targetAppId.trim()
+                        ? { targetAppId: spec.targetAppId.trim() }
+                        : {}),
+                      bytes: copy,
+                      size: copy.byteLength,
+                      sha256,
+                      manifest: summary.manifest,
+                      summary: {
+                        frontend: summary.frontend,
+                        backend: summary.backend,
+                        database: summary.database,
+                        fileCount: summary.fileCount,
+                        size: summary.size,
+                      },
+                      ...(spec.metadata && typeof spec.metadata === 'object' ? { metadata: spec.metadata } : {}),
+                    };
+                    return options.onOfferApp(offer);
+                  }
+                  default:
+                    throw new Error(`Unsupported apps op: ${aop}`);
+                }
+              })().then(
+                (res) => reply(true, res),
+                (err) => reply(false, undefined, err instanceof Error ? err.message : String(err))
+              );
+              break;
+            }
+            if (msg.kind === 'runtime.capabilities') {
+              const allowFrontendSqlite = !archive.manifest.backend && !options.backendTransport && !options.backendUrl;
+              const info: RuntimeCapabilitiesInfo = {
+                runtimeVersion: RUNTIME_VERSION,
+                host: options.hostName || 'softn-container',
+                capabilities: {
+                  sqliteImport: grantedCaps.has('sqlite-workspace'),
+                  sqliteExport: allowFrontendSqlite || grantedCaps.has('sqlite-workspace'),
+                  sqliteLosslessValues: true,
+                  sqliteTemporaryWorkspaces: grantedCaps.has('sqlite-workspace'),
+                  sqliteMigrations: true,
+                  bundleGeneration: true,
+                  dynamicAppPreview:
+                    !nested &&
+                    embeds.apps === true &&
+                    options.dynamicPreviews !== 'deny' &&
+                    grantedCaps.has('app-preview'),
+                  applicationDeployment:
+                    !nested && Boolean(options.onOfferApp) && grantedCaps.has('app-deploy'),
+                  chunkedFiles: grantedCaps.has('files'),
+                },
+                grantedPermissions: [...grantedCaps].sort(),
+                limits: {
+                  maxDatabaseBytes: limits.sqliteMaxDatabaseBytes,
+                  maxTotalDatabaseBytes: limits.sqliteMaxTotalBytes,
+                  maxPersistedDatabases: limits.sqliteMaxDatabases,
+                  maxBundleBytes: limits.maxBundleBytes,
+                  maxNestedArchiveBytes: MAX_NESTED_ARCHIVE_BYTES,
+                  maxWorkspaceDatabases: limits.maxWorkspaceDatabases,
+                  maxNestedApps: MAX_NESTED_APPS,
+                  maxNestingDepth: MAX_NESTING_DEPTH,
+                  storageQuotaBytes: limits.storageQuotaBytes,
+                  idbQuotaBytes: limits.idbQuotaBytes,
+                  instructionsPerTurn: limits.instructionsPerTurn,
+                },
+              };
+              reply(true, info);
               break;
             }
             if (msg.kind === 'device.call') {
@@ -3236,6 +3990,7 @@ export async function mountSoftNContainer(
           idbApart: idbBacking?.kind === 'indexeddb',
           ...(backendRouting ? { backendRouting } : {}),
           hasSqlite: !archive.manifest.backend && !options.backendTransport && !options.backendUrl,
+          hasSqliteWorkspace: grantedCaps.has('sqlite-workspace'),
           limits,
         };
 
@@ -3470,6 +4225,14 @@ export async function mountSoftNContainer(
     async exportDatabase(dbName: string): Promise<Uint8Array | null> {
       if (!localBackendTransport) return null;
       return localBackendTransport.exportDatabase(dbName);
+    },
+    async flushDatabase(dbName?: string): Promise<SqlitePersistenceStatus | null> {
+      if (!localBackendTransport) return null;
+      return localBackendTransport.flushAndAck(dbName ? { dbKey: dbName } : undefined);
+    },
+    getDatabaseStatus(dbName?: string): SqlitePersistenceStatus | Record<string, SqlitePersistenceStatus> | null {
+      if (!localBackendTransport) return {};
+      return localBackendTransport.getPersistenceStatus(dbName);
     },
     setGrantedCapabilities: setGranted,
     setActive: setActiveNow,

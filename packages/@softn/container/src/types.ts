@@ -56,6 +56,18 @@ export interface BackendConfig {
   phpMode?: 'sapi' | 'worker';
 }
 
+/** One versioned non-destructive SQL migration entry in `manifest.json`. */
+export interface DatabaseMigrationConfig {
+  /** Monotonically increasing positive integer schema version (e.g. `2`, `3`). */
+  version: number;
+  /** Archive path to a SQL migration file (e.g. `"backend/migrations/002.sql"`). */
+  file?: string;
+  /** Optional inline SQL migration script (used when `file` is omitted). */
+  sql?: string;
+  /** Optional human-readable description of the migration. */
+  description?: string;
+}
+
 /** SQLite database configuration backed by XDB WASM (`xdb-rs`). */
 export interface DatabaseConfig {
   /** Logical database name (e.g. `"app"`, `"pit"`). */
@@ -69,6 +81,237 @@ export interface DatabaseConfig {
   seedJson?: string | Record<string, unknown>;
   /** Whether writes persist to host IndexedDB across reloads (default `true`). */
   persist?: boolean;
+  /** Target schema version for versioned non-destructive upgrades. */
+  schemaVersion?: number;
+  /** Ordered SQL migrations applied during database upgrades. */
+  migrations?: DatabaseMigrationConfig[];
+}
+
+/** Lossless typed SQL value transported across the guest <-> worker <-> XDB boundary. */
+export type SqlValue =
+  | null
+  | string
+  | boolean
+  | number
+  | { type: 'integer'; value: string }
+  | { type: 'decimal'; value: string }
+  | { type: 'blob'; hex: string };
+
+/** Value encoding mode for SQLite query/execute results. */
+export type SqlValueMode = 'legacy' | 'lossless' | 'typed';
+
+/** Structured column metadata returned by `db.getSchema()`. */
+export interface SqlColumnInfo {
+  cid: number;
+  name: string;
+  type: string;
+  notNull: boolean;
+  defaultValue: SqlValue;
+  primaryKey: number;
+}
+
+/** Structured foreign key metadata returned by `db.getSchema()`. */
+export interface SqlForeignKeyInfo {
+  id: number;
+  seq: number;
+  table: string;
+  from: string;
+  to: string;
+  onUpdate: string;
+  onDelete: string;
+}
+
+/** Structured index metadata returned by `db.getSchema()`. */
+export interface SqlIndexInfo {
+  name: string;
+  table: string;
+  unique: boolean;
+  columns: string[];
+  sql: string | null;
+}
+
+/** Structured table metadata returned by `db.getSchema()`. */
+export interface SqlTableSchema {
+  name: string;
+  sql: string | null;
+  columns: SqlColumnInfo[];
+  primaryKey: string[];
+  foreignKeys: SqlForeignKeyInfo[];
+  indexes: SqlIndexInfo[];
+}
+
+/** Full structured database schema returned by `db.getSchema()`. */
+export interface SqlSchemaMetadata {
+  tables: SqlTableSchema[];
+  indexes: SqlIndexInfo[];
+  views: Array<{ name: string; sql: string | null }>;
+  triggers: Array<{ name: string; table: string; sql: string | null }>;
+  pageSize: number;
+  pageCount: number;
+  userVersion: number;
+  schemaVersion: number;
+}
+
+/** Result of `db.integrityCheck()`. */
+export interface SqlIntegrityReport {
+  ok: boolean;
+  headerValid: boolean;
+  pragmaOk: boolean;
+  messages: string[];
+  foreignKeysChecked: boolean;
+  foreignKeyViolations: Array<{ table: string; column: string; referencesTable: string; referencesColumn: string; count: number }>;
+}
+
+/** Persistence lifecycle state for a container SQLite database. */
+export type SqlitePersistenceState =
+  | 'saved'
+  | 'saving'
+  | 'unsaved-changes'
+  | 'storage-limit-reached';
+
+/** Acknowledged persistence metadata for one SQLite database. */
+export interface SqlitePersistenceStatus {
+  dbKey: string;
+  state: SqlitePersistenceState;
+  revision: number;
+  checksum?: string;
+  schemaVersion?: number;
+  byteLength?: number;
+  updatedAt?: number;
+  error?: string;
+}
+
+/** Consistent snapshot export returned by `db.exportSnapshot()`. */
+export interface SqlSnapshotResult {
+  bytes: Uint8Array;
+  byteLength: number;
+  checksum: string;
+  revision: number;
+  schemaVersion: number;
+  consistency: 'committed' | 'immediate';
+  pageSize: number;
+  pageCount: number;
+}
+
+/** Status of versioned schema migrations for a managed database. */
+export interface SqlMigrationStatus {
+  dbKey: string;
+  targetVersion: number;
+  currentVersion: number;
+  applied: Array<{ version: number; checksum: string; file?: string; appliedAt: string }>;
+  lastError?: string;
+}
+
+/** Resource budget options for an isolated temporary SQLite workspace. */
+export interface SqliteWorkspaceBudget {
+  maxDatabases?: number;
+  maxMemoryBytes?: number;
+  maxSteps?: number;
+  maxPageReads?: number;
+  maxImportBytes?: number;
+}
+
+/** All SQLite RPC operations supported across guest <-> host <-> backend worker. */
+export type SqliteOpName =
+  | 'open'
+  | 'create'
+  | 'import_bytes'
+  | 'execute'
+  | 'query'
+  | 'seed_json'
+  | 'get_schema'
+  | 'export_bytes'
+  | 'export_snapshot'
+  | 'clone'
+  | 'integrity_check'
+  | 'flush'
+  | 'persistence_status'
+  | 'migration_status'
+  | 'dispose'
+  | 'close'
+  | 'workspace_create'
+  | 'workspace_create_db'
+  | 'workspace_import_bytes'
+  | 'workspace_cancel'
+  | 'workspace_dispose';
+
+/** Host runtime capability and limit discovery response (`softn:runtime`). */
+export interface RuntimeCapabilitiesInfo {
+  runtimeVersion: string;
+  host: string;
+  capabilities: {
+    sqliteImport: boolean;
+    sqliteExport: boolean;
+    sqliteLosslessValues: boolean;
+    sqliteTemporaryWorkspaces: boolean;
+    sqliteMigrations: boolean;
+    bundleGeneration: boolean;
+    dynamicAppPreview: boolean;
+    applicationDeployment: boolean;
+    chunkedFiles: boolean;
+  };
+  grantedPermissions: Capability[];
+  limits: {
+    maxDatabaseBytes: number;
+    maxTotalDatabaseBytes: number;
+    maxPersistedDatabases: number;
+    maxBundleBytes: number;
+    maxNestedArchiveBytes: number;
+    maxWorkspaceDatabases: number;
+    maxNestedApps: number;
+    maxNestingDepth: number;
+    storageQuotaBytes: number;
+    idbQuotaBytes: number;
+    instructionsPerTurn: number;
+  };
+}
+
+/** Offer submitted by a guest app via `softn:apps` `offerToHost()`. */
+export interface AppDeploymentOffer {
+  artifactId?: string;
+  bytes: Uint8Array;
+  sha256: string;
+  size: number;
+  name: string;
+  operation: 'create' | 'update';
+  targetAppId?: string;
+  manifest: Record<string, unknown>;
+  summary?: {
+    frontend?: string;
+    backend?: string | null;
+    database?: string | null;
+    fileCount: number;
+    size?: number;
+    tables?: number;
+    records?: number;
+  };
+  metadata?: Record<string, unknown>;
+}
+
+/** Host response returned to the guest after a deployment confirmation flow. */
+export interface AppDeploymentResult {
+  ok: boolean;
+  status: 'accepted' | 'declined' | 'cancelled' | 'rejected' | 'unsupported' | 'error';
+  appId?: string;
+  url?: string;
+  operation?: 'create' | 'update';
+  message?: string;
+}
+
+/** Host-provided file picker request (for headless tests or custom hosts). */
+export interface HostFilePickOptions {
+  accept?: string[];
+  multiple?: boolean;
+  maxBytes?: number;
+}
+
+/** File entry returned to `softn:files` by a custom host picker or browser `<input type="file">`. */
+export interface HostPickedFile {
+  name: string;
+  type: string;
+  size: number;
+  lastModified: number;
+  slice(start: number, end: number): Promise<Uint8Array>;
 }
 
 /** Transport-agnostic HTTP request crossing the Frontend <-> Backend boundary (FormLogic-compatible). */
@@ -183,6 +426,9 @@ export interface ContainerPermissions {
     location?: { enabled?: boolean; precision?: 'coarse' | 'fine' };
     haptics?: { enabled?: boolean };
     notifications?: { enabled?: boolean };
+    'sqlite-workspace'?: { enabled?: boolean };
+    'app-preview'?: { enabled?: boolean };
+    'app-deploy'?: { enabled?: boolean };
     [key: string]: { enabled?: boolean } | object | undefined;
   };
 }
@@ -397,6 +643,16 @@ export interface ContainerLimits {
    * counted in `storageQuotaBytes` with the rest.
    */
   idbQuotaBytes?: number;
+  /** Max persisted SQLite databases per app (default 8, capped at platform ceiling 32). */
+  sqliteMaxDatabases?: number;
+  /** Max single persisted SQLite database size in bytes (default 64 MiB, capped at 256 MiB). */
+  sqliteMaxDatabaseBytes?: number;
+  /** Max total persisted SQLite bytes across all DBs (default 64 MiB, capped at 256 MiB). */
+  sqliteMaxTotalBytes?: number;
+  /** Max generated/registered `.softn` bundle size in bytes (default 64 MiB, capped at 128 MiB). */
+  maxBundleBytes?: number;
+  /** Max temporary databases open per SQLite workspace (default 8, capped at 16). */
+  maxWorkspaceDatabases?: number;
 }
 
 /** A ZIPP engine as a host can hand it over: bytes, a compiled module, or an address to fetch. */
@@ -498,6 +754,20 @@ export interface SoftNContainerOptions {
    * `'deny'`: none.
    */
   nestedApps?: 'allow' | 'deny';
+  /**
+   * Whether the app may preview dynamically generated `.softn` bundles via `softn:apps`
+   * (host-validated artifact registry). Requires the `app-preview` permission and respects
+   * all nested app isolation, depth, and worker budgets. Defaults to `'allow'` when `nestedApps` is `'allow'`.
+   */
+  dynamicPreviews?: 'allow' | 'deny';
+  /** Host identifier reported to `softn:runtime` `capabilities()` (e.g. `'formlogic'`, `'softn-web'`). */
+  hostName?: string;
+  /** Called whenever a persisted SQLite database changes persistence state (`saving`, `saved`, `unsaved-changes`, `storage-limit-reached`). */
+  onPersistenceChange?: (status: SqlitePersistenceStatus) => void;
+  /** Trusted host handler for `softn:apps` `offerToHost()` deployment confirmation & installation. */
+  onOfferApp?: (offer: AppDeploymentOffer) => Promise<AppDeploymentResult> | AppDeploymentResult;
+  /** Optional host file picker override for `softn:files` `pick()` (used by headless tests and native shells). */
+  onPickFiles?: (options: HostFilePickOptions) => Promise<HostPickedFile[] | null>;
   /** Permission mode: `'prompt'` shows non-blocking consent bar; `'preapproved'` grants declared permissions; `'deny'` denies all. */
   permissionMode?: 'prompt' | 'preapproved' | 'deny';
   /** Override `permission.json` from host deployment configuration. */
@@ -616,6 +886,10 @@ export type HostToWorkerMsg =
       };
       /** Whether frontend `softn:sqlite` host RPC is enabled (when container declares `databases`). */
       hasSqlite?: boolean;
+      /** Whether isolated temporary SQLite workspaces are available via `softn:sqlite`. */
+      hasSqliteWorkspace?: boolean;
+      /** Host-reported runtime capability & limit contract for `softn:runtime`. */
+      runtimeCapabilities?: RuntimeCapabilitiesInfo;
       limits: Required<ContainerLimits>;
     }
   | {

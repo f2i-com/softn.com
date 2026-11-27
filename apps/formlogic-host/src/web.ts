@@ -5,6 +5,7 @@ import type { Capability } from '@softn/bundle-format/capabilities';
 import { createBackendQueue, BACKEND_UNREADABLE } from './backendQueue';
 import {
   buildContainerSource,
+  createBinaryAppOfferHandler,
   createPortBackendTransport,
   FRAME_EMBEDS,
   frameBackendCall,
@@ -166,9 +167,11 @@ window.addEventListener('message', async event => {
         : null;
     container = await mountSoftNContainer(target, {
       source, appId: data.appId, runtimeUrl, storage: store.storage,
-      // No frames of other sites here, and the app's own nested apps as anywhere (containerBridge.ts).
+      hostName: 'formlogic',
+      // No frames of other sites here, and the app's own nested apps & dynamic previews as anywhere (containerBridge.ts).
       ...FRAME_EMBEDS,
       ...(hostBackend ? { backendTransport: hostBackend } : {}),
+      onOfferApp: createBinaryAppOfferHandler((action, input) => calls.call(action, input)),
       initialPage: validPlaceFile ?? undefined,
       ...(initialPlace?.section && (initialPlace.file === null || validPlaceFile !== null)
         ? {
@@ -251,4 +254,4 @@ window.addEventListener('message', async event => {
   }
 });
 
-parent.postMessage({ type: 'formlogic:ready', nativeProtocol: 1, webContainer: 1, containerBackend: 1, places: 1, navigate: 1, links: 1, shown: 1, mediaBytes: 1, storageProtocol: STORAGE_PROTOCOL }, '*');
+parent.postMessage({ type: 'formlogic:ready', nativeProtocol: 1, webContainer: 1, containerBackend: 1, places: 1, navigate: 1, links: 1, shown: 1, mediaBytes: 1, binaryAppOffer: 1, dynamicPreview: 1, storageProtocol: STORAGE_PROTOCOL }, '*');

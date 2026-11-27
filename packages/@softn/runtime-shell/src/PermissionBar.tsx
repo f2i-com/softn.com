@@ -116,6 +116,9 @@ export const CAPABILITY_PHRASE: Record<Capability, string> = {
   location: 'your approximate or GPS location',
   haptics: 'device vibration feedback',
   notifications: 'local notifications',
+  'sqlite-workspace': 'isolated temporary SQLite databases',
+  'app-preview': 'isolated previews of generated applications',
+  'app-deploy': 'publishing generated applications to the host',
 };
 
 /** The desktop loader's words: no browser, no site. */

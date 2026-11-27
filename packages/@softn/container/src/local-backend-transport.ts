@@ -32,6 +32,9 @@ import type {
   BackendWsHandle,
   ContainerBootStatus,
   DatabaseConfig,
+  SqliteOpName,
+  SqlitePersistenceState,
+  SqlitePersistenceStatus,
   ZippEngineSource,
 } from './types';
 
@@ -39,18 +42,81 @@ const SQLITE_IDB_NAME = 'softn-container-sqlite';
 const SQLITE_IDB_STORE = 'blobs';
 // v2 upgrades any pre-existing empty v1 DB that an older reader opened without onupgradeneeded.
 const SQLITE_IDB_VERSION = 2;
-const MAX_PERSISTED_SQLITE_DBS = 8;
-const MAX_SINGLE_SQLITE_BYTES = 64 * 1024 * 1024;
-const MAX_TOTAL_PERSISTED_SQLITE_BYTES = 64 * 1024 * 1024;
+const DEFAULT_MAX_PERSISTED_SQLITE_DBS = 8;
+const DEFAULT_MAX_SINGLE_SQLITE_BYTES = 64 * 1024 * 1024;
+const DEFAULT_MAX_TOTAL_PERSISTED_SQLITE_BYTES = 64 * 1024 * 1024;
+export const PLATFORM_MAX_PERSISTED_SQLITE_DBS = 32;
+export const PLATFORM_MAX_SINGLE_SQLITE_BYTES = 256 * 1024 * 1024;
+export const PLATFORM_MAX_TOTAL_PERSISTED_SQLITE_BYTES = 256 * 1024 * 1024;
 const DEFAULT_LOCAL_FETCH_TIMEOUT_MS = 30_000;
 const LOCAL_ENCODER = new TextEncoder();
 const HEX_TABLE: readonly string[] = Array.from({ length: 256 }, (_, i) => i.toString(16).padStart(2, '0'));
+const TAB_INSTANCE_ID = `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+
+export interface PersistedSqliteRecord {
+  format: 'softn-sqlite-v1';
+  dbKey: string;
+  revision: number;
+  checksum: string;
+  schemaVersion: number;
+  updatedAt: number;
+  tabId: string;
+  bytes: Uint8Array;
+}
+
+export interface PersistedSqliteMeta {
+  revision: number;
+  checksum?: string;
+  schemaVersion?: number;
+  updatedAt?: number;
+  tabId?: string;
+}
+
+export class SqlitePersistenceError extends Error {
+  readonly state: SqlitePersistenceState;
+  readonly code: 'quota-exceeded' | 'revision-conflict' | 'io-error' | 'aborted';
+  constructor(
+    state: SqlitePersistenceState,
+    code: 'quota-exceeded' | 'revision-conflict' | 'io-error' | 'aborted',
+    message: string
+  ) {
+    super(message);
+    this.name = 'SqlitePersistenceError';
+    this.state = state;
+    this.code = code;
+  }
+}
+
+function isQuotaError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const name = String((err as { name?: unknown }).name ?? '');
+  const msg = String((err as { message?: unknown }).message ?? '');
+  return name === 'QuotaExceededError' || /quota|storage.*full|exceeded/i.test(msg);
+}
+
+function isVersionedSqliteRecord(val: unknown): val is PersistedSqliteRecord {
+  return (
+    typeof val === 'object' &&
+    val !== null &&
+    (val as { format?: unknown }).format === 'softn-sqlite-v1' &&
+    ((val as { bytes?: unknown }).bytes instanceof Uint8Array ||
+      (val as { bytes?: unknown }).bytes instanceof ArrayBuffer)
+  );
+}
 
 let cachedSqliteIdbPromise: Promise<IDBDatabase | null> | null = null;
 let cachedSqliteIdbGlobal: IDBFactory | null = null;
 const coalescedBlobWrites = new Map<
   string,
-  { inFlight: boolean; pending?: Uint8Array | string; explicitStorage?: Storage; done: Promise<void> }
+  {
+    inFlight: boolean;
+    pending?: Uint8Array | string | PersistedSqliteRecord;
+    expectedRevision?: number;
+    explicitStorage?: Storage;
+    metaKey?: string;
+    waiters: Array<{ resolve: () => void; reject: (err: Error) => void }>;
+    done: Promise<void>;
+  }
 >();
 
 async function drainCoalescedWritesForPrefix(storagePrefix: string, cancelPending = false): Promise<void> {
@@ -58,7 +124,7 @@ async function drainCoalescedWritesForPrefix(storagePrefix: string, cancelPendin
   for (const [key, slot] of coalescedBlobWrites) {
     if (!key.startsWith(storagePrefix)) continue;
     if (cancelPending) slot.pending = undefined;
-    waiters.push(slot.done);
+    waiters.push(slot.done.catch(() => undefined));
   }
   if (waiters.length > 0) await Promise.all(waiters);
 }
@@ -121,16 +187,19 @@ function openSqliteIdb(): Promise<IDBDatabase | null> {
 function readFallbackStorage(
   store: Storage,
   sqlPrefix: string,
+  sqlMetaPrefix: string,
   ovKey: string,
   rustOvKey: string,
   cookiesKey: string
 ): {
   dbs: Record<string, Uint8Array>;
+  dbMeta: Record<string, PersistedSqliteMeta>;
   phpOverlay?: string;
   rustOverlay?: string;
   cookies?: string;
 } {
   const dbs: Record<string, Uint8Array> = Object.create(null);
+  const dbMeta: Record<string, PersistedSqliteMeta> = Object.create(null);
   let phpOverlay: string | undefined;
   let rustOverlay: string | undefined;
   let cookies: string | undefined;
@@ -141,6 +210,18 @@ function readFallbackStorage(
       if (k.startsWith(sqlPrefix)) {
         const b64 = store.getItem(k);
         if (b64) dbs[k.slice(sqlPrefix.length)] = base64ToBytes(b64);
+      } else if (k.startsWith(sqlMetaPrefix)) {
+        const rawMeta = store.getItem(k);
+        if (rawMeta) {
+          try {
+            const parsed = JSON.parse(rawMeta) as PersistedSqliteMeta;
+            if (parsed && typeof parsed === 'object') {
+              dbMeta[k.slice(sqlMetaPrefix.length)] = parsed;
+            }
+          } catch {
+            // ignore corrupt metadata
+          }
+        }
       } else if (k === ovKey) {
         const val = store.getItem(k);
         if (val) phpOverlay = val;
@@ -155,7 +236,7 @@ function readFallbackStorage(
   } catch {
     // ignore restricted storage
   }
-  return { dbs, phpOverlay, rustOverlay, cookies };
+  return { dbs, dbMeta, phpOverlay, rustOverlay, cookies };
 }
 
 function defaultWebStorage(): Storage | undefined {
@@ -171,22 +252,25 @@ async function loadPersistedBlobs(
   explicitStorage?: Storage
 ): Promise<{
   dbs: Record<string, Uint8Array>;
+  dbMeta: Record<string, PersistedSqliteMeta>;
   phpOverlay?: string;
   rustOverlay?: string;
   cookies?: string;
 }> {
   await drainCoalescedWritesForPrefix(storagePrefix, false);
   const dbs: Record<string, Uint8Array> = Object.create(null);
+  const dbMeta: Record<string, PersistedSqliteMeta> = Object.create(null);
   let phpOverlay: string | undefined;
   let rustOverlay: string | undefined;
   let cookies: string | undefined;
   const sqlPrefix = `${storagePrefix}sqlite:`;
+  const sqlMetaPrefix = `${storagePrefix}sqlite-meta:`;
   const ovKey = `${storagePrefix}php-overlay`;
   const rustOvKey = `${storagePrefix}rust-overlay`;
   const cookiesKey = `${storagePrefix}cookies`;
 
   if (explicitStorage) {
-    return readFallbackStorage(explicitStorage, sqlPrefix, ovKey, rustOvKey, cookiesKey);
+    return readFallbackStorage(explicitStorage, sqlPrefix, sqlMetaPrefix, ovKey, rustOvKey, cookiesKey);
   }
 
   const idb = await openSqliteIdb();
@@ -205,9 +289,23 @@ async function loadPersistedBlobs(
           if (!cur) return;
           const k = String(cur.key);
           if (k.startsWith(sqlPrefix)) {
+            const dbKey = k.slice(sqlPrefix.length);
             const val = cur.value;
-            if (val instanceof Uint8Array) dbs[k.slice(sqlPrefix.length)] = val;
-            else if (val instanceof ArrayBuffer) dbs[k.slice(sqlPrefix.length)] = new Uint8Array(val);
+            if (isVersionedSqliteRecord(val)) {
+              const rawBytes = val.bytes instanceof Uint8Array ? val.bytes : new Uint8Array(val.bytes);
+              dbs[dbKey] = rawBytes;
+              dbMeta[dbKey] = {
+                revision: typeof val.revision === 'number' ? val.revision : 0,
+                checksum: typeof val.checksum === 'string' ? val.checksum : undefined,
+                schemaVersion: typeof val.schemaVersion === 'number' ? val.schemaVersion : undefined,
+                updatedAt: typeof val.updatedAt === 'number' ? val.updatedAt : undefined,
+                tabId: typeof val.tabId === 'string' ? val.tabId : undefined,
+              };
+            } else if (val instanceof Uint8Array) {
+              dbs[dbKey] = val;
+            } else if (val instanceof ArrayBuffer) {
+              dbs[dbKey] = new Uint8Array(val);
+            }
           } else if (k === ovKey && typeof cur.value === 'string') {
             phpOverlay = cur.value;
           } else if (k === rustOvKey && typeof cur.value === 'string') {
@@ -226,15 +324,15 @@ async function loadPersistedBlobs(
         resolve();
       }
     });
-    return { dbs, phpOverlay, rustOverlay, cookies };
+    return { dbs, dbMeta, phpOverlay, rustOverlay, cookies };
   }
 
   // Fallback for environments with localStorage only (e.g. JSDOM tests or opaque-origin iframes)
   const fallback = defaultWebStorage();
   if (fallback) {
-    return readFallbackStorage(fallback, sqlPrefix, ovKey, rustOvKey, cookiesKey);
+    return readFallbackStorage(fallback, sqlPrefix, sqlMetaPrefix, ovKey, rustOvKey, cookiesKey);
   }
-  return { dbs, phpOverlay, rustOverlay, cookies };
+  return { dbs, dbMeta, phpOverlay, rustOverlay, cookies };
 }
 
 export async function clearBackendPersistedBlobs(storagePrefix: string, explicitStorage?: Storage): Promise<void> {
@@ -283,66 +381,221 @@ export async function clearBackendPersistedBlobs(storagePrefix: string, explicit
   }
 }
 
-async function writePersistedBlobOnce(key: string, value: Uint8Array | string, explicitStorage?: Storage): Promise<void> {
+async function writePersistedBlobOnce(
+  key: string,
+  value: Uint8Array | string | PersistedSqliteRecord,
+  explicitStorage?: Storage,
+  expectedRevision?: number,
+  metaKey?: string
+): Promise<void> {
   if (!explicitStorage) {
     const idb = await openSqliteIdb();
     if (idb) {
-      await new Promise<void>((resolve) => {
+      await new Promise<void>((resolve, reject) => {
+        let settled = false;
+        const fail = (err: Error) => {
+          if (settled) return;
+          settled = true;
+          reject(err);
+        };
         try {
           const tx = idb.transaction(SQLITE_IDB_STORE, 'readwrite');
-          tx.objectStore(SQLITE_IDB_STORE).put(value, key);
-          tx.oncomplete = () => resolve();
-          tx.onerror = () => resolve();
-          tx.onabort = () => resolve();
-        } catch {
+          const store = tx.objectStore(SQLITE_IDB_STORE);
+          const putNow = () => {
+            try {
+              store.put(value, key);
+            } catch (putErr) {
+              fail(
+                new SqlitePersistenceError(
+                  isQuotaError(putErr) ? 'storage-limit-reached' : 'unsaved-changes',
+                  isQuotaError(putErr) ? 'quota-exceeded' : 'io-error',
+                  putErr instanceof Error ? putErr.message : String(putErr)
+                )
+              );
+            }
+          };
+          if (isVersionedSqliteRecord(value) && typeof expectedRevision === 'number') {
+            const getReq = store.get(key);
+            getReq.onsuccess = () => {
+              const existing = getReq.result;
+              if (
+                isVersionedSqliteRecord(existing) &&
+                existing.revision > expectedRevision &&
+                existing.tabId !== value.tabId
+              ) {
+                try { tx.abort(); } catch { /* ignore */ }
+                fail(
+                  new SqlitePersistenceError(
+                    'unsaved-changes',
+                    'revision-conflict',
+                    `Database "${value.dbKey}" was modified by another tab (stored revision ${existing.revision} > expected ${expectedRevision})`
+                  )
+                );
+                return;
+              }
+              putNow();
+            };
+            getReq.onerror = () => {
+              putNow();
+            };
+          } else {
+            putNow();
+          }
+          tx.oncomplete = () => {
+            if (!settled) {
+              settled = true;
+              resolve();
+            }
+          };
+          tx.onerror = () => {
+            const txErr = tx.error;
+            fail(
+              new SqlitePersistenceError(
+                isQuotaError(txErr) ? 'storage-limit-reached' : 'unsaved-changes',
+                isQuotaError(txErr) ? 'quota-exceeded' : 'io-error',
+                txErr?.message || 'IndexedDB persistence transaction failed'
+              )
+            );
+          };
+          tx.onabort = () => {
+            const txErr = tx.error;
+            fail(
+              new SqlitePersistenceError(
+                isQuotaError(txErr) ? 'storage-limit-reached' : 'unsaved-changes',
+                isQuotaError(txErr) ? 'quota-exceeded' : 'aborted',
+                txErr?.message || 'IndexedDB persistence transaction aborted'
+              )
+            );
+          };
+        } catch (err) {
           cachedSqliteIdbPromise = null;
-          resolve();
+          fail(
+            new SqlitePersistenceError(
+              isQuotaError(err) ? 'storage-limit-reached' : 'unsaved-changes',
+              isQuotaError(err) ? 'quota-exceeded' : 'io-error',
+              err instanceof Error ? err.message : String(err)
+            )
+          );
         }
       });
       return;
     }
   }
   const store = explicitStorage ?? defaultWebStorage();
-  if (store) {
-    try {
-      if (typeof value === 'string') {
-        store.setItem(key, value);
-      } else {
-        store.setItem(key, bytesToBase64(value));
+  if (!store) {
+    throw new SqlitePersistenceError('unsaved-changes', 'io-error', 'No persistent browser storage is available');
+  }
+  try {
+    if (isVersionedSqliteRecord(value)) {
+      if (metaKey && typeof expectedRevision === 'number') {
+        const rawExisting = store.getItem(metaKey);
+        if (rawExisting) {
+          try {
+            const parsed = JSON.parse(rawExisting) as PersistedSqliteMeta;
+            if (
+              typeof parsed.revision === 'number' &&
+              parsed.revision > expectedRevision &&
+              parsed.tabId &&
+              parsed.tabId !== value.tabId
+            ) {
+              throw new SqlitePersistenceError(
+                'unsaved-changes',
+                'revision-conflict',
+                `Database "${value.dbKey}" was modified by another tab (stored revision ${parsed.revision} > expected ${expectedRevision})`
+              );
+            }
+          } catch (e) {
+            if (e instanceof SqlitePersistenceError) throw e;
+          }
+        }
       }
-    } catch {
-      // ignore quota/storage errors
+      store.setItem(key, bytesToBase64(value.bytes));
+      if (metaKey) {
+        store.setItem(
+          metaKey,
+          JSON.stringify({
+            revision: value.revision,
+            checksum: value.checksum,
+            schemaVersion: value.schemaVersion,
+            updatedAt: value.updatedAt,
+            tabId: value.tabId,
+          })
+        );
+      }
+    } else if (typeof value === 'string') {
+      store.setItem(key, value);
+    } else {
+      store.setItem(key, bytesToBase64(value));
     }
+  } catch (err) {
+    if (err instanceof SqlitePersistenceError) throw err;
+    throw new SqlitePersistenceError(
+      isQuotaError(err) ? 'storage-limit-reached' : 'unsaved-changes',
+      isQuotaError(err) ? 'quota-exceeded' : 'io-error',
+      err instanceof Error ? err.message : String(err)
+    );
   }
 }
 
-function savePersistedBlob(key: string, value: Uint8Array | string, explicitStorage?: Storage): Promise<void> {
+function savePersistedBlob(
+  key: string,
+  value: Uint8Array | string | PersistedSqliteRecord,
+  explicitStorage?: Storage,
+  options?: { expectedRevision?: number; metaKey?: string }
+): Promise<void> {
   const slot = coalescedBlobWrites.get(key);
   if (slot) {
     slot.pending = value;
     slot.explicitStorage = explicitStorage;
-    return slot.done;
+    slot.expectedRevision = options?.expectedRevision;
+    slot.metaKey = options?.metaKey;
+    return new Promise<void>((resolve, reject) => {
+      slot.waiters.push({ resolve, reject });
+    });
   }
-  const entry: { inFlight: boolean; pending?: Uint8Array | string; explicitStorage?: Storage; done: Promise<void> } = {
+  const entry: {
+    inFlight: boolean;
+    pending?: Uint8Array | string | PersistedSqliteRecord;
+    expectedRevision?: number;
+    explicitStorage?: Storage;
+    metaKey?: string;
+    waiters: Array<{ resolve: () => void; reject: (err: Error) => void }>;
+    done: Promise<void>;
+  } = {
     inFlight: true,
     pending: value,
+    expectedRevision: options?.expectedRevision,
     explicitStorage,
+    metaKey: options?.metaKey,
+    waiters: [],
     done: Promise.resolve(),
   };
+  const callerPromise = new Promise<void>((resolve, reject) => {
+    entry.waiters.push({ resolve, reject });
+  });
   coalescedBlobWrites.set(key, entry);
   entry.done = (async () => {
     try {
       while (entry.pending !== undefined) {
         const nextVal = entry.pending;
         const nextStore = entry.explicitStorage;
+        const nextExpected = entry.expectedRevision;
+        const nextMetaKey = entry.metaKey;
+        const batchWaiters = entry.waiters.splice(0);
         entry.pending = undefined;
-        await writePersistedBlobOnce(key, nextVal, nextStore);
+        try {
+          await writePersistedBlobOnce(key, nextVal, nextStore, nextExpected, nextMetaKey);
+          for (const w of batchWaiters) w.resolve();
+        } catch (err) {
+          const error = err instanceof Error ? err : new Error(String(err));
+          for (const w of batchWaiters) w.reject(error);
+        }
       }
     } finally {
       if (coalescedBlobWrites.get(key) === entry) coalescedBlobWrites.delete(key);
     }
   })();
-  return entry.done;
+  return callerPromise;
 }
 
 export interface LocalBackendTransportOptions {
@@ -361,10 +614,19 @@ export interface LocalBackendTransportOptions {
   xdbModule?: ZippEngineSource;
   xdbGlueUrl?: string;
   instructionBudget?: number;
-  /** Maximum total persisted SQLite bytes across all DBs for this app (defaults to 64 MiB). */
+  /** Host-configurable max persisted SQLite DB count (default 8, platform ceiling 32). */
+  maxPersistedSqliteDbs?: number;
+  /** Host-configurable max single persisted SQLite DB bytes (default 64 MiB, platform ceiling 256 MiB). */
+  maxSingleSqliteBytes?: number;
+  /** Host-configurable max total persisted SQLite bytes across all DBs (default 64 MiB, platform ceiling 256 MiB). */
   maxTotalSqliteBytes?: number;
+  /** Host-configurable max temporary databases per SQLite workspace (default 8, platform ceiling 16). */
+  maxWorkspaceDbs?: number;
+  /** Host-configurable max SQLite import image size in bytes (default 64 MiB, platform ceiling 128 MiB). */
+  maxImportBytes?: number;
   onConsole?: (level: 'log' | 'info' | 'warn' | 'error', text: string) => void;
   onStatus?: (status: ContainerBootStatus) => void;
+  onPersistenceChange?: (status: SqlitePersistenceStatus) => void;
 }
 
 export class LocalBackendTransport implements BackendTransport {
@@ -374,10 +636,13 @@ export class LocalBackendTransport implements BackendTransport {
 
   private readonly storagePrefix: string;
   private readonly persistStorage: boolean;
+  private readonly maxPersistedSqliteDbs: number;
+  private readonly maxSingleSqliteBytes: number;
   private readonly maxTotalSqliteBytes: number;
   private readonly storage?: Storage;
   private readonly onConsole?: (level: 'log' | 'info' | 'warn' | 'error', text: string) => void;
   private readonly onStatus?: (status: ContainerBootStatus) => void;
+  private readonly onPersistenceChange?: (status: SqlitePersistenceStatus) => void;
   private worker: Worker | null = null;
   private inlineSession: BackendWorkerSession | null = null;
   private nextReqId = 1;
@@ -392,6 +657,9 @@ export class LocalBackendTransport implements BackendTransport {
   >();
   private readonly wsHandlers = new Map<string, (event: BackendWsEvent) => void>();
   private readonly persistedDbSizes = new Map<string, number>();
+  private readonly persistedRevisions = new Map<string, number>();
+  private readonly persistenceStatuses = new Map<string, SqlitePersistenceStatus>();
+  private readonly pendingPersistWrites = new Map<string, Promise<SqlitePersistenceStatus>>();
   private readonly unsavedDbWarned = new Set<string>();
   private resolveReady!: () => void;
   private rejectReady!: (err: Error) => void;
@@ -403,13 +671,23 @@ export class LocalBackendTransport implements BackendTransport {
   constructor(options: LocalBackendTransportOptions) {
     this.storagePrefix = options.storagePrefix;
     this.persistStorage = options.persistStorage !== false;
+    this.maxPersistedSqliteDbs =
+      typeof options.maxPersistedSqliteDbs === 'number' && Number.isInteger(options.maxPersistedSqliteDbs) && options.maxPersistedSqliteDbs > 0
+        ? Math.min(options.maxPersistedSqliteDbs, PLATFORM_MAX_PERSISTED_SQLITE_DBS)
+        : DEFAULT_MAX_PERSISTED_SQLITE_DBS;
     this.maxTotalSqliteBytes =
       typeof options.maxTotalSqliteBytes === 'number' && Number.isFinite(options.maxTotalSqliteBytes) && options.maxTotalSqliteBytes > 0
-        ? Math.min(options.maxTotalSqliteBytes, MAX_TOTAL_PERSISTED_SQLITE_BYTES)
-        : MAX_TOTAL_PERSISTED_SQLITE_BYTES;
+        ? Math.min(Math.floor(options.maxTotalSqliteBytes), PLATFORM_MAX_TOTAL_PERSISTED_SQLITE_BYTES)
+        : DEFAULT_MAX_TOTAL_PERSISTED_SQLITE_BYTES;
+    const rawSingle =
+      typeof options.maxSingleSqliteBytes === 'number' && Number.isFinite(options.maxSingleSqliteBytes) && options.maxSingleSqliteBytes > 0
+        ? Math.min(Math.floor(options.maxSingleSqliteBytes), PLATFORM_MAX_SINGLE_SQLITE_BYTES)
+        : DEFAULT_MAX_SINGLE_SQLITE_BYTES;
+    this.maxSingleSqliteBytes = Math.min(rawSingle, this.maxTotalSqliteBytes);
     this.storage = options.storage;
     this.onConsole = options.onConsole;
     this.onStatus = options.onStatus;
+    this.onPersistenceChange = options.onPersistenceChange;
     const useWorker = options.isolation === 'worker' && typeof Worker === 'function';
     this.kind = useWorker ? 'local-worker' : 'local-inline';
 
@@ -423,12 +701,22 @@ export class LocalBackendTransport implements BackendTransport {
     void this.boot(options, useWorker);
   }
 
-  private post(msg: HostToBackendMsg): void {
+  private post(msg: HostToBackendMsg, transfer?: Transferable[]): void {
     if (this.disposed || this.disposing) return;
     if (this.worker) {
-      this.worker.postMessage(msg);
+      if (transfer && transfer.length > 0) this.worker.postMessage(msg, transfer);
+      else this.worker.postMessage(msg);
     } else if (this.inlineSession) {
       void this.inlineSession.handleMessage(msg);
+    }
+  }
+
+  private setPersistenceStatus(status: SqlitePersistenceStatus): void {
+    this.persistenceStatuses.set(status.dbKey, status);
+    try {
+      this.onPersistenceChange?.(status);
+    } catch {
+      // Never let listener errors disrupt transport processing
     }
   }
 
@@ -463,6 +751,7 @@ export class LocalBackendTransport implements BackendTransport {
           ? loadPersistedBlobs(this.storagePrefix, this.storage)
           : Promise.resolve({
               dbs: Object.create(null) as Record<string, Uint8Array>,
+              dbMeta: Object.create(null) as Record<string, PersistedSqliteMeta>,
               phpOverlay: undefined,
               rustOverlay: undefined,
               cookies: undefined,
@@ -472,8 +761,23 @@ export class LocalBackendTransport implements BackendTransport {
 
       if (this.disposed || this.disposing || workerFailed) return;
       this.persistedDbSizes.clear();
+      this.persistedRevisions.clear();
       for (const [dbKey, bytes] of Object.entries(persisted.dbs)) {
-        if (bytes instanceof Uint8Array) this.persistedDbSizes.set(dbKey, bytes.byteLength);
+        if (bytes instanceof Uint8Array) {
+          this.persistedDbSizes.set(dbKey, bytes.byteLength);
+          const meta = persisted.dbMeta[dbKey];
+          const rev = meta?.revision ?? 0;
+          this.persistedRevisions.set(dbKey, rev);
+          this.persistenceStatuses.set(dbKey, {
+            dbKey,
+            state: 'saved',
+            revision: rev,
+            checksum: meta?.checksum,
+            schemaVersion: meta?.schemaVersion,
+            byteLength: bytes.byteLength,
+            updatedAt: meta?.updatedAt,
+          });
+        }
       }
       if (persisted.cookies) {
         this.cookieJar.hydrate(persisted.cookies);
@@ -493,6 +797,7 @@ export class LocalBackendTransport implements BackendTransport {
         textFiles: options.textFiles,
         binaryFiles: options.binaryFiles,
         initialPersistedDbs: persisted.dbs,
+        initialPersistedMeta: persisted.dbMeta,
         initialPhpOverlay: persisted.phpOverlay,
         initialRustOverlay: persisted.rustOverlay,
         runtimeUrl: options.runtimeUrl,
@@ -500,6 +805,9 @@ export class LocalBackendTransport implements BackendTransport {
         xdbModule: options.xdbModule,
         xdbGlueUrl: options.xdbGlueUrl,
         instructionBudget: options.instructionBudget,
+        maxOpenDbs: this.maxPersistedSqliteDbs,
+        maxWorkspaceDbs: options.maxWorkspaceDbs,
+        maxImportBytes: options.maxImportBytes,
       });
     } catch (err) {
       this.rejectReady(err instanceof Error ? err : new Error(String(err)));
@@ -566,45 +874,116 @@ export class LocalBackendTransport implements BackendTransport {
 
       case 'sqlite-persist': {
         if (!this.persistStorage) return;
-        // A database over what is kept is not saved, and the app is told once: it kept working,
-        // and what it wrote since was gone at the next visit without a word.
-        const unsaved = (why: string) => {
-          if (this.unsavedDbWarned.has(msg.dbKey)) return;
-          this.unsavedDbWarned.add(msg.dbKey);
-          this.onConsole?.('warn', `[backend] ${msg.dbKey} is not saved for the next visit: ${why}`);
+        const dbKey = msg.dbKey;
+        const prevRev = this.persistedRevisions.get(dbKey) ?? 0;
+        const nextRev = Math.max(prevRev + 1, msg.meta?.revision ?? prevRev + 1);
+        const checksum = msg.meta?.checksum ?? '';
+        const schemaVersion = msg.meta?.schemaVersion ?? 1;
+        const unsavedLimit = (why: string) => {
+          const status: SqlitePersistenceStatus = {
+            dbKey,
+            state: 'storage-limit-reached',
+            revision: prevRev,
+            checksum: this.persistenceStatuses.get(dbKey)?.checksum,
+            schemaVersion,
+            byteLength: msg.bytes.byteLength,
+            error: why,
+          };
+          this.setPersistenceStatus(status);
+          this.pendingPersistWrites.set(dbKey, Promise.resolve(status));
+          if (this.unsavedDbWarned.has(dbKey)) return;
+          this.unsavedDbWarned.add(dbKey);
+          this.onConsole?.('warn', `[backend] ${dbKey} is not saved for the next visit: ${why}`);
         };
-        const maxOne = Math.min(MAX_SINGLE_SQLITE_BYTES, this.maxTotalSqliteBytes);
+        const maxOne = Math.min(this.maxSingleSqliteBytes, this.maxTotalSqliteBytes);
         if (msg.bytes.byteLength > maxOne) {
-          unsaved(`it is ${msg.bytes.byteLength} bytes, over the ${maxOne} kept`);
+          unsavedLimit(`it is ${msg.bytes.byteLength} bytes, over the ${maxOne} kept`);
           return;
         }
-        if (!this.persistedDbSizes.has(msg.dbKey) && this.persistedDbSizes.size >= MAX_PERSISTED_SQLITE_DBS) {
-          unsaved(`only ${MAX_PERSISTED_SQLITE_DBS} databases are kept`);
+        if (!this.persistedDbSizes.has(dbKey) && this.persistedDbSizes.size >= this.maxPersistedSqliteDbs) {
+          unsavedLimit(`only ${this.maxPersistedSqliteDbs} databases are kept`);
           return;
         }
         let totalBytes = msg.bytes.byteLength;
         for (const [k, sz] of this.persistedDbSizes) {
-          if (k !== msg.dbKey) totalBytes += sz;
+          if (k !== dbKey) totalBytes += sz;
         }
         if (totalBytes > this.maxTotalSqliteBytes) {
-          unsaved(`the app's databases come to ${totalBytes} bytes, over the ${this.maxTotalSqliteBytes} kept`);
+          unsavedLimit(`the app's databases come to ${totalBytes} bytes, over the ${this.maxTotalSqliteBytes} kept`);
           return;
         }
-        this.unsavedDbWarned.delete(msg.dbKey);
-        this.persistedDbSizes.set(msg.dbKey, msg.bytes.byteLength);
-        void savePersistedBlob(`${this.storagePrefix}sqlite:${msg.dbKey}`, msg.bytes, this.storage);
+        this.unsavedDbWarned.delete(dbKey);
+        this.persistedDbSizes.set(dbKey, msg.bytes.byteLength);
+        const updatedAt = Date.now();
+        this.setPersistenceStatus({
+          dbKey,
+          state: 'saving',
+          revision: prevRev,
+          checksum,
+          schemaVersion,
+          byteLength: msg.bytes.byteLength,
+          updatedAt,
+        });
+        const record: PersistedSqliteRecord = {
+          format: 'softn-sqlite-v1',
+          dbKey,
+          revision: nextRev,
+          checksum,
+          schemaVersion,
+          updatedAt,
+          tabId: TAB_INSTANCE_ID,
+          bytes: msg.bytes,
+        };
+        const writePromise = savePersistedBlob(`${this.storagePrefix}sqlite:${dbKey}`, record, this.storage, {
+          expectedRevision: prevRev,
+          metaKey: `${this.storagePrefix}sqlite-meta:${dbKey}`,
+        }).then(
+          (): SqlitePersistenceStatus => {
+            this.persistedRevisions.set(dbKey, nextRev);
+            const savedStatus: SqlitePersistenceStatus = {
+              dbKey,
+              state: 'saved',
+              revision: nextRev,
+              checksum,
+              schemaVersion,
+              byteLength: msg.bytes.byteLength,
+              updatedAt,
+            };
+            this.setPersistenceStatus(savedStatus);
+            return savedStatus;
+          },
+          (err: unknown): SqlitePersistenceStatus => {
+            const pErr = err instanceof SqlitePersistenceError ? err : null;
+            const errState: SqlitePersistenceState = pErr ? pErr.state : isQuotaError(err) ? 'storage-limit-reached' : 'unsaved-changes';
+            const message = err instanceof Error ? err.message : String(err);
+            const failedStatus: SqlitePersistenceStatus = {
+              dbKey,
+              state: errState,
+              revision: prevRev,
+              checksum: this.persistenceStatuses.get(dbKey)?.checksum,
+              schemaVersion,
+              byteLength: msg.bytes.byteLength,
+              updatedAt,
+              error: message,
+            };
+            this.setPersistenceStatus(failedStatus);
+            this.onConsole?.('warn', `[backend] Failed to persist SQLite database "${dbKey}": ${message}`);
+            return failedStatus;
+          }
+        );
+        this.pendingPersistWrites.set(dbKey, writePromise);
         return;
       }
 
       case 'php-overlay-persist':
         if (this.persistStorage && msg.overlayJson.length <= 16 * 1024 * 1024) {
-          void savePersistedBlob(`${this.storagePrefix}php-overlay`, msg.overlayJson, this.storage);
+          void savePersistedBlob(`${this.storagePrefix}php-overlay`, msg.overlayJson, this.storage).catch(() => undefined);
         }
         return;
 
       case 'rust-overlay-persist':
         if (this.persistStorage && msg.overlayJson.length <= 16 * 1024 * 1024) {
-          void savePersistedBlob(`${this.storagePrefix}rust-overlay`, msg.overlayJson, this.storage);
+          void savePersistedBlob(`${this.storagePrefix}rust-overlay`, msg.overlayJson, this.storage).catch(() => undefined);
         }
         return;
 
@@ -614,7 +993,7 @@ export class LocalBackendTransport implements BackendTransport {
         this.pendingFetch.delete(msg.reqId);
         try {
           if (this.cookieJar.ingestResponseHeaders(msg.headers) && this.persistStorage) {
-            void savePersistedBlob(`${this.storagePrefix}cookies`, this.cookieJar.serialize(), this.storage);
+            void savePersistedBlob(`${this.storagePrefix}cookies`, this.cookieJar.serialize(), this.storage).catch(() => undefined);
           }
         } catch {
           // A request taken off the pending list is answered whatever its headers hold.
@@ -758,16 +1137,127 @@ export class LocalBackendTransport implements BackendTransport {
     });
   }
 
+  /** Return the latest acknowledged persistence status for a database (or all persisted DBs). */
+  getPersistenceStatus(dbKey?: string): SqlitePersistenceStatus | Record<string, SqlitePersistenceStatus> | null {
+    if (dbKey !== undefined) {
+      return this.persistenceStatuses.get(dbKey) ?? null;
+    }
+    const out: Record<string, SqlitePersistenceStatus> = {};
+    for (const [k, v] of this.persistenceStatuses) out[k] = v;
+    return out;
+  }
+
+  /**
+   * Flush dirty SQLite databases in the backend worker and await persistent storage
+   * transaction acknowledgement (IndexedDB `tx.oncomplete` or Web Storage write).
+   * Rejects if persistent storage fails, aborts, hits a revision conflict, or exceeds limits.
+   */
+  async flushAndAck(target?: { dbKey?: string; handleId?: number }): Promise<SqlitePersistenceStatus> {
+    await this.ready;
+    if (this.disposed || this.disposing) throw new Error('LocalBackendTransport is disposed');
+    const reqId = this.nextReqId++;
+    const ack = (await new Promise<{ dbKey: string | null; flushedKeys: string[] }>((resolve, reject) => {
+      this.registerPendingRpc(
+        reqId,
+        (v) => resolve((v ?? { dbKey: null, flushedKeys: [] }) as { dbKey: string | null; flushedKeys: string[] }),
+        reject
+      );
+      this.post({
+        type: 'flush-ack',
+        reqId,
+        ...(target?.dbKey !== undefined ? { dbKey: target.dbKey } : {}),
+        ...(typeof target?.handleId === 'number' ? { handleId: target.handleId } : {}),
+      });
+    }));
+
+    const keysToAwait = new Set<string>(ack.flushedKeys);
+    if (ack.dbKey) keysToAwait.add(ack.dbKey);
+    if (keysToAwait.size === 0) {
+      for (const k of this.pendingPersistWrites.keys()) keysToAwait.add(k);
+    }
+
+    let lastStatus: SqlitePersistenceStatus | null = null;
+    for (const key of keysToAwait) {
+      const pending = this.pendingPersistWrites.get(key);
+      if (pending) {
+        const st = await pending;
+        lastStatus = st;
+        if (st.state === 'storage-limit-reached' || st.state === 'unsaved-changes') {
+          throw new SqlitePersistenceError(
+            st.state,
+            st.state === 'storage-limit-reached' ? 'quota-exceeded' : 'io-error',
+            st.error || `Failed to persist database "${key}" (${st.state})`
+          );
+        }
+      } else {
+        const existing = this.persistenceStatuses.get(key);
+        if (existing) {
+          lastStatus = existing;
+          if (existing.state === 'storage-limit-reached' || existing.state === 'unsaved-changes') {
+            throw new SqlitePersistenceError(
+              existing.state,
+              existing.state === 'storage-limit-reached' ? 'quota-exceeded' : 'io-error',
+              existing.error || `Failed to persist database "${key}" (${existing.state})`
+            );
+          }
+        }
+      }
+    }
+
+    const effectiveKey = ack.dbKey ?? ack.flushedKeys[0] ?? 'app.db';
+    if (lastStatus) return lastStatus;
+    return {
+      dbKey: effectiveKey,
+      state: 'saved',
+      revision: this.persistedRevisions.get(effectiveKey) ?? 0,
+      byteLength: this.persistedDbSizes.get(effectiveKey),
+    };
+  }
+
   async sqliteOp(
-    op: 'open' | 'execute' | 'query' | 'seed_json' | 'close',
+    op: SqliteOpName,
     args: unknown[]
   ): Promise<unknown> {
     await this.ready;
     if (this.disposed || this.disposing) throw new Error('LocalBackendTransport is disposed');
+    if (op === 'flush') {
+      const arg0 = args[0];
+      return this.flushAndAck(
+        typeof arg0 === 'number'
+          ? { handleId: arg0 }
+          : typeof arg0 === 'string' && arg0
+            ? { dbKey: arg0 }
+            : undefined
+      );
+    }
+    if (op === 'persistence_status') {
+      const arg0 = args[0];
+      if (typeof arg0 === 'string' && arg0) return this.getPersistenceStatus(arg0);
+      if (typeof arg0 === 'number') {
+        const ack = await this.flushAndAck({ handleId: arg0 }).catch(() => null);
+        return ack ?? this.getPersistenceStatus();
+      }
+      return this.getPersistenceStatus();
+    }
     const reqId = this.nextReqId++;
+    const transfer: Transferable[] = [];
+    const preparedArgs = args.map((a) => {
+      if (
+        this.worker &&
+        a instanceof Uint8Array &&
+        a.buffer instanceof ArrayBuffer &&
+        a.byteOffset === 0 &&
+        a.byteLength === a.buffer.byteLength
+      ) {
+        const copy = a.slice();
+        transfer.push(copy.buffer);
+        return copy;
+      }
+      return a;
+    });
     return new Promise<unknown>((resolve, reject) => {
       this.registerPendingRpc(reqId, resolve, reject);
-      this.post({ type: 'sqlite-op', reqId, op, args });
+      this.post({ type: 'sqlite-op', reqId, op, args: preparedArgs }, transfer);
     });
   }
 

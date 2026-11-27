@@ -16,10 +16,13 @@
     "./web-imports": "./src/web-imports.ts",
     "./offline-assets": "./src/offline-assets.ts",
     "./inspect": "./src/inspect.ts",
+    "./validation": "./src/validation.ts",
+    "./builder": "./src/builder.ts",
     "./handoff": "./src/handoff.ts",
     "./capabilities": "./src/capabilities.ts",
     "./url": "./src/url.ts",
     "./crypto": "./src/crypto.ts",
+    "./sha256": "./src/sha256.ts",
     "./package.json": "./package.json"
   },
   "dependencies": {

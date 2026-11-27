@@ -66,3 +66,23 @@ test('still checks an upload\'s shape before the parent is asked', async () => {
   await call('formlogicUpload', { op: 'delete', id: 'abcd-1234' });
   assert.deepEqual(sent.map(([action, input]) => [action, input.op ?? 'upload']), [['formlogicUpload', 'upload'], ['formlogicUpload', 'list'], ['formlogicUpload', 'delete']]);
 });
+
+test('validates bounded binary app offers (formlogicOfferBundle) before forwarding to parent', async () => {
+  const { call, sent } = frame();
+  const goodSha = 'a'.repeat(64);
+  assert.deepEqual(await call('formlogicOfferBundle', { op: 'delete' }), { error: 'Unsupported binary app offer operation.' });
+  assert.deepEqual(await call('formlogicOfferBundle', { name: '', operation: 'create', bundleBase64: 'UEs=', sha256: goodSha }), { error: 'Invalid binary app offer payload.' });
+  assert.deepEqual(await call('formlogicOfferBundle', { name: 'App', operation: 'create', bundleBase64: 'UEs=', sha256: 'short' }), { error: 'Invalid binary app offer payload.' });
+  assert.deepEqual(await call('formlogicOfferBundle', { name: 'App', operation: 'update', targetAppId: '../evil', bundleBase64: 'UEs=', sha256: goodSha }), { error: 'Invalid binary app offer payload.' });
+  assert.deepEqual(sent, []);
+
+  await call('formlogicOfferBundle', {
+    op: 'offer',
+    name: 'Inventory App',
+    operation: 'create',
+    bundleBase64: 'UEsDBAo=',
+    sha256: goodSha,
+  });
+  await call('formlogicOfferBundle', { op: 'status' });
+  assert.deepEqual(sent.map(([action, input]) => [action, input.op]), [['formlogicOfferBundle', 'offer'], ['formlogicOfferBundle', 'status']]);
+});

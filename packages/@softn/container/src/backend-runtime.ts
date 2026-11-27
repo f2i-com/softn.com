@@ -20,7 +20,9 @@ import {
   loadXdbWasm,
   XdbSqlManager,
   ZIPP_SQL_CAPABILITIES,
+  type SqlExecuteOptions,
   type XdbBudgetHooks,
+  type XdbPersistMeta,
 } from './xdb-sql-bridge';
 import {
   loadZippEngine,
@@ -33,6 +35,8 @@ import type {
   BackendWsEvent,
   ContainerBootStatus,
   DatabaseConfig,
+  SqliteOpName,
+  SqliteWorkspaceBudget,
   ZippEngineSource,
   ZippEngineTier,
 } from './types';
@@ -46,6 +50,7 @@ export type HostToBackendMsg =
       textFiles: Record<string, string>;
       binaryFiles: Record<string, Uint8Array>;
       initialPersistedDbs?: Record<string, Uint8Array>;
+      initialPersistedMeta?: Record<string, { revision?: number; schemaVersion?: number; checksum?: string }>;
       initialPhpOverlay?: string;
       initialRustOverlay?: string;
       runtimeUrl: string;
@@ -53,6 +58,9 @@ export type HostToBackendMsg =
       xdbModule?: ZippEngineSource;
       xdbGlueUrl?: string;
       instructionBudget?: number;
+      maxOpenDbs?: number;
+      maxWorkspaceDbs?: number;
+      maxImportBytes?: number;
     }
   | {
       type: 'fetch';
@@ -97,8 +105,14 @@ export type HostToBackendMsg =
   | {
       type: 'sqlite-op';
       reqId: number;
-      op: 'open' | 'execute' | 'query' | 'seed_json' | 'close';
+      op: SqliteOpName;
       args: unknown[];
+    }
+  | {
+      type: 'flush-ack';
+      reqId: number;
+      dbKey?: string;
+      handleId?: number;
     }
   | { type: 'flush' }
   | { type: 'dispose' };
@@ -126,7 +140,7 @@ export type BackendToHostMsg =
       result?: unknown;
       error?: string;
     }
-  | { type: 'sqlite-persist'; dbKey: string; bytes: Uint8Array }
+  | { type: 'sqlite-persist'; dbKey: string; bytes: Uint8Array; meta?: XdbPersistMeta }
   | { type: 'php-overlay-persist'; overlayJson: string }
   | { type: 'rust-overlay-persist'; overlayJson: string }
   | { type: 'console'; level: 'log' | 'info' | 'warn' | 'error'; text: string }
@@ -684,6 +698,9 @@ export class BackendWorkerSession {
       case 'sqlite-op':
         this.handleSqliteOp(msg);
         return;
+      case 'flush-ack':
+        this.handleFlushAck(msg);
+        return;
       case 'flush':
         this.flushSqlNow();
         this.persistRustOverlayIfChanged();
@@ -775,12 +792,16 @@ export class BackendWorkerSession {
         textFiles: this.textFiles,
         binaryFiles: this.binaryFiles,
         initialPersistedDbs: msg.initialPersistedDbs,
+        initialPersistedMeta: msg.initialPersistedMeta,
         // Cap per-connection SQL VM steps and page reads so recursive CTEs cannot hang the worker.
         maxStepsPerConnection: 200_000_000n,
         maxPageReads: 5_000_000n,
-        onPersist: (dbKey, bytes) => {
+        maxOpenDbs: msg.maxOpenDbs,
+        maxWorkspaceDbs: msg.maxWorkspaceDbs,
+        maxImportBytes: msg.maxImportBytes,
+        onPersist: (dbKey, bytes, meta) => {
           if (!this.disposed) {
-            this.postToHost({ type: 'sqlite-persist', dbKey, bytes });
+            this.postToHost({ type: 'sqlite-persist', dbKey, bytes, meta });
           }
         },
       });
@@ -1766,6 +1787,50 @@ export class BackendWorkerSession {
     }
   }
 
+  private handleFlushAck(msg: Extract<HostToBackendMsg, { type: 'flush-ack' }>): void {
+    if (!this.sqlManager) {
+      this.postToHost({ type: 'rpc-reply', reqId: msg.reqId, ok: true, result: { dbKey: msg.dbKey ?? null, flushedKeys: [] } });
+      return;
+    }
+    try {
+      const targetKey =
+        typeof msg.handleId === 'number'
+          ? this.sqlManager.getKeyForHandle(msg.handleId) ?? undefined
+          : msg.dbKey;
+      if (!targetKey && this.sqlFlushTimer !== null) {
+        clearTimeout(this.sqlFlushTimer);
+        this.sqlFlushTimer = null;
+      }
+      const flushed = this.sqlManager.flushDirty(targetKey);
+      this.postToHost({
+        type: 'rpc-reply',
+        reqId: msg.reqId,
+        ok: true,
+        result: {
+          dbKey: targetKey ?? null,
+          flushedKeys: flushed.map((f) => f.dbKey),
+        },
+      });
+    } catch (err) {
+      this.postToHost({
+        type: 'rpc-reply',
+        reqId: msg.reqId,
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  private decodeSqliteImportArg(raw: unknown): Uint8Array {
+    if (raw instanceof Uint8Array) return raw;
+    if (raw instanceof ArrayBuffer) return new Uint8Array(raw);
+    if (typeof raw === 'string') return base64ToBytes(raw);
+    if (raw && typeof raw === 'object' && typeof (raw as { base64?: unknown }).base64 === 'string') {
+      return base64ToBytes((raw as { base64: string }).base64);
+    }
+    throw new Error('Expected Uint8Array or base64 SQLite image');
+  }
+
   private handleSqliteOp(msg: Extract<HostToBackendMsg, { type: 'sqlite-op' }>): void {
     if (!this.sqlManager) {
       this.postToHost({ type: 'rpc-reply', reqId: msg.reqId, ok: false, error: 'SQLite engine not initialized' });
@@ -1774,17 +1839,61 @@ export class BackendWorkerSession {
     try {
       let result: unknown;
       switch (msg.op) {
-        case 'open':
-          result = this.sqlManager.open(String(msg.args[0] ?? 'app.db'));
+        case 'open': {
+          const openOpts =
+            msg.args[1] && typeof msg.args[1] === 'object' && !Array.isArray(msg.args[1])
+              ? (msg.args[1] as { readOnly?: boolean })
+              : undefined;
+          result = this.sqlManager.open(String(msg.args[0] ?? 'app.db'), openOpts);
           break;
-        case 'execute':
-          result = this.sqlManager.execute(Number(msg.args[0]), String(msg.args[1] ?? ''), msg.args[2] ? String(msg.args[2]) : undefined);
+        }
+        case 'create': {
+          const createOpts =
+            msg.args[0] && typeof msg.args[0] === 'object' && !Array.isArray(msg.args[0])
+              ? (msg.args[0] as { temporary?: boolean; name?: string; readOnly?: boolean; workspaceId?: string })
+              : { temporary: true };
+          result = this.sqlManager.createDatabase(createOpts);
+          break;
+        }
+        case 'import_bytes': {
+          const bytes = this.decodeSqliteImportArg(msg.args[0]);
+          const importOpts =
+            msg.args[1] && typeof msg.args[1] === 'object' && !Array.isArray(msg.args[1])
+              ? (msg.args[1] as { readOnly?: boolean; temporary?: boolean; workspaceId?: string })
+              : undefined;
+          result = this.sqlManager.importBytes(bytes, importOpts);
+          break;
+        }
+        case 'execute': {
+          const execOpts =
+            msg.args[3] && typeof msg.args[3] === 'object' && !Array.isArray(msg.args[3])
+              ? (msg.args[3] as SqlExecuteOptions)
+              : undefined;
+          result = this.sqlManager.execute(
+            Number(msg.args[0]),
+            String(msg.args[1] ?? ''),
+            msg.args[2] ? String(msg.args[2]) : undefined,
+            undefined,
+            execOpts
+          );
           this.scheduleSqlFlush();
           break;
-        case 'query':
-          result = this.sqlManager.query(Number(msg.args[0]), String(msg.args[1] ?? ''), msg.args[2] ? String(msg.args[2]) : undefined);
+        }
+        case 'query': {
+          const queryOpts =
+            msg.args[3] && typeof msg.args[3] === 'object' && !Array.isArray(msg.args[3])
+              ? (msg.args[3] as SqlExecuteOptions)
+              : undefined;
+          result = this.sqlManager.query(
+            Number(msg.args[0]),
+            String(msg.args[1] ?? ''),
+            msg.args[2] ? String(msg.args[2]) : undefined,
+            undefined,
+            queryOpts
+          );
           this.scheduleSqlFlush();
           break;
+        }
         case 'seed_json':
           result = this.sqlManager.seedJson(
             typeof msg.args[0] === 'number' ? msg.args[0] : String(msg.args[0] ?? 'app.db'),
@@ -1792,9 +1901,87 @@ export class BackendWorkerSession {
           );
           this.scheduleSqlFlush();
           break;
+        case 'get_schema':
+          result = this.sqlManager.getSchema(Number(msg.args[0]));
+          break;
+        case 'export_bytes': {
+          const exportOpts =
+            msg.args[1] && typeof msg.args[1] === 'object' && !Array.isArray(msg.args[1])
+              ? (msg.args[1] as { consistency?: 'committed' | 'immediate' })
+              : undefined;
+          result = this.sqlManager.exportBytesByHandle(Number(msg.args[0]), exportOpts);
+          break;
+        }
+        case 'export_snapshot': {
+          const snapOpts =
+            msg.args[1] && typeof msg.args[1] === 'object' && !Array.isArray(msg.args[1])
+              ? (msg.args[1] as { consistency?: 'committed' | 'immediate' })
+              : undefined;
+          const target = typeof msg.args[0] === 'number' ? msg.args[0] : String(msg.args[0] ?? 'app.db');
+          result = this.sqlManager.exportSnapshot(target, snapOpts);
+          break;
+        }
+        case 'clone': {
+          const cloneOpts =
+            msg.args[1] && typeof msg.args[1] === 'object' && !Array.isArray(msg.args[1])
+              ? (msg.args[1] as { readOnly?: boolean; workspaceId?: string })
+              : undefined;
+          result = this.sqlManager.cloneHandle(Number(msg.args[0]), cloneOpts);
+          break;
+        }
+        case 'integrity_check': {
+          const icOpts =
+            msg.args[1] && typeof msg.args[1] === 'object' && !Array.isArray(msg.args[1])
+              ? (msg.args[1] as { checkForeignKeys?: boolean })
+              : undefined;
+          result = this.sqlManager.integrityCheck(Number(msg.args[0]), icOpts);
+          break;
+        }
+        case 'migration_status': {
+          const target = typeof msg.args[0] === 'number' ? msg.args[0] : String(msg.args[0] ?? 'app.db');
+          result = this.sqlManager.getMigrationStatus(target);
+          break;
+        }
+        case 'dispose':
+          result = this.sqlManager.disposeHandle(Number(msg.args[0]));
+          this.flushSqlNow();
+          break;
         case 'close':
           result = this.sqlManager.close(Number(msg.args[0]));
           this.flushSqlNow();
+          break;
+        case 'workspace_create': {
+          const budget =
+            msg.args[0] && typeof msg.args[0] === 'object' && !Array.isArray(msg.args[0])
+              ? (msg.args[0] as SqliteWorkspaceBudget)
+              : undefined;
+          result = this.sqlManager.createWorkspace(budget);
+          break;
+        }
+        case 'workspace_create_db': {
+          const wsId = String(msg.args[0] ?? '');
+          const opts =
+            msg.args[1] && typeof msg.args[1] === 'object' && !Array.isArray(msg.args[1])
+              ? (msg.args[1] as { readOnly?: boolean })
+              : undefined;
+          result = this.sqlManager.createDatabase({ ...opts, workspaceId: wsId, temporary: true });
+          break;
+        }
+        case 'workspace_import_bytes': {
+          const wsId = String(msg.args[0] ?? '');
+          const bytes = this.decodeSqliteImportArg(msg.args[1]);
+          const opts =
+            msg.args[2] && typeof msg.args[2] === 'object' && !Array.isArray(msg.args[2])
+              ? (msg.args[2] as { readOnly?: boolean })
+              : undefined;
+          result = this.sqlManager.importBytes(bytes, { ...opts, workspaceId: wsId, temporary: true });
+          break;
+        }
+        case 'workspace_cancel':
+          result = this.sqlManager.cancelWorkspace(String(msg.args[0] ?? ''));
+          break;
+        case 'workspace_dispose':
+          result = this.sqlManager.disposeWorkspace(String(msg.args[0] ?? ''));
           break;
         default:
           this.postToHost({ type: 'rpc-reply', reqId: msg.reqId, ok: false, error: `Unknown SQLite op: ${String(msg.op)}` });

@@ -3,12 +3,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildContainerSource,
+  createBinaryAppOfferHandler,
   createPortBackendTransport,
+  FRAME_EMBEDS,
   grantedContainerCapabilities,
   isContainerBundle,
   isSafeClientPath,
   isSafeLocalContainerPath,
 } from '../src/containerBridge.ts';
+import { grantedPermissions } from '../src/permissions.ts';
 
 test('identifies v2 Web Containers by manifest engine, container flag, backend block, or zero-config HTML', () => {
   const html = new Map([['index.html', '<!doctype html><html><body>Hi</body></html>']]);
@@ -298,4 +301,51 @@ test('PortBackendTransport strips spoofed Cookie/X-Forwarded headers, rejects ba
   assert.equal((await transport.fetch({ method: 'GET', path: '/api/ping#frag' })).status, 400);
   assert.equal((await transport.fetch({ method: 'GET', path: '/api/%252e%252e/secret' })).status, 400);
   assert.equal((await transport.fetch({ method: 'GET', path: `/api/${'a'.repeat(2100)}` })).status, 400);
+});
+
+test('supports binary .softn offers, dynamic preview embed allowance, and parent-granted platform capabilities', async () => {
+  assert.equal(FRAME_EMBEDS.frames, 'deny');
+  assert.equal(FRAME_EMBEDS.nestedApps, 'allow');
+  assert.equal(FRAME_EMBEDS.dynamicPreviews, 'allow');
+
+  // Strict own plain true check for parent-granted capabilities
+  const inherited = Object.create({ files: true, 'app-deploy': true });
+  assert.deepEqual(grantedPermissions(inherited), { permissions: {} });
+  const granted = grantedPermissions({
+    files: true,
+    'sqlite-workspace': true,
+    'app-preview': true,
+    'app-deploy': true,
+    net: true, // Never parent-grantable through this frame
+  });
+  assert.deepEqual(grantedContainerCapabilities(granted), [
+    'app-deploy',
+    'app-preview',
+    'files',
+    'sqlite-workspace',
+  ]);
+
+  const seen = [];
+  const offerHandler = createBinaryAppOfferHandler(async (action, input) => {
+    seen.push({ action, input });
+    return { result: { status: 'accepted', appId: 'app-123', url: 'https://formlogic.example/app-123' } };
+  });
+
+  const bundleBytes = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00]);
+  const res = await offerHandler({
+    name: 'Orders App',
+    operation: 'create',
+    bytes: bundleBytes,
+    size: bundleBytes.byteLength,
+    sha256: 'b'.repeat(64),
+    manifest: { engine: 2, name: 'Orders App' },
+    summary: { frontend: 'React / TypeScript', backend: 'PHP Slim', database: 'SQLite', fileCount: 12, size: 6 },
+  });
+  assert.equal(res.ok, true);
+  assert.equal(res.status, 'accepted');
+  assert.equal(res.appId, 'app-123');
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].action, 'formlogicOfferBundle');
+  assert.equal(seen[0].input.bundleBase64, Buffer.from(bundleBytes).toString('base64'));
+  assert.equal(seen[0].input.summary.backend, 'PHP Slim');
 });

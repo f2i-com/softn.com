@@ -10,6 +10,7 @@
  * and trusted the tag of an operation as written.
  */
 import type { ContainerArchive } from './archive';
+import { ARTIFACT_ID_RE, ARTIFACT_SCHEME } from './bundle-service';
 import type { ContainerPermissions } from './types';
 import { sanitizeContainerCss, sanitizeFrameUrl, sanitizeHostAssetUrl } from './sanitize';
 import { isAllowedUiExtension } from './ui-extensions/registry';
@@ -346,12 +347,20 @@ export function isNestedAppElement(el: unknown): el is HTMLElement {
 
 /**
  * The archive an app's `<softn-app src>` names: a `.softn` or `.zip` among the app's own
- * front-end files, by its path in the archive, or null. Never an address: an app nests what
- * it carries, which the person was given with it, and nothing it could fetch later.
+ * front-end files, or a container-owned `softn-artifact:<id>` handle registered by the
+ * trusted host (`apps.preview()`), or null. Never an arbitrary `blob:`, `data:`, or remote URL.
  */
-export function nestedAppSource(value: string, context: Pick<HostAttributeContext, 'archive' | 'entryPath'>): string | null {
+export function nestedAppSource(value: string, context: Pick<HostAttributeContext, 'archive' | 'entryPath' | 'hasArtifact'>): string | null {
   const text = value.trim();
-  if (!text || /^[a-z][a-z0-9+.-]*:|^\/\//i.test(text)) return null;
+  if (!text) return null;
+  if (text.startsWith(ARTIFACT_SCHEME)) {
+    const id = text.slice(ARTIFACT_SCHEME.length);
+    if (ARTIFACT_ID_RE.test(id) && context.hasArtifact?.(id) === true) {
+      return `${ARTIFACT_SCHEME}${id}`;
+    }
+    return null;
+  }
+  if (/^[a-z][a-z0-9+.-]*:|^\/\//i.test(text)) return null;
   const resolved = context.archive.resolveFrontendExistingPath(text.split(/[?#]/)[0], context.entryPath);
   if (resolved === null || !/\.(?:softn|zip)$/i.test(resolved)) return null;
   // The name is the file's own, and reads as itself: the mount reads the archive by what
@@ -380,6 +389,8 @@ export interface HostAttributeContext {
   ns?: 'svg' | 'math';
   /** Per-mount font-family scoping context to prevent host-page @font-face hijacking. */
   fontScope?: FontScopeContext;
+  /** Checks whether a host-registered `softn-artifact:<id>` exists for this container. */
+  hasArtifact?: (id: string) => boolean;
 }
 
 /** Attributes whose value is one address. */

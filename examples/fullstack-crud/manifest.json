@@ -1,0 +1,34 @@
+{
+  "engine": 2,
+  "id": "softn-fullstack-crud-profile",
+  "name": "Full-Stack CRUD Profile (React TSX + PHP Slim + SQLite)",
+  "version": "1.0.0",
+  "description": "Official SoftN v2 full-stack reference profile: uncompiled React + TypeScript (.tsx) frontend, pre-bundled PSR-4 + PSR-7 Slim-compatible PHP API backend, and versioned XDB SQLite storage.",
+  "frontendRoot": "public",
+  "main": "public/index.html",
+  "backend": {
+    "runtime": "php",
+    "mode": "api",
+    "entry": "backend/index.php",
+    "root": "backend",
+    "phpMode": "sapi",
+    "routes": ["/api/"]
+  },
+  "databases": [
+    {
+      "name": "app",
+      "engine": "sqlite",
+      "file": "db/app.db",
+      "seedSql": "backend/schema.sql",
+      "schemaVersion": 2,
+      "migrations": [
+        {
+          "version": 2,
+          "file": "backend/migrations/002_add_notes_and_priority.sql",
+          "description": "Add priority level and notes column to items"
+        }
+      ],
+      "persist": true
+    }
+  ]
+}

@@ -63,6 +63,9 @@ const ALLOWED_CAPABILITIES = new Set([
   'location',
   'haptics',
   'notifications',
+  'sqlite-workspace',
+  'app-preview',
+  'app-deploy',
   'clipboard',
 ]);
 const MAX_BUNDLE_ZIP_BYTES = 128 * 1024 * 1024;

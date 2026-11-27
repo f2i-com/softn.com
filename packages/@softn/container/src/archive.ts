@@ -1202,6 +1202,34 @@ function parseExplicitDatabases(raw: unknown): DatabaseConfig[] | undefined {
     const obj = item as Record<string, unknown>;
     const name = typeof obj.name === 'string' && obj.name.trim() ? obj.name.trim() : '';
     if (!name) continue;
+    let migrations: DatabaseConfig['migrations'];
+    if (Array.isArray(obj.migrations)) {
+      const parsedMigs: NonNullable<DatabaseConfig['migrations']> = [];
+      for (const m of obj.migrations) {
+        if (!m || typeof m !== 'object' || Array.isArray(m)) continue;
+        const mObj = m as Record<string, unknown>;
+        if (typeof mObj.version !== 'number' || !Number.isInteger(mObj.version) || mObj.version < 1) continue;
+        const file = typeof mObj.file === 'string' && mObj.file.trim()
+          ? mObj.file.replace(/\\/g, '/').replace(/^\/+/, '')
+          : undefined;
+        const sql = typeof mObj.sql === 'string' ? mObj.sql : undefined;
+        if (!file && !sql) continue;
+        parsedMigs.push({
+          version: mObj.version,
+          ...(file ? { file } : {}),
+          ...(sql !== undefined ? { sql } : {}),
+          ...(typeof mObj.description === 'string' ? { description: mObj.description } : {}),
+        });
+      }
+      if (parsedMigs.length > 0) {
+        parsedMigs.sort((a, b) => a.version - b.version);
+        migrations = parsedMigs;
+      }
+    }
+    const schemaVersion =
+      typeof obj.schemaVersion === 'number' && Number.isInteger(obj.schemaVersion) && obj.schemaVersion >= 1
+        ? obj.schemaVersion
+        : undefined;
     out.push({
       name,
       engine: 'sqlite',
@@ -1212,6 +1240,8 @@ function parseExplicitDatabases(raw: unknown): DatabaseConfig[] | undefined {
           ? (obj.seedJson as string | Record<string, unknown>)
           : undefined,
       persist: typeof obj.persist === 'boolean' ? obj.persist : true,
+      ...(schemaVersion !== undefined ? { schemaVersion } : {}),
+      ...(migrations ? { migrations } : {}),
     });
   }
   return out.length > 0 ? out : undefined;

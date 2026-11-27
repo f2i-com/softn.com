@@ -34,8 +34,8 @@ final class Bundle
      * months, so an app asking for host acceleration was listed as asking for
      * nothing of the kind.
      */
-    public const CAPABILITY_SCHEMA_VERSION = 4;
-    public const CAPABILITIES = ['net', 'camera', 'mic', 'files', 'qr', 'ai', 'gpu', 'sync', 'storage', 'accel', 'bluetooth', 'location', 'haptics', 'notifications'];
+    public const CAPABILITY_SCHEMA_VERSION = 5;
+    public const CAPABILITIES = ['net', 'camera', 'mic', 'files', 'qr', 'ai', 'gpu', 'sync', 'storage', 'accel', 'bluetooth', 'location', 'haptics', 'notifications', 'sqlite-workspace', 'app-preview', 'app-deploy'];
     /**
      * A storage collection name, or `*` for every collection not named. `D`
      * because `$` alone also matches before a final line break: "scores\n"

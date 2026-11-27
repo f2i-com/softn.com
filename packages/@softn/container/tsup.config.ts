@@ -3,7 +3,7 @@ import { transformSync } from 'esbuild';
 import { defineConfig } from 'tsup';
 
 const GUEST_SOURCE_FILE_RE =
-  /(?:^|[\\/])(?:guest-(?:canvas-and-ext|web-apis|browser-globals|indexeddb|webgl|react-vendor|three-native|worker-scope|vendors)|shell-source|esm-linker)\.ts$/;
+  /(?:^|[\\/])(?:guest-(?:bundle|canvas-and-ext|web-apis|browser-globals|indexeddb|webgl|react-vendor|three-native|worker-scope|vendors)|shell-source|esm-linker)\.ts$/;
 
 /**
  * Minify embedded JS inside `String.raw\`...\`` guest prelude sources at build time.
