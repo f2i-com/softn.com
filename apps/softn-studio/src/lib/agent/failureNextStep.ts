@@ -98,7 +98,13 @@ export function nextStepFor(failure: AIFailure, context: NextStepContext = {}): 
       step = { title: 'The model declined this request', advice: 'Say it another way, or ask for something else.' };
       break;
     case 'empty':
-      if (/empty reply/i.test(failure.message)) {
+      if (/finished reasoning/i.test(failure.message)) {
+        step = {
+          title: 'The AI finished reasoning without writing a reply',
+          advice: `Check that the model has enough context and output budget, then ${again}; or choose another model.`,
+          action: { label: 'Choose another model', opens: 'provider' },
+        };
+      } else if (/empty reply/i.test(failure.message)) {
         step = {
           title: 'The AI returned an empty reply',
           advice: `Check that the selected model is running and has enough context and output budget, then ${again}; or choose another model.`,

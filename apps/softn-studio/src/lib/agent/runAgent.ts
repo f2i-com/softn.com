@@ -77,6 +77,8 @@ const CONTEXT_SOFT_LIMIT_TOKENS = 60_000;
 const REPEAT_LIMIT = 3;
 /** How many times a reply cut off at the output limit is asked for again before the run stops. */
 const TRUNCATION_RETRIES = 1;
+/** How many times an empty / reasoning-only reply is asked for again before the run stops. */
+const EMPTY_REPLY_RETRIES = 1;
 const RATE_LIMIT_RETRIES = 3;
 /** How often a streaming reply is shown: often enough to read as live, rarely enough not to re-render per token. */
 const LIVE_FLUSH_MS = 60;
@@ -164,6 +166,7 @@ interface RunController {
   lastToolError: string | null;
   sameToolErrors: number;
   truncations: number;
+  emptyReplies: number;
   /**
    * The system prompt per protocol, built once per run: the project tree it
    * carries is as of the run's start (list_files shows it now), so the prompt
@@ -286,7 +289,7 @@ function openingTurns(): AgentTurn[] {
   return turns;
 }
 
-function describeFailure(err: unknown): AIFailure {
+function describeFailure(err: unknown, hosted = false): AIFailure {
   const at = Date.now();
   if (err instanceof AIProviderError) {
     // `fix` is the control that mends it (types/studio.ts, AIFailure): the chat offers it.
@@ -304,7 +307,7 @@ function describeFailure(err: unknown): AIFailure {
       case 'no-model':
         return { kind: 'setup', message: err.message, fix: 'setup', at };
       default:
-        return { kind: 'provider', message: `${err.message}${providerAdvice(err)}`, ...providerFix(err), at };
+        return { kind: 'provider', message: `${err.message}${hosted ? '' : providerAdvice(err)}`, ...providerFix(err), at };
     }
   }
   return { kind: 'provider', message: err instanceof Error ? err.message : String(err), at };
@@ -530,6 +533,7 @@ export async function startAgentRun(options: StartOptions = {}): Promise<void> {
     lastToolError: null,
     sameToolErrors: 0,
     truncations: 0,
+    emptyReplies: 0,
     systems: {},
     live: null,
     weights: cacheWeights(provider),
@@ -654,19 +658,28 @@ export async function continueAgentRun(runId: string): Promise<void> {
   ctl.finishRefusals = 0;
   ctl.sameToolErrors = 0;
   ctl.truncations = 0;
+  ctl.emptyReplies = 0;
+  ctl.nudged = false;
   const wasPaused = run.status === 'paused';
+  const previousFailure = useAIStore.getState().lastFailure;
+  const wasReasoningEmpty =
+    (previousFailure?.kind === 'empty' && /finished reasoning|empty reply/i.test(previousFailure.message)) ||
+    /finished reasoning without writing a reply|empty reply/i.test(run.reason ?? '');
   // Why it stopped is answered by going on: the chat's offer to mend it goes with it.
   useAIStore.getState().setLastFailure(null);
   setStatus(ctl, 'running');
-  // A paused request is sent again as it was; a stopped or limited run is told it was resumed,
-  // and one whose files were put back in the meantime is told that, or it would carry on as
-  // though they were still there.
-  if (!ctl.pending && (wasReverted || !wasPaused || ctl.turns.at(-1)?.role === 'assistant')) {
+  // A paused request is sent again as it was (unless it stalled on an empty/reasoning-only
+  // turn, where replaying the identical prompt unchanged would hit the same cutoff again);
+  // a stopped, failed or limited run is told it was resumed, and one whose files were put
+  // back in the meantime is told that, or it would carry on as though they were still there.
+  if (!ctl.pending && (wasReverted || !wasPaused || wasReasoningEmpty || ctl.turns.at(-1)?.role === 'assistant')) {
     ctl.turns.push({
       role: 'user',
       text: wasReverted
         ? 'The person reverted this run and then resumed it: every file it created is gone, and every file it changed or deleted is as it was before the run. Read a file again before you change it, do again what the request still needs, and call finish when it is done.'
-        : 'The person resumed the run. Continue where you left off: check the app, fix what is broken, and call finish when the request is done.',
+        : wasReasoningEmpty
+          ? 'The person resumed the run after the previous turn produced no visible reply. Keep your reasoning very brief, then immediately output your next tool call (or call finish if the request is done).'
+          : 'The person resumed the run. Continue where you left off: check the app, fix what is broken, and call finish when the request is done.',
     });
   }
   await drive(ctl);
@@ -1435,7 +1448,7 @@ async function drive(ctl: RunController): Promise<void> {
     } catch (err) {
       if (!ctl.alive) return;
       if (err instanceof AIProviderError && err.kind === 'cancelled') return;
-      const failure = describeFailure(err);
+      const failure = describeFailure(err, ctl.provider.id === 'formlogic');
       // A provider still busy after the retries is waited for like one still rate-limiting:
       // the run pauses with its request as it was, where it used to end as failed.
       if (failure.kind === 'network' || failure.kind === 'timeout' || failure.kind === 'rate-limited' || isBusy(err)) {
@@ -1505,6 +1518,59 @@ async function drive(ctl: RunController): Promise<void> {
     }
     ctl.truncations = 0;
 
+    if (reply.status === 'empty') {
+      ctl.emptyReplies++;
+      const reasoningOnly = reply.stopReason === 'reasoning_only';
+      const wroteAnything = (record(ctl)?.transactions.length ?? 0) > 0;
+      if (ctl.emptyReplies <= EMPTY_REPLY_RETRIES) {
+        ctl.turns.push({
+          role: 'user',
+          text: reasoningOnly
+            ? 'Your previous reply finished reasoning without writing a visible answer or tool call. Keep your reasoning brief and output your next tool call now, or call finish if the request is done.'
+            : 'Your reply was empty. Carry on with the tools, or call finish.',
+        });
+        if (reasoningOnly) {
+          addEntry(ctl, {
+            kind: 'text',
+            id: newId(),
+            text: 'The AI finished reasoning without writing a reply. Trying this step again with a reminder to keep reasoning brief.',
+            at: Date.now(),
+          });
+        }
+        continue;
+      }
+      if (reasoningOnly) {
+        failRun(
+          ctl,
+          'The AI finished reasoning without writing a reply again after being asked to keep its reasoning brief. Check the model’s context/output budget or try another model.',
+          undefined,
+          { kind: 'empty', fix: 'provider' },
+        );
+        return;
+      }
+      if (!wroteAnything && !ctl.answer) {
+        failRun(
+          ctl,
+          'The AI returned an empty reply without making any changes. Check that the selected model is running, has enough context/output budget, and supports tool calls, then try again.',
+          undefined,
+          { kind: 'empty', fix: 'provider' },
+        );
+        return;
+      }
+      if (ctl.kind === 'build' && !wroteAnything) {
+        failRun(
+          ctl,
+          'The model stopped without building anything: it answered in text and never called the tools that write files. Smaller models often cannot drive tool calls. Continue to let it try again, or choose a larger model in AI setup.',
+          undefined,
+          { kind: 'empty', fix: 'provider' },
+        );
+        return;
+      }
+      await finishRun(ctl, completedSummary(ctl, ctl.answer || 'The agent stopped without a summary.'));
+      return;
+    }
+    ctl.emptyReplies = 0;
+
     reply = withUniqueCallIds(reply, ctl.turns);
     ctl.turns.push({ role: 'assistant', text: reply.text, calls: reply.calls, anthropicContent: protocol === 'anthropic' ? reply.anthropicContent : undefined });
     if (reply.text.trim()) addEntry(ctl, { kind: 'text', id: newId(), text: reply.text.trim(), at: Date.now() });
@@ -1515,7 +1581,7 @@ async function drive(ctl: RunController): Promise<void> {
       if (reply.text.trim() && !(protocol === 'text' && /<tool_call\b/i.test(reply.text))) {
         ctl.answer ??= reply.text.trim();
       }
-      if (!ctl.nudged && reply.status !== 'empty') {
+      if (!ctl.nudged) {
         ctl.nudged = true;
         // Every readable block has been taken out of the text: a <tool_call> left in it is one that could not be read.
         const unreadable = protocol === 'text' && /<tool_call\b/i.test(reply.text);
@@ -1527,11 +1593,6 @@ async function drive(ctl: RunController): Promise<void> {
         });
         continue;
       }
-      if (reply.status === 'empty' && !ctl.nudged) {
-        ctl.nudged = true;
-        ctl.turns.push({ role: 'user', text: 'Your reply was empty. Carry on with the tools, or call finish.' });
-        continue;
-      }
       // A build or edit that wrote nothing and got an empty reply (or unreadable tool markup) did not succeed.
       const wroteAnything = (record(ctl)?.transactions.length ?? 0) > 0;
       if (!wroteAnything && !ctl.answer) {
@@ -1539,7 +1600,7 @@ async function drive(ctl: RunController): Promise<void> {
           failRun(ctl, 'The model wrote tool calls in a format Studio could not read, so no changes were made. Continue to try again, or choose a tool-capable model in AI setup.', undefined, { kind: 'empty', fix: 'provider' });
           return;
         }
-        if (reply.status === 'empty' || !reply.text.trim()) {
+        if (!reply.text.trim()) {
           failRun(ctl, 'The AI returned an empty reply without making any changes. Check that the selected model is running, has enough context/output budget, and supports tool calls, then try again.', undefined, { kind: 'empty', fix: 'provider' });
           return;
         }

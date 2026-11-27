@@ -43,7 +43,7 @@ vi.mock('@softn/editor-shared/hostedEditor', async (importOriginal) => {
 });
 
 const { HostedAIError } = await import('@softn/editor-shared/hostedEditor');
-const { startAgentRun } = await import('../src/lib/agent/runAgent');
+const { continueAgentRun, startAgentRun } = await import('../src/lib/agent/runAgent');
 const { useAIStore } = await import('../src/stores/aiStore');
 const { assertScriptsPassed, lastRun, resetAgent, say, seedApp, text } = await import('./helpers/agentHarness');
 
@@ -147,5 +147,75 @@ describe('the hosted editor with a host from before aiTools', () => {
     expect(host.structured).toEqual([]);
     expect(host.plain).toHaveLength(2);
     expect(host.plain[1].at(-1)?.content).toContain('<tool_result name="read_file" status="ok">');
+  });
+});
+
+describe('hosted reasoning-only, truncation, and provider error recovery', () => {
+  it('auto-recovers when Turn 1 outputs one line of prose and Turn 2 finishes reasoning without writing a reply', async () => {
+    host.replies = [
+      new HostedAIError('FormLogic Desktop answers in text.', 'tools-unsupported'),
+      'I will rename the Tasks heading to Chores.',
+      new HostedAIError(
+        'The AI finished reasoning without writing a reply. Check the model\'s context/output budget or try another model in OAIY.',
+        'reasoning-only',
+      ),
+      '<tool_call name="read_file">{"path":"ui/main.ui"}</tool_call>',
+      '<tool_call name="edit_file">{"path":"ui/main.ui","old_string":"<Heading level={1}>Tasks</Heading>","new_string":"<Heading level={1}>Chores</Heading>"}</tool_call>',
+      '<tool_call name="finish">{"summary":"Renamed heading to Chores."}</tool_call>',
+    ];
+    say('Rename the heading to Chores');
+    await startAgentRun({ kind: 'edit' });
+    const { run } = lastRun();
+    expect(run.status).toBe('finished');
+    expect(text('ui/main.ui')).toContain('<Heading level={1}>Chores</Heading>');
+    // The retry request explicitly asks the model to keep reasoning brief and output its next tool call.
+    expect(host.plain[2].at(-1)?.content).toMatch(/finished reasoning without writing a visible answer/i);
+    expect(host.plain[2].at(-1)?.content).toMatch(/keep your reasoning brief/i);
+    expect(useAIStore.getState().lastFailure).toBeNull();
+  });
+
+  it('fails as empty (never network) on repeated reasoning-only errors even without a code, and Continue resumes with a fresh turn', async () => {
+    host.version = 0;
+    host.replies = [
+      'I will update the heading now.',
+      // Uncoded error message (older FormLogic host) twice in a row.
+      new HostedAIError('The AI finished reasoning without writing a reply. Check the model\'s context/output budget or try another model in OAIY.'),
+      new HostedAIError('The AI finished reasoning without writing a reply. Check the model\'s context/output budget or try another model in OAIY.'),
+      // After the user clicks Continue, the model reads, edits, and finishes.
+      '<tool_call name="read_file">{"path":"ui/main.ui"}</tool_call>',
+      '<tool_call name="edit_file">{"path":"ui/main.ui","old_string":"<Heading level={1}>Tasks</Heading>","new_string":"<Heading level={1}>Chores</Heading>"}</tool_call>',
+      '<tool_call name="finish">{"summary":"Updated after continue."}</tool_call>',
+    ];
+    say('Rename the heading to Chores');
+    await startAgentRun({ kind: 'edit' });
+    const failed = lastRun().run;
+    expect(failed.status).toBe('failed');
+    expect(failed.reason).toMatch(/finished reasoning without writing a reply/i);
+    expect(useAIStore.getState().lastFailure?.kind).toBe('empty');
+
+    await continueAgentRun(failed.id);
+    const resumed = lastRun().run;
+    expect(resumed.status).toBe('finished');
+    expect(text('ui/main.ui')).toContain('<Heading level={1}>Chores</Heading>');
+    expect(host.plain[3].at(-1)?.content).toMatch(/resumed the run after the previous turn produced no visible reply/i);
+  });
+
+  it('recovers from hosted output-truncated errors and classifies non-network host failures as provider errors', async () => {
+    host.version = 0;
+    host.replies = [
+      new HostedAIError('The AI reached its output limit before writing a reply.', 'output-truncated'),
+      '<tool_call name="finish">{"summary":"Done after truncation retry."}</tool_call>',
+    ];
+    say('Finish up');
+    await startAgentRun({ kind: 'edit' });
+    expect(lastRun().run.status).toBe('finished');
+    expect(host.plain[1].at(-1)?.content).toMatch(/cut off at the output limit/i);
+
+    host.replies = [new HostedAIError('Your daily site AI allowance is used up.')];
+    say('Try again');
+    await startAgentRun({ kind: 'edit' });
+    expect(lastRun().run.status).toBe('failed');
+    expect(useAIStore.getState().lastFailure?.kind).toBe('provider');
+    expect(lastRun().run.reason).not.toMatch(/API key/i);
   });
 });

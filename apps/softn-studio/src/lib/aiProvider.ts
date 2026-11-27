@@ -1,4 +1,4 @@
-import { isHostedEditor, requestHostedAI } from '@softn/editor-shared/hostedEditor';
+import { HostedAIError, isHostedEditor, requestHostedAI } from '@softn/editor-shared/hostedEditor';
 import type { ProviderConfig, ChatMessage } from '../types/studio';
 import {
   describeConnectionError,
@@ -134,10 +134,25 @@ export async function sendAIRequest(
 ): Promise<AIResponse> {
   if (isHostedEditor() && provider.id === 'formlogic') {
     try {
-      const content = await requestHostedAI([{ role: 'system', content: request.system }, ...request.messages.map(({ role, content }) => ({ role, content }))], request.signal);
+      const content = await requestHostedAI(
+        [{ role: 'system', content: request.system }, ...request.messages.map(({ role, content }) => ({ role, content }))],
+        request.signal,
+        { maxOutputTokens: request.maxOutputTokens },
+      );
       return { content, status: content.trim() ? 'complete' : 'empty', stopReason: null, blocks: [{ type: 'text', text: content }], usage: { inputTokens: 0, outputTokens: 0 } };
     } catch (error) {
-      throw new AIProviderError(request.signal?.aborted ? 'cancelled' : 'network', error instanceof Error ? error.message : 'FormLogic AI request failed.');
+      if (request.signal?.aborted) throw new AIProviderError('cancelled', 'The request was cancelled.');
+      const code = error instanceof HostedAIError ? error.code : undefined;
+      const msg = error instanceof Error ? error.message : 'FormLogic AI request failed.';
+      const kind =
+        code === 'timeout' || /\btimed out\b/i.test(msg)
+          ? 'timeout'
+          : code === 'rate-limited' || /\brate[- ]?limit/i.test(msg)
+            ? 'rate-limited'
+            : code === 'network' || /\b(?:not connected|unreachable|offline|did not respond|network error|connection refused|failed to fetch)\b/i.test(msg)
+              ? 'network'
+              : 'http';
+      throw new AIProviderError(kind, msg);
     }
   }
   const model = resolveModel(provider, request.modelOverride);

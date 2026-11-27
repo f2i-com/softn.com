@@ -225,7 +225,11 @@ async function post(
 async function sendHosted(request: AgentRequest): Promise<AgentReply> {
   try {
     if (request.protocol !== 'hosted') {
-      const content = await requestHostedAI([{ role: 'system', content: request.system }, ...encodeText(request.turns)], request.signal);
+      const content = await requestHostedAI(
+        [{ role: 'system', content: request.system }, ...encodeText(request.turns)],
+        request.signal,
+        { maxOutputTokens: request.maxOutputTokens },
+      );
       return withTextCalls({ text: content, calls: [], status: content.trim() ? 'complete' : 'empty', stopReason: null, usage: { inputTokens: 0, outputTokens: 0 } });
     }
     const reply = await requestHostedAIReply(
@@ -243,10 +247,37 @@ async function sendHosted(request: AgentRequest): Promise<AgentReply> {
   } catch (error) {
     if (error instanceof AIProviderError) throw error;
     if (request.signal?.aborted) throw new AIProviderError('cancelled', 'The request was cancelled.');
-    if (error instanceof HostedAIError && error.code === 'tools-unsupported') {
-      throw new AIProviderError('http', error.message, { detail: 'tools not supported (hosted-tools-unsupported)' });
+    const code = error instanceof HostedAIError ? error.code : undefined;
+    const msg = error instanceof Error ? error.message : 'FormLogic AI request failed.';
+    if (code === 'tools-unsupported') {
+      throw new AIProviderError('http', msg, { detail: 'tools not supported (hosted-tools-unsupported)' });
     }
-    throw new AIProviderError('network', error instanceof Error ? error.message : 'FormLogic AI request failed.');
+    // Recoverable reply outcomes surfaced by the host as errors on the text bridge (or an
+    // older host that sent the error message without a code): return them as structured replies
+    // so the agent loop can automatically retry with brief-reasoning / split-work guidance
+    // instead of falsely pausing as a network outage.
+    if (code === 'reasoning-only' || /finished reasoning without writing a reply/i.test(msg)) {
+      return { text: '', calls: [], status: 'empty', stopReason: 'reasoning_only', usage: { inputTokens: 0, outputTokens: 0 } };
+    }
+    if (code === 'output-truncated' || /reached its output limit before writing a reply/i.test(msg)) {
+      return { text: '', calls: [], status: 'truncated', stopReason: 'length', usage: { inputTokens: 0, outputTokens: 0 } };
+    }
+    if (code === 'refused' || /refused to answer/i.test(msg)) {
+      return { text: '', calls: [], status: 'refused', stopReason: 'refusal', usage: { inputTokens: 0, outputTokens: 0 } };
+    }
+    if (code === 'timeout' || /\btimed out\b/i.test(msg)) {
+      throw new AIProviderError('timeout', msg);
+    }
+    if (code === 'rate-limited' || /\brate[- ]?limit/i.test(msg)) {
+      throw new AIProviderError('rate-limited', msg);
+    }
+    if (
+      code === 'network' ||
+      /\b(?:not connected|unreachable|offline|did not respond|network error|connection refused|failed to fetch)\b/i.test(msg)
+    ) {
+      throw new AIProviderError('network', msg);
+    }
+    throw new AIProviderError('http', msg);
   }
 }
 
@@ -288,13 +319,20 @@ export function decodeHosted(reply: HostedAIReply): AgentReply {
 
 function withTextCalls(reply: AgentReply): AgentReply {
   const parsed = parseTextToolCalls(reply.text);
+  const strippedOnlyThink = parsed.calls.length === 0 && !parsed.text.trim() && /<think>/i.test(reply.text);
   const status =
     parsed.calls.length > 0
       ? (reply.status === 'empty' ? 'complete' : reply.status)
       : !parsed.text.trim() && reply.status === 'complete'
         ? 'empty'
         : reply.status;
-  return { ...reply, text: parsed.text, calls: parsed.calls, status };
+  return {
+    ...reply,
+    text: parsed.text,
+    calls: parsed.calls,
+    status,
+    stopReason: strippedOnlyThink && !reply.stopReason ? 'reasoning_only' : reply.stopReason,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -515,12 +553,25 @@ export function decodeOpenAI(data: Record<string, unknown>): AgentReply {
   }
   const finishReason = typeof choice.finish_reason === 'string' ? choice.finish_reason : null;
   const refused = typeof message.refusal === 'string' && message.refusal.length > 0;
+  const reasoning =
+    typeof message.reasoning_content === 'string'
+      ? message.reasoning_content
+      : typeof message.reasoning === 'string'
+        ? message.reasoning
+        : '';
+  const reasoningOnly =
+    text.trim().length === 0 &&
+    calls.length === 0 &&
+    !refused &&
+    finishReason !== 'content_filter' &&
+    finishReason !== 'length' &&
+    reasoning.trim().length > 0;
   const usage = isRecord(data.usage) ? data.usage : {};
   const reply: AgentReply = {
     text,
     calls,
     status: refused || finishReason === 'content_filter' ? 'refused' : finishReason === 'length' ? 'truncated' : text.length === 0 && calls.length === 0 ? 'empty' : 'complete',
-    stopReason: finishReason,
+    stopReason: reasoningOnly ? 'reasoning_only' : finishReason,
     usage: openAIUsage(usage),
   };
   return markTextCalls(reply);

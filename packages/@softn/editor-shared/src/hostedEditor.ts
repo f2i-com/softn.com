@@ -246,8 +246,18 @@ function sendAIRequest(payload: Record<string, unknown>, signal?: AbortSignal): 
 }
 
 /** Ask the host for a plain text reply: the form every host takes. */
-export function requestHostedAI(messages: { role: string; content: string }[], signal?: AbortSignal): Promise<string> {
-  return sendAIRequest({ messages }, signal).then(value => {
+export function requestHostedAI(
+  messages: { role: string; content: string }[],
+  signal?: AbortSignal,
+  options?: { maxOutputTokens?: number },
+): Promise<string> {
+  return sendAIRequest(
+    {
+      messages,
+      ...(options?.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}),
+    },
+    signal,
+  ).then(value => {
     if (typeof value !== 'string') throw new Error('Invalid AI response.');
     return value;
   });

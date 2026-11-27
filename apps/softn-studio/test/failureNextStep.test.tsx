@@ -136,6 +136,15 @@ describe('the step for each kind of failure', () => {
     expect(empty.advice).toMatch(/context and output budget/i);
     expect(empty.advice).toMatch(/the one chosen in the site Studio is opened in/);
 
+    const reasoning = nextStepFor(
+      { kind: 'empty', message: 'The AI finished reasoning without writing a reply again after being asked to keep its reasoning brief.', fix: 'provider', at },
+      { goOn: 'continue', hosted: true },
+    )!;
+    expect(reasoning.title).toBe('The AI finished reasoning without writing a reply');
+    expect(reasoning.advice).toMatch(/context and output budget/i);
+    expect(reasoning.advice).toMatch(/press Continue on the run above/);
+    expect(reasoning.advice).toMatch(/the one chosen in the site Studio is opened in/);
+
     const textOnly = nextStepFor({ kind: 'empty', message: 'The model stopped without building anything: it answered in text.', fix: 'provider', at }, { goOn: 'continue' })!;
     expect(textOnly.title).toBe('The model answered without building anything');
   });
