@@ -69,7 +69,7 @@ test('keeps the private tree out of the archive whatever its files are called', 
 });
 
 test('nests the app\'s own apps and shows no frame of another site, and web.ts gives the container exactly that', () => {
-  assert.deepEqual({ ...FRAME_EMBEDS }, { frames: 'deny', nestedApps: 'allow' });
+  assert.deepEqual({ ...FRAME_EMBEDS }, { frames: 'deny', nestedApps: 'allow', dynamicPreviews: 'allow' });
   assert.ok(Object.isFrozen(FRAME_EMBEDS));
   const web = readFileSync(new URL('../src/web.ts', import.meta.url), 'utf8');
   assert.match(web, /\.\.\.FRAME_EMBEDS,/);

@@ -587,6 +587,5 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(port, '127.0.0.1', () => {
-  // eslint-disable-next-line no-console
   console.log(`SoftN App-Builder Platform & CRUD Demo listening at http://127.0.0.1:${port}/`);
 });
