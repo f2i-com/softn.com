@@ -253,10 +253,19 @@ async function compileWasmSource(source: BufferSource | WebAssembly.Module | str
         if (!retry.ok) {
           throw new Error(`Failed to fetch ZIPP engine (${url.pathname}): HTTP ${retry.status}`);
         }
-        return WebAssembly.compile(new Uint8Array(await retry.arrayBuffer()));
+        const retryBytes = new Uint8Array(await retry.arrayBuffer());
+        if (!isWasmMagic(retryBytes)) {
+          const retryCt = (retry.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase();
+          throw new Error(`Failed to load ZIPP engine (${url.pathname}): expected WebAssembly binary, got ${retryCt || 'non-WASM response'}`);
+        }
+        return WebAssembly.compile(retryBytes);
       }
     }
-    return WebAssembly.compile(new Uint8Array(await resp.arrayBuffer()));
+    const bytes = new Uint8Array(await resp.arrayBuffer());
+    if (!isWasmMagic(bytes)) {
+      throw new Error(`Failed to load ZIPP engine (${url.pathname}): expected WebAssembly binary, got ${ct || 'non-WASM response'}`);
+    }
+    return WebAssembly.compile(bytes);
   }
   const view =
     source instanceof ArrayBuffer
@@ -396,7 +405,15 @@ export async function loadZippEngine(options: {
     }
     if (!bindings) {
       if (glueText) {
-        bindings = await importGlueText(glueText);
+        try {
+          bindings = await importGlueText(glueText);
+        } catch (err) {
+          if (fallbackGlueFactory) {
+            bindings = await fallbackGlueFactory();
+          } else {
+            throw err;
+          }
+        }
       } else if (fallbackGlueFactory) {
         bindings = await fallbackGlueFactory();
       } else {
